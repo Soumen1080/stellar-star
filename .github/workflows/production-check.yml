@@ -1,0 +1,62 @@
+name: Production Check
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  production-readiness:
+    name: Validate Production Build Inputs
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Fail fast on missing required secrets
+        shell: bash
+        run: |
+          missing=0
+
+          if [ -z "$NEXT_PUBLIC_SUPABASE_URL" ]; then
+            echo "::error::Missing secret NEXT_PUBLIC_SUPABASE_URL"
+            missing=1
+          fi
+
+          if [ -z "$NEXT_PUBLIC_SUPABASE_ANON_KEY" ]; then
+            echo "::error::Missing secret NEXT_PUBLIC_SUPABASE_ANON_KEY"
+            missing=1
+          fi
+
+          if [ "$missing" -ne 0 ]; then
+            echo "One or more required secrets are missing."
+            exit 1
+          fi
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test -- --runInBand
+
+      - name: Build with production-like env
+        run: npm run build

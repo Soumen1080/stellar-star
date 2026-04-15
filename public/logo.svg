@@ -1,0 +1,32 @@
+<svg width="280" height="48" viewBox="0 0 280 48" xmlns="http://www.w3.org/2000/svg">
+  <!-- Icon square -->
+  <rect x="0" y="4" width="40" height="40" rx="10" fill="#0F0F14"/>
+
+  <!-- Lightning bolt inside icon -->
+  <path
+    d="M 24.0 9.5 L 14.5 25.5 H 21.0 L 16.5 38.5 L 27.0 22.5 H 20.5 L 24.0 9.5 Z"
+    fill="#2DD4BF"
+  />
+
+  <!-- Wordmark: "Stellar" -->
+  <text
+    x="50"
+    y="33"
+    font-family="'Poppins', 'Inter', 'Segoe UI', Arial, sans-serif"
+    font-size="22"
+    font-weight="800"
+    letter-spacing="-0.5"
+    fill="#0F0F14"
+  >Stellar </text>
+
+  <!-- Wordmark: "Star" in accent teal -->
+  <text
+    x="152"
+    y="33"
+    font-family="'Poppins', 'Inter', 'Segoe UI', Arial, sans-serif"
+    font-size="22"
+    font-weight="800"
+    letter-spacing="-0.5"
+    fill="#2DD4BF"
+  >Star</text>
+</svg>

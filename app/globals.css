@@ -1,0 +1,203 @@
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800;900&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 97%;
+    --foreground: 240 10% 4%;
+    --card: 0 0% 100%;
+    --card-foreground: 240 10% 4%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 240 10% 4%;
+    --primary: 168 76% 50%;
+    --primary-foreground: 166 72% 18%;
+    --secondary: 240 5% 96%;
+    --secondary-foreground: 240 6% 10%;
+    --muted: 240 5% 96%;
+    --muted-foreground: 240 4% 46%;
+    --accent: 168 76% 50%;
+    --accent-foreground: 166 72% 18%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 240 6% 90%;
+    --input: 240 6% 90%;
+    --ring: 168 76% 50%;
+    --radius: 1rem;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html {
+    @apply scroll-smooth;
+  }
+
+  body {
+    @apply bg-neutral-bg text-foreground font-sans antialiased;
+    font-family: 'Poppins', 'Inter', system-ui, -apple-system, sans-serif;
+  }
+
+  ::selection {
+    background-color: #2DD4BF;
+    color: #0F0F14;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: #F6F6F6;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #2DD4BF;
+    border-radius: 3px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #14B8A6;
+  }
+}
+
+@layer components {
+  /* ── Button variants ── */
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 px-6 py-3 bg-[#2DD4BF] text-[#0F0F14] font-semibold rounded-2xl
+           transition-all duration-200 hover:bg-[#14B8A6] hover:shadow-lime-glow hover:-translate-y-0.5
+           active:translate-y-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2DD4BF];
+  }
+
+  .btn-secondary {
+    @apply inline-flex items-center justify-center gap-2 px-6 py-3 bg-white text-[#0F0F14] font-semibold rounded-2xl border border-[#E5E5E5]
+           transition-all duration-200 hover:border-[#2DD4BF] hover:shadow-card-hover hover:-translate-y-0.5
+           active:translate-y-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2DD4BF];
+  }
+
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 px-5 py-2.5 text-[#0F0F14] font-medium rounded-xl
+           transition-all duration-200 hover:bg-black/5
+           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2DD4BF];
+  }
+
+  .btn-dark {
+    @apply inline-flex items-center justify-center gap-2 px-6 py-3 bg-[#0F0F14] text-white font-semibold rounded-2xl
+           transition-all duration-200 hover:bg-[#1A1A22] hover:shadow-dark-card hover:-translate-y-0.5
+           active:translate-y-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2DD4BF];
+  }
+
+  /* ── Card variants ── */
+  .card-base {
+    @apply bg-white rounded-3xl border border-[#E5E5E5] shadow-card
+           transition-all duration-300 hover:shadow-card-hover hover:-translate-y-1;
+  }
+
+  .card-dark {
+    @apply bg-[#1A1A22] rounded-3xl border border-white/5 shadow-dark-card
+           transition-all duration-300 hover:border-[#2DD4BF]/20 hover:-translate-y-1;
+  }
+
+  .card-lime {
+    @apply bg-[#2DD4BF] rounded-3xl shadow-lime-glow
+           transition-all duration-300 hover:-translate-y-1;
+  }
+
+  /* ── Badges ── */
+  .badge-lime {
+    @apply inline-flex items-center gap-1.5 px-3 py-1 bg-[#2DD4BF]/20 text-[#134E4A] text-xs font-semibold rounded-full
+           border border-[#2DD4BF]/40;
+  }
+
+  .badge-dark {
+    @apply inline-flex items-center gap-1.5 px-3 py-1 bg-white/10 text-white text-xs font-semibold rounded-full
+           border border-white/10;
+  }
+
+  /* ── Section helpers ── */
+  .section-padding {
+    @apply px-4 sm:px-6 lg:px-8 py-20 lg:py-28;
+  }
+
+  .container-max {
+    @apply max-w-7xl mx-auto;
+  }
+
+  /* ── Typography ── */
+  .heading-hero {
+    @apply text-[3rem] sm:text-[3.5rem] lg:text-[5rem] xl:text-[5.5rem] font-black leading-[1.05] tracking-tight;
+  }
+
+  .heading-section {
+    @apply text-3xl sm:text-4xl lg:text-5xl font-bold leading-[1.1] tracking-tight;
+  }
+
+  .heading-card {
+    @apply text-xl font-bold leading-snug;
+  }
+
+  /* ── Gradient text ── */
+  .text-gradient-lime {
+    @apply bg-clip-text text-transparent;
+    background-image: linear-gradient(135deg, #2DD4BF 0%, #0D9488 50%, #14B8A6 100%);
+  }
+
+  /* ── Noise overlay ── */
+  .noise::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.03'/%3E%3C/svg%3E");
+    pointer-events: none;
+    border-radius: inherit;
+  }
+
+  /* ── Grid background ── */
+  .bg-grid {
+    background-image: 
+      linear-gradient(rgba(45,212,191,0.05) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(45,212,191,0.05) 1px, transparent 1px);
+    background-size: 40px 40px;
+  }
+
+  .bg-grid-dark {
+    background-image: 
+      linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px);
+    background-size: 40px 40px;
+  }
+}
+
+/* ── Custom animations ── */
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.shimmer {
+  background: linear-gradient(90deg, transparent 0%, rgba(45,212,191,0.1) 50%, transparent 100%);
+  background-size: 200% 100%;
+  animation: shimmer 2.5s ease-in-out infinite;
+}
+
+/* ── Gradient border ── */
+.gradient-border {
+  position: relative;
+  border-radius: 1.5rem;
+  background: white;
+}
+.gradient-border::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(135deg, #2DD4BF, transparent 60%);
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+}

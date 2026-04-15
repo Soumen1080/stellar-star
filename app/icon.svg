@@ -1,0 +1,13 @@
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background rounded square -->
+  <rect width="512" height="512" rx="110" fill="#0F0F14"/>
+
+  <!-- Lightning bolt (settlement / speed symbol) in brand green -->
+  <path
+    d="M 308 58 L 172 272 H 264 L 200 454 L 340 240 H 248 L 308 58 Z"
+    fill="#2DD4BF"
+  />
+
+  <!-- Small dot accent bottom-right (on-chain record indicator) -->
+  <circle cx="362" cy="390" r="28" fill="#2DD4BF" opacity="0.35"/>
+</svg>
