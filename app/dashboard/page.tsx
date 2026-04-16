@@ -82,7 +82,7 @@ function ConnectPrompt() {
               <div className="grid grid-cols-3 gap-3 mt-6 pt-6 border-t border-[#E5E5E5]">
                 {[
                   { icon: Shield, label: "Non-custodial" },
-                  { icon: Clock,  label: "<5s finality"  },
+                  { icon: Clock, label: "<5s finality" },
                   { icon: Layers, label: "On-chain receipts" },
                 ].map(({ icon: I, label }) => (
                   <div key={label} className="text-center">
@@ -186,10 +186,10 @@ function DashboardView() {
   const settledExpenses = expenses.filter((e) => e.settled).length;
 
   const appFeatures = [
-    { icon: ReceiptText, title: "Expenses",     desc: "Add bills & split them instantly.",                 href: "/expenses", badge: `${expenses.length}` },
-    { icon: Zap,         title: "Pay via XLM",  desc: "Sign payments with Freighter.",                    href: "/expenses", badge: "Live" },
-    { icon: QrCode,      title: "QR Payments",  desc: "SEP-0007 QR codes for any Stellar wallet.",        href: "/expenses", badge: "Live" },
-    { icon: Map,         title: "Trip Mode",    desc: "Group expenses & settle as a team.",               href: "/trips",    badge: `${trips.length}` },
+    { icon: ReceiptText, title: "Expenses", desc: "Add bills & split them instantly.", href: "/expenses", badge: `${expenses.length}` },
+    { icon: Zap, title: "Pay via XLM", desc: "Sign payments with Freighter.", href: "/expenses", badge: "Live" },
+    { icon: QrCode, title: "QR Payments", desc: "SEP-0007 QR codes for any Stellar wallet.", href: "/expenses", badge: "Live" },
+    { icon: Map, title: "Trip Mode", desc: "Group expenses & settle as a team.", href: "/trips", badge: `${trips.length}` },
   ];
 
   return (
@@ -249,10 +249,10 @@ function DashboardView() {
 
         {/* ── Stats row ── */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
-          <StatCard icon={ReceiptText}  label="Total Expenses"  value={expenses.length}          sub={`${settledExpenses} settled`} />
-          <StatCard icon={TrendingUp}   label="Total XLM Spent" value={`${totalXLM.toFixed(2)}`} sub="across all bills" accent />
-          <StatCard icon={AlertCircle}  label="Pending Shares"  value={pendingShares}             sub="awaiting payment" />
-          <StatCard icon={Map}          label="Trips"           value={trips.length}              sub={`${trips.filter(t => t.settled).length} settled`} />
+          <StatCard icon={ReceiptText} label="Total Expenses" value={expenses.length} sub={`${settledExpenses} settled`} />
+          <StatCard icon={TrendingUp} label="Total XLM Spent" value={`${totalXLM.toFixed(2)}`} sub="across all bills" accent />
+          <StatCard icon={AlertCircle} label="Pending Shares" value={pendingShares} sub="awaiting payment" />
+          <StatCard icon={Map} label="Trips" value={trips.length} sub={`${trips.filter(t => t.settled).length} settled`} />
         </div>
 
         {/* ── Main grid: wallet info + recent expenses ── */}

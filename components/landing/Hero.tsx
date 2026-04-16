@@ -143,7 +143,7 @@ export default function Hero() {
       <div className="pointer-events-none absolute -top-40 -left-40 w-[600px] h-[600px] bg-[#2DD4BF]/10 rounded-full blur-[120px]" />
       <div className="pointer-events-none absolute -bottom-20 -right-40 w-[500px] h-[500px] bg-[#2DD4BF]/08 rounded-full blur-[100px]" />
 
-      <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-36 pb-20 lg:pt-44 lg:pb-28">
+      <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-20 pb-16 sm:pt-24 lg:pt-28 lg:pb-24">
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-16 lg:gap-8 items-center">
           {/* ── LEFT: Copy ── */}
           <motion.div
