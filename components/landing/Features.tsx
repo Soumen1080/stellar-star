@@ -67,7 +67,7 @@ const features = [
     icon: Shield,
     title: "Self-Custody by Design",
     description:
-      "Your keys stay in your wallet at all times. With Freighter integration, Stellar Star never takes custody of your funds.",
+      "Your keys stay in your wallet at all times. With Freighter integration, SettleX never takes custody of your funds.",
     tag: "Security",
     accent: false,
   },

@@ -101,7 +101,7 @@ export async function fetchContractEvents(
 
     return { events, latestLedger };
   } catch (err) {
-    console.warn("[Stellar Star] fetchContractEvents error:", err);
+    console.warn("[SettleX] fetchContractEvents error:", err);
     return { events: [], latestLedger: startLedger };
   }
 }

@@ -71,7 +71,7 @@ function ConnectPrompt() {
                 Connect your wallet
               </h1>
               <p className="text-[#666] text-sm leading-relaxed mb-8">
-                Stellar Star uses the{" "}
+                SettleX uses the{" "}
                 <a href="https://freighter.app" target="_blank" rel="noopener noreferrer"
                   className="font-semibold text-[#0F0F14] underline underline-offset-2">
                   Freighter

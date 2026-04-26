@@ -93,7 +93,7 @@ export function stroopsToXlm(stroops: bigint | string): string {
 function contractReady(caller: string): boolean {
   if (!CONTRACT_ID) {
     console.info(
-      `[Stellar Star] ${caller}: CONTRACT_ID not set — skipping on-chain step. ` +
+      `[SettleX] ${caller}: CONTRACT_ID not set — skipping on-chain step. ` +
       "Deploy the contract and add NEXT_PUBLIC_CONTRACT_ID to .env.local."
     );
     return false;
@@ -299,7 +299,7 @@ export async function recordPaymentOnChain(
     throw new Error("Contract transaction timed out waiting for confirmation.");
   } catch (err) {
     const message = err instanceof Error ? err.message : "Contract call failed.";
-    console.error("[Stellar Star:contract] recordPaymentOnChain error:", message);
+    console.error("[SettleX:contract] recordPaymentOnChain error:", message);
     return { success: false, error: message };
   }
 }
@@ -360,7 +360,7 @@ export async function getContractPayments(
     return { payments, success: true };
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to read contract payments.";
-    console.warn("[Stellar Star:contract] getContractPayments:", message);
+    console.warn("[SettleX:contract] getContractPayments:", message);
     return { payments: [], success: false, error: message };
   }
 }
@@ -407,7 +407,7 @@ export async function checkIsPaid(
     return { paid, success: true };
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to check on-chain payment status.";
-    console.warn("[Stellar Star:contract] checkIsPaid:", message);
+    console.warn("[SettleX:contract] checkIsPaid:", message);
     return { paid: false, success: false, error: message };
   }
 }

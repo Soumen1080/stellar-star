@@ -7,7 +7,7 @@ import { Menu, X, LogOut, User, LayoutDashboard, Receipt, Map, ChevronDown, Copy
 import { useWallet } from "@/hooks/useWallet";
 import { useAuth } from "@/context/AuthContext";
 import { cn, formatAddress } from "@/lib/utils";
-import { StellarStarLogo } from "@/components/ui/Logo";
+import { SettleXLogo } from "@/components/ui/Logo";
 
 const navLinks = [
   { label: "Features", href: "#features" },
@@ -80,8 +80,8 @@ export default function Header() {
           <div className="max-w-7xl mx-auto px-5 sm:px-6 lg:px-8">
             <div className="flex items-center justify-between h-16">
               {/* Logo */}
-              <Link href="/" className="group" aria-label="Stellar Star home">
-                <StellarStarLogo
+              <Link href="/" className="group" aria-label="SettleX home">
+                <SettleXLogo
                   size="md"
                   className="group-hover:opacity-90 transition-opacity duration-150"
                 />

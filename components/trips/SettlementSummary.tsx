@@ -77,7 +77,7 @@ function NetPaymentRow({
     if (!publicKey || !payment.toWallet) return;
     try {
       setRowState({ status: "paying" });
-      const memo = `Stellar Star|${tripName}`.slice(0, 28);
+      const memo = `SettleX|${tripName}`.slice(0, 28);
       const { xdr } = await buildPaymentTransaction({
         sourcePublicKey:      publicKey,
         destinationPublicKey: payment.toWallet,

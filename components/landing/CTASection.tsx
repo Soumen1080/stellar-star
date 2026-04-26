@@ -83,7 +83,7 @@ export default function CTASection() {
             <div className="flex flex-col sm:flex-row items-center justify-center gap-3 mb-10">
               <Button variant="primary" size="xl" asChild>
                 <Link href={isAuthenticated ? "/dashboard" : "/auth"}>
-                  {isAuthenticated ? "Go to Dashboard" : "Launch Stellar Star"}
+                  {isAuthenticated ? "Go to Dashboard" : "Launch SettleX"}
                   <ArrowRight size={20} />
                 </Link>
               </Button>

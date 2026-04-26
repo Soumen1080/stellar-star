@@ -77,7 +77,7 @@ export default function AuthPage() {
               <Shield size={14} />
               Secure Wallet Authentication
             </div>
-            <h1 className="text-3xl sm:text-4xl font-black text-[#0F0F14] mb-3">Welcome to Stellar Star</h1>
+            <h1 className="text-3xl sm:text-4xl font-black text-[#0F0F14] mb-3">Welcome to SettleX</h1>
             <p className="text-[#666] text-base leading-relaxed">
               Connect your Stellar wallet to get started
             </p>
@@ -144,7 +144,7 @@ export default function AuthPage() {
             {isSignUpMode ? "Create Account" : "Welcome Back"}
           </h1>
           <p className="text-[#666] text-base">
-            {isSignUpMode ? "Join Stellar Star and start splitting bills" : "Sign in to your account"}
+            {isSignUpMode ? "Join SettleX and start splitting bills" : "Sign in to your account"}
           </p>
         </div>
 
@@ -248,7 +248,7 @@ export default function AuthPage() {
         <p className="mt-8 text-xs text-center text-[#888] leading-relaxed">
           Your wallet address is your identity. No passwords needed.
           <br />
-          {isSignUpMode ? "Already have an account?" : "New to Stellar Star?"} Use the toggle above.
+          {isSignUpMode ? "Already have an account?" : "New to SettleX?"} Use the toggle above.
         </p>
       </motion.div>
     </div>

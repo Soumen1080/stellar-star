@@ -1,7 +1,7 @@
 import React from "react";
 import { cn } from "@/lib/utils";
 
-interface StellarStarLogoProps {
+interface SettleXLogoProps {
   /** Controls the overall scale of the logo */
   size?: "sm" | "md" | "lg" | "xl";
   /** Show only the icon mark without the wordmark text */
@@ -22,15 +22,15 @@ const SIZE_MAP = {
 };
 
 /**
- * Stellar Star brand logo — inline SVG so it works without any image requests,
+ * SettleX brand logo — inline SVG so it works without any image requests,
  * renders crisp at every size, and respects the app's colour tokens.
  */
-export function StellarStarLogo({
+export function SettleXLogo({
   size    = "md",
   iconOnly = false,
   variant  = "light",
   className,
-}: StellarStarLogoProps) {
+}: SettleXLogoProps) {
   const { iconSize, fontSize, gap } = SIZE_MAP[size];
   const r = Math.round(iconSize * 0.25);
   const wordmarkColor = variant === "dark" ? "#FFFFFF" : "#0F0F14";
@@ -68,12 +68,12 @@ export function StellarStarLogo({
             fontSize,
           )}
         >
-          <span style={{ color: wordmarkColor }}>Stellar </span>
+          <span style={{ color: wordmarkColor }}>Settle</span>
           <span
             className="text-[#2DD4BF]"
             style={{ textShadow: "0 0 24px rgba(45,212,191,0.4)" }}
           >
-            Star
+            X
           </span>
         </span>
       )}

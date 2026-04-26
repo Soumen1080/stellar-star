@@ -26,11 +26,11 @@ const metadataBase = (() => {
 export const metadata: Metadata = {
   metadataBase,
   title: {
-    default: "Stellar Star — Split Bills on the Stellar Blockchain",
-    template: "%s | Stellar Star",
+    default: "SettleX — Split Bills on the Stellar Blockchain",
+    template: "%s | SettleX",
   },
   description:
-    "Stellar Star is a decentralized bill-splitting app built on the Stellar blockchain. Split expenses, pay instantly with XLM, track with QR codes — all trustless, all transparent.",
+    "SettleX is a decentralized bill-splitting app built on the Stellar blockchain. Split expenses, pay instantly with XLM, track with QR codes — all trustless, all transparent.",
   keywords: [
     "Stellar",
     "blockchain",
@@ -42,14 +42,14 @@ export const metadata: Metadata = {
     "group expenses",
     "web3",
   ],
-  authors: [{ name: "Stellar Star Team" }],
-  creator: "Stellar Star",
+  authors: [{ name: "SettleX Team" }],
+  creator: "SettleX",
   openGraph: {
     type: "website",
     locale: "en_US",
     url: "/",
-    siteName: "Stellar Star",
-    title: "Stellar Star — Split Bills on the Stellar Blockchain",
+    siteName: "SettleX",
+    title: "SettleX — Split Bills on the Stellar Blockchain",
     description:
       "Decentralized bill-splitting powered by Stellar. Split instantly, pay transparently.",
     images: [
@@ -57,13 +57,13 @@ export const metadata: Metadata = {
         url: "/og-image.png",
         width: 1200,
         height: 630,
-        alt: "Stellar Star — Split Bills on Stellar",
+        alt: "SettleX — Split Bills on Stellar",
       },
     ],
   },
   twitter: {
     card: "summary_large_image",
-    title: "Stellar Star — Split Bills on the Stellar Blockchain",
+    title: "SettleX — Split Bills on the Stellar Blockchain",
     description: "Decentralized bill-splitting powered by Stellar.",
     images: ["/og-image.png"],
   },
