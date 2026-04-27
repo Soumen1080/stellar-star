@@ -1,7 +1,7 @@
 import React from "react";
 import { cn } from "@/lib/utils";
 
-interface SettleXLogoProps {
+interface StellarStarLogoProps {
   /** Controls the overall scale of the logo */
   size?: "sm" | "md" | "lg" | "xl";
   /** Show only the icon mark without the wordmark text */
@@ -22,15 +22,15 @@ const SIZE_MAP = {
 };
 
 /**
- * SettleX brand logo — inline SVG so it works without any image requests,
+ * Stellar Star brand logo — inline SVG so it works without any image requests,
  * renders crisp at every size, and respects the app's colour tokens.
  */
-export function SettleXLogo({
+export function StellarStarLogo({
   size    = "md",
   iconOnly = false,
   variant  = "light",
   className,
-}: SettleXLogoProps) {
+}: StellarStarLogoProps) {
   const { iconSize, fontSize, gap } = SIZE_MAP[size];
   const r = Math.round(iconSize * 0.25);
   const wordmarkColor = variant === "dark" ? "#FFFFFF" : "#0F0F14";
@@ -50,14 +50,14 @@ export function SettleXLogo({
         {/* Background */}
         <rect width="512" height="512" rx="110" fill="#0F0F14" />
 
-        {/* Lightning bolt — the settlement / speed symbol */}
+        {/* Star — the Stellar Star symbol */}
         <path
-          d="M 308 58 L 172 272 H 264 L 200 454 L 340 240 H 248 L 308 58 Z"
+          d="M 256 72 L 306 196 L 440 196 L 330 280 L 370 408 L 256 328 L 142 408 L 182 280 L 72 196 L 206 196 Z"
           fill="#2DD4BF"
         />
 
-        {/* Subtle glow dot — on-chain accent */}
-        <circle cx="362" cy="390" r="28" fill="#2DD4BF" opacity="0.3" />
+        {/* Subtle glow — accent */}
+        <circle cx="256" cy="256" r="40" fill="#2DD4BF" opacity="0.15" />
       </svg>
 
       {/* ── Wordmark ── */}
@@ -68,12 +68,12 @@ export function SettleXLogo({
             fontSize,
           )}
         >
-          <span style={{ color: wordmarkColor }}>Settle</span>
+          <span style={{ color: wordmarkColor }}>Stellar</span>
           <span
             className="text-[#2DD4BF]"
             style={{ textShadow: "0 0 24px rgba(45,212,191,0.4)" }}
           >
-            X
+            -star
           </span>
         </span>
       )}
@@ -81,3 +81,5 @@ export function SettleXLogo({
   );
 }
 
+/** @deprecated Use StellarStarLogo instead */
+export const SettleXLogo = StellarStarLogo;

@@ -43,7 +43,7 @@ export function PaymentRow({
   const explorerUrl = share.walletAddress
     ? `${STELLAR_EXPLORER}/account/${share.walletAddress}`
     : null;
-  const memo = `SettleX|${expenseTitle}|${share.name}`.slice(0, 28);
+  const memo = `StellarStar|${expenseTitle}|${share.name}`.slice(0, 28);
 
   // The payer NEVER owes anything — guard even if wallets accidentally overlap.
   const isPayerRow =

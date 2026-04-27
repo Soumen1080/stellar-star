@@ -38,7 +38,7 @@ const plans = [
       "Stellar Mainnet support",
       "Real XLM payments",
       "~0.00001 XLM network fee",
-      "No SettleX platform fees",
+      "No Stellar-star platform fees",
       "Full Horizon API access",
       "Immutable mainnet receipts",
       "Priority Freighter support",
@@ -78,7 +78,7 @@ export default function Pricing() {
             </span>
           </h2>
           <p className="text-[#666] text-lg">
-            SettleX charges zero platform fees. You only pay the tiny Stellar
+            Stellar-star charges zero platform fees. You only pay the tiny Stellar
             network fee — currently less than $0.000002 per transaction.
           </p>
         </motion.div>
@@ -190,7 +190,7 @@ export default function Pricing() {
           className="text-center text-sm text-[#AAA] mt-8"
         >
           * Stellar network fee: 100 stroops (0.00001 XLM) per transaction, paid to the Stellar validators.
-          SettleX charges nothing.
+          Stellar-star charges nothing.
         </motion.p>
       </div>
     </section>

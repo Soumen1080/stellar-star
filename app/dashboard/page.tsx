@@ -41,7 +41,7 @@ function ConnectPrompt() {
             <Zap size={15} className="text-[#0F0F14] fill-[#0F0F14]" />
           </div>
           <span className="text-lg font-black tracking-tight text-[#0F0F14]">
-            Settle<span className="text-[#2DD4BF]">X</span>
+            Stellar<span className="text-[#2DD4BF]">-star</span>
           </span>
         </Link>
         <Link
@@ -71,7 +71,7 @@ function ConnectPrompt() {
                 Connect your wallet
               </h1>
               <p className="text-[#666] text-sm leading-relaxed mb-8">
-                SettleX uses the{" "}
+                Stellar-star uses the{" "}
                 <a href="https://freighter.app" target="_blank" rel="noopener noreferrer"
                   className="font-semibold text-[#0F0F14] underline underline-offset-2">
                   Freighter
@@ -201,7 +201,7 @@ function DashboardView() {
             <Zap size={15} className="text-[#0F0F14] fill-[#0F0F14]" />
           </div>
           <span className="text-lg font-black tracking-tight text-[#0F0F14]">
-            Settle<span className="text-[#2DD4BF]">X</span>
+            Stellar<span className="text-[#2DD4BF]">-star</span>
           </span>
         </Link>
         <div className="hidden sm:flex items-center gap-1">

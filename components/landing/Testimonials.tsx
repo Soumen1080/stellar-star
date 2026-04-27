@@ -14,7 +14,7 @@ const testimonials = [
     avatarColor: "#0F0F14",
     role: "Stellar Developer",
     stars: 5,
-    text: "Finally a bill-splitting app that doesn't require me to trust a random backend. Everything settles on-chain, the QR codes work perfectly with my wallet. SettleX is exactly what Web3 UX should look like.",
+    text: "Finally a bill-splitting app that doesn't require me to trust a random backend. Everything settles on-chain, the QR codes work perfectly with my wallet. Stellar-star is exactly what Web3 UX should look like.",
     highlight: "exactly what Web3 UX should look like",
   },
   {
@@ -25,7 +25,7 @@ const testimonials = [
     avatarColor: "#2DD4BF",
     role: "DeFi Enthusiast",
     stars: 5,
-    text: "Used SettleX for our group trip to Goa. 6 people, 22 expenses — it auto-settled everything into 3 transactions. The Stellar fees were basically zero. Can't go back to Splitwise after this.",
+    text: "Used Stellar-star for our group trip to Goa. 6 people, 22 expenses — it auto-settled everything into 3 transactions. The Stellar fees were basically zero. Can't go back to Splitwise after this.",
     highlight: "auto-settled everything into 3 transactions",
   },
   {
@@ -58,7 +58,7 @@ const testimonials = [
     avatarColor: "#2DD4BF",
     role: "Crypto UX Researcher",
     stars: 5,
-    text: "Group trip settlements used to cause drama. With SettleX's auto-settlement algorithm, our 8-person trip needed only 2 transactions. The transparency kills any arguments about who paid what.",
+    text: "Group trip settlements used to cause drama. With Stellar-star's auto-settlement algorithm, our 8-person trip needed only 2 transactions. The transparency kills any arguments about who paid what.",
     highlight: "8-person trip needed only 2 transactions",
   },
   {
@@ -134,7 +134,7 @@ export default function Testimonials() {
           </h2>
           <p className="text-[#666] text-lg">
             From group trips to shared apartments — see what our early community
-            is saying about SettleX.
+            is saying about Stellar-star.
           </p>
         </motion.div>
 

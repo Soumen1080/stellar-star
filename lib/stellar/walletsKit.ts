@@ -144,7 +144,7 @@ export class StellarWalletsKit {
     const unavailText = opts.notAvailableText ?? "Not installed";
 
     const overlay = document.createElement("div");
-    overlay.setAttribute("data-settlex-wallet-modal", "true");
+    overlay.setAttribute("data-stellar-star-wallet-modal", "true");
     Object.assign(overlay.style, {
       position:        "fixed",
       inset:           "0",

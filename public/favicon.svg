@@ -2,12 +2,12 @@
   <!-- Background rounded square -->
   <rect width="512" height="512" rx="110" fill="#0F0F14"/>
 
-  <!-- Lightning bolt (settlement / speed symbol) in brand green -->
+  <!-- Star icon in brand teal -->
   <path
-    d="M 308 58 L 172 272 H 264 L 200 454 L 340 240 H 248 L 308 58 Z"
+    d="M 256 72 L 306 196 L 440 196 L 330 280 L 370 408 L 256 328 L 142 408 L 182 280 L 72 196 L 206 196 Z"
     fill="#2DD4BF"
   />
 
-  <!-- Subtle glow dot — on-chain accent -->
-  <circle cx="362" cy="390" r="28" fill="#2DD4BF" opacity="0.35"/>
+  <!-- Subtle glow dot — accent -->
+  <circle cx="256" cy="256" r="40" fill="#2DD4BF" opacity="0.15"/>
 </svg>

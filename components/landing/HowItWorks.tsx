@@ -27,7 +27,7 @@ const steps = [
     icon: Calculator,
     title: "Create an Expense",
     description:
-      "Add the total amount, list your group members, and choose equal or custom split. SettleX calculates each person's share to 7 decimal XLM precision.",
+      "Add the total amount, list your group members, and choose equal or custom split. Stellar-star calculates each person's share to 7 decimal XLM precision.",
     hint: "Equal or custom weight splits",
     color: "#2DD4BF",
   },
@@ -73,7 +73,7 @@ const MockTerminal = () => (
       <div className="w-3 h-3 rounded-full bg-[#FF5F57]" />
       <div className="w-3 h-3 rounded-full bg-[#FEBC2E]" />
       <div className="w-3 h-3 rounded-full bg-[#28C840]" />
-      <span className="ml-3 text-[#555] text-xs font-mono">SettleX · transaction</span>
+      <span className="ml-3 text-[#555] text-xs font-mono">Stellar-star · transaction</span>
     </div>
 
     {/* Content */}
@@ -90,7 +90,7 @@ const MockTerminal = () => (
         amount: <span className="text-[#2DD4BF]">&quot;300.0000000&quot;</span>,
       </div>
       <div className="text-[#888] pl-4">
-        memo: <span className="text-[#aaa]">&quot;SettleX|Dinner|Aman&quot;</span>,
+        memo: <span className="text-[#aaa]">&quot;StellarStar|Dinner|Aman&quot;</span>,
       </div>
       <div className="text-[#888]">&#125;);</div>
       <div className="mt-3 text-[#555]"># Sign + submit</div>
@@ -131,7 +131,7 @@ export default function HowItWorks() {
                 Simple 4-step flow
               </Badge>
               <h2 className="heading-section text-[#0F0F14] mb-4">
-                How SettleX
+                How Stellar-star
                 <br />
                 <span
                   className="bg-clip-text text-transparent"

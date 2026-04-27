@@ -7,7 +7,7 @@ const _configured = !!(supabaseUrl && supabaseAnonKey);
 
 if (!_configured && typeof window !== "undefined") {
   console.warn(
-    "[SettleX] Supabase not configured — running in offline/demo mode. " +
+    "[StellarStar] Supabase not configured — running in offline/demo mode. " +
     "Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY in .env.local to enable cloud sync."
   );
 }

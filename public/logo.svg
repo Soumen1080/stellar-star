@@ -2,9 +2,9 @@
   <!-- Icon square -->
   <rect x="0" y="4" width="40" height="40" rx="10" fill="#0F0F14"/>
 
-  <!-- Lightning bolt inside icon -->
+  <!-- Star inside icon -->
   <path
-    d="M 24.0 9.5 L 14.5 25.5 H 21.0 L 16.5 38.5 L 27.0 22.5 H 20.5 L 24.0 9.5 Z"
+    d="M 20 9 L 23.5 18 L 33 18 L 25.5 23.5 L 28 33 L 20 27.5 L 12 33 L 14.5 23.5 L 7 18 L 16.5 18 Z"
     fill="#2DD4BF"
   />
 

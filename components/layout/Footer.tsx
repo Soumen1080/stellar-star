@@ -4,7 +4,7 @@ import React from "react";
 import Link from "next/link";
 import { motion } from "framer-motion";
 import { Twitter, Github, ExternalLink, ArrowUpRight } from "lucide-react";
-import { SettleXLogo } from "@/components/ui/Logo";
+import { StellarStarLogo } from "@/components/ui/Logo";
 
 const footerLinks = {
   Product: [
@@ -44,8 +44,8 @@ export default function Footer() {
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-12 pb-12 border-b border-white/10">
           {/* Brand column */}
           <div className="lg:col-span-4">
-            <Link href="/" className="inline-flex mb-4" aria-label="SettleX home">
-              <SettleXLogo size="md" variant="dark" />
+            <Link href="/" className="inline-flex mb-4" aria-label="Stellar-star home">
+              <StellarStarLogo size="md" variant="dark" />
             </Link>
             <p className="text-[#888] text-sm leading-relaxed max-w-xs mb-6">
               Decentralized bill-splitting on the Stellar blockchain. Split expenses, pay instantly, track transparently.
@@ -120,7 +120,7 @@ export default function Footer() {
         {/* Bottom bar */}
         <div className="flex flex-col sm:flex-row items-center justify-between gap-4 pt-8">
           <p className="text-xs text-[#555]">
-            © 2026 SettleX. Built on{" "}
+            © 2026 Stellar-star. Built on{" "}
             <a
               href="https://stellar.org"
               target="_blank"
