@@ -1,6 +1,21 @@
 <p align="center">
-  <img src="public/logo.svg" alt="Stellar-star Logo" height="64" />
+  <a href="https://stellar-star-five.vercel.app/">
+    <picture>
+     <source media="(prefers-color-scheme: light)" srcset="https://img.shields.io/badge/%E2%AD%90_Stellar--star-Split_Bills._Pay_On--Chain.-0F0F14?style=for-the-badge&labelColor=white&color=2DD4BF" />
+      <img alt="Stellar-star" src="https://img.shields.io/badge/%E2%AD%90_Stellar--star-Split_Bills._Pay_On--Chain.-0F0F14?style=for-the-badge&labelColor=white&color=2DD4BF" />
+    </picture>
+  </a>
 </p>
+
+<div align="center">
+<table>
+<tr>
+<td align="center" style="background: white; border-radius: 16px; padding: 24px 40px;">
+<h2>⭐ <span style="color: #0F0F14;">Stellar</span><span style="color: #2DD4BF;">-Star</span></h2>
+</td>
+</tr>
+</table>
+</div>
 
 <h1 align="center">⚡ Stellar-star — Split Bills. Pay On-Chain.</h1>
 
@@ -11,11 +26,11 @@
 </p>
 
 <p align="center">
-  <a href="https://settle-x-pi.vercel.app/"><img src="https://img.shields.io/badge/🌐_Live_Demo-Visit-2DD4BF?style=for-the-badge" alt="Live Demo" /></a>
+  <a href="https://stellar-star-five.vercel.app/"><img src="https://img.shields.io/badge/🌐_Live_Demo-Visit-2DD4BF?style=for-the-badge" alt="Live Demo" /></a>
   &nbsp;
   <a href="https://youtu.be/gnUaUONmb3I"><img src="https://img.shields.io/badge/🎬_Demo_Video-Watch-FF0000?style=for-the-badge" alt="Demo Video" /></a>
   &nbsp;
-  <a href="https://github.com/soumen0818/SettleX"><img src="https://img.shields.io/badge/📦_GitHub-Repository-181717?style=for-the-badge" alt="GitHub Repo" /></a>
+  <a href="https://github.com/Soumen1080/stellar-star"><img src="https://img.shields.io/badge/📦_GitHub-Repository-181717?style=for-the-badge" alt="GitHub Repo" /></a>
 </p>
 
 <br/>
@@ -220,8 +235,8 @@ is_paid(expense_id, member)
 
 | Requirement | Evidence |
 |-------------|----------|
-| Public repository | [GitHub Repo](https://github.com/soumen0818/SettleX) |
-| Live demo | [settle-x-pi.vercel.app](https://settle-x-pi.vercel.app/) |
+| Public repository | [GitHub Repo](https://github.com/Soumen1080/stellar-star) |
+| Live demo | [stellar-star-five.vercel.app](https://stellar-star-five.vercel.app/) |
 | Demo video | [YouTube](https://youtu.be/gnUaUONmb3I) |
 | Contract details and tx proof | [Smart Contract](#-smart-contract) section |
 | UI screenshots | [Screenshots](#-screenshots) section |
@@ -288,7 +303,7 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key-here
 # ── App Metadata ─────────────────────────────────
 NEXT_PUBLIC_APP_NAME=Stellar-star
 NEXT_PUBLIC_APP_VERSION=1.0.0
-NEXT_PUBLIC_SITE_URL=https://settle-x-pi.vercel.app
+NEXT_PUBLIC_SITE_URL=https://stellar-star-five.vercel.app
 ```
 
 ---
