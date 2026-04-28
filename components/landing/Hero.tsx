@@ -148,7 +148,7 @@ export default function Hero() {
           {/* ── LEFT: Copy ── */}
           <motion.div
             variants={stagger}
-            initial="hidden"
+            initial={false}
             animate="visible"
             className="max-w-2xl"
           >
@@ -270,9 +270,8 @@ export default function Hero() {
 
           {/* ── RIGHT: Visual ── */}
           <motion.div
-            initial={{ opacity: 0, x: 60, scale: 0.95 }}
+            initial={false}
             animate={{ opacity: 1, x: 0, scale: 1 }}
-            transition={{ duration: 0.8, delay: 0.2, ease: [0.22, 1, 0.36, 1] }}
             className="relative flex justify-center lg:justify-end"
           >
             {/* Glow behind card */}
@@ -316,9 +315,8 @@ export default function Hero() {
 
         {/* ── Trust strip ── */}
         <motion.div
-          initial={{ opacity: 0, y: 20 }}
+          initial={false}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.5, delay: 0.8 }}
           className="mt-12 lg:mt-28 pt-8 border-t border-[#E5E5E5]"
         >
           <p className="text-xs font-semibold uppercase tracking-widest text-[#AAA] text-center mb-6">
