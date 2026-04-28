@@ -6,7 +6,7 @@ import { AuthProvider } from "@/context/AuthContext";
 import { ToastProvider } from "@/components/ui/Toast";
 import { ExpenseProvider } from "@/context/ExpenseContext";
 import { TripProvider } from "@/context/TripContext";
-import WaterDropCursor from "@/components/ui/WaterDropCursor";
+
 
 const poppins = Poppins({
   subsets: ["latin"],
@@ -91,7 +91,7 @@ export default function RootLayout({
   return (
     <html lang="en" className="scroll-smooth">
       <body className={`${poppins.className} bg-[#F6F6F6] text-[#0F0F14] font-sans antialiased`}>
-        <WaterDropCursor />
+
         <ToastProvider>
           <WalletProvider>
             <AuthProvider>
