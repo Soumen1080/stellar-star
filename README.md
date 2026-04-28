@@ -19,17 +19,29 @@
 
 ## Table of Contents
 
+- [Table of Contents](#table-of-contents)
 - [Project Description](#project-description)
 - [Features](#features)
 - [Tech Stack](#tech-stack)
 - [Screenshots](#screenshots)
+  - [Landing Page](#landing-page)
+  - [Dashboard](#dashboard)
+  - [Expenses Page](#expenses-page)
+  - [Trips Page](#trips-page)
+  - [New Expense Form](#new-expense-form)
+  - [Test Output](#test-output)
 - [How It Works](#how-it-works)
 - [Smart Contract](#smart-contract)
+  - [Verified On-Chain Transactions](#verified-on-chain-transactions)
 - [Submission Checklist Evidence](#submission-checklist-evidence)
 - [Quick Start](#quick-start)
+  - [Prerequisites](#prerequisites)
+  - [Install and run](#install-and-run)
 - [Environment Variables](#environment-variables)
 - [Testing](#testing)
 - [Deployment](#deployment)
+  - [App build](#app-build)
+  - [Contract deploy (Stellar Testnet)](#contract-deploy-stellar-testnet)
 - [Project Structure](#project-structure)
 - [Documentation](#documentation)
 - [License](#license)
@@ -86,23 +98,23 @@ Core properties:
 
 ### Landing Page
 
-![SettleX Landing](public/home.png)
+![SettleX Landing](https://ik.imagekit.io/ahfz0yimd/Screenshot%202026-04-28%20083517.png)
 
 ### Dashboard
 
-![SettleX Dashboard](public/Dashboard.png)
+![SettleX Dashboard](https://ik.imagekit.io/ahfz0yimd/Screenshot%202026-04-28%20083904.png)
 
 ### Expenses Page
 
-![SettleX Expenses](public/expencess.png)
+![SettleX Expenses](https://ik.imagekit.io/ahfz0yimd/Screenshot%202026-04-28%20083925.png)
 
 ### Trips Page
 
-![SettleX Trips](public/trips.png)
+![SettleX Trips](https://ik.imagekit.io/ahfz0yimd/Screenshot%202026-04-28%20083946.png)
 
 ### New Expense Form
 
-![SettleX New Expense Form](public/new_expencess_form.png)
+![SettleX New Expense Form](https://ik.imagekit.io/ahfz0yimd/Screenshot%202026-04-28%20084052.png)
 
 ### Test Output
 
