@@ -1,203 +1,232 @@
 <p align="center">
-  <img src="public/logo.svg" alt="SettleX Logo" height="52" />
+  <img src="public/logo.svg" alt="Stellar-star Logo" height="64" />
 </p>
 
-<h1 align="center">SettleX - Split Bills. Pay On-Chain.</h1>
-
-<p align="center">
-  Decentralized expense splitting on Stellar Testnet.<br/>
-  Create expenses, split by equal/percentage/weight, and settle shares with real XLM transfers and verifiable transaction hashes.
-</p>
+<h1 align="center">⚡ Stellar-star — Split Bills. Pay On-Chain.</h1>
 
 <p align="center">
-  <a href="https://settle-x-pi.vercel.app/"><strong>Live Demo</strong></a>
-  &nbsp;&bull;&nbsp;
-  <a href="https://youtu.be/gnUaUONmb3I"><strong>Demo Video</strong></a>
+  <em>Decentralized expense splitting on Stellar Testnet.</em><br/>
+  Create expenses, split by equal/percentage/weight, and settle shares<br/>
+  with real XLM transfers and verifiable transaction hashes.
 </p>
+
+<p align="center">
+  <a href="https://settle-x-pi.vercel.app/"><img src="https://img.shields.io/badge/🌐_Live_Demo-Visit-2DD4BF?style=for-the-badge" alt="Live Demo" /></a>
+  &nbsp;
+  <a href="https://youtu.be/gnUaUONmb3I"><img src="https://img.shields.io/badge/🎬_Demo_Video-Watch-FF0000?style=for-the-badge" alt="Demo Video" /></a>
+  &nbsp;
+  <a href="https://github.com/soumen0818/SettleX"><img src="https://img.shields.io/badge/📦_GitHub-Repository-181717?style=for-the-badge" alt="GitHub Repo" /></a>
+</p>
+
+<br/>
 
 ---
 
 ## Table of Contents
 
-- [Table of Contents](#table-of-contents)
-- [Project Description](#project-description)
-- [Features](#features)
-- [Tech Stack](#tech-stack)
-- [Screenshots](#screenshots)
-  - [Landing Page](#landing-page)
-  - [Dashboard](#dashboard)
-  - [Expenses Page](#expenses-page)
-  - [Trips Page](#trips-page)
-  - [New Expense Form](#new-expense-form)
-  - [Test Output](#test-output)
-- [How It Works](#how-it-works)
-- [Smart Contract](#smart-contract)
-  - [Verified On-Chain Transactions](#verified-on-chain-transactions)
-- [Submission Checklist Evidence](#submission-checklist-evidence)
-- [Quick Start](#quick-start)
-  - [Prerequisites](#prerequisites)
-  - [Install and run](#install-and-run)
-- [Environment Variables](#environment-variables)
-- [Testing](#testing)
-- [Deployment](#deployment)
-  - [App build](#app-build)
-  - [Contract deploy (Stellar Testnet)](#contract-deploy-stellar-testnet)
-- [Project Structure](#project-structure)
-- [Documentation](#documentation)
-- [License](#license)
+| # | Section |
+|---|---------|
+| 1 | [📖 Project Description](#project-description) |
+| 2 | [✨ Features](#features) |
+| 3 | [🛠️ Tech Stack](#tech-stack) |
+| 4 | [📸 Screenshots](#screenshots) |
+| 5 | [🔄 How It Works](#how-it-works) |
+| 6 | [📜 Smart Contract](#smart-contract) |
+| 7 | [✅ Submission Checklist Evidence](#submission-checklist-evidence) |
+| 8 | [🚀 Quick Start](#quick-start) |
+| 9 | [🔐 Environment Variables](#environment-variables) |
+| 10 | [🧪 Testing](#testing) |
+| 11 | [🚢 Deployment](#deployment) |
+| 12 | [📁 Project Structure](#project-structure) |
+| 13 | [📚 Documentation](#documentation) |
+| 14 | [📄 License](#license) |
 
 ---
 
 ## Project Description
 
-SettleX solves the common "IOU but no payment" problem in group expense apps.
-Most split apps only track debts. SettleX closes the loop by letting members settle instantly with XLM and verify results on-chain.
+> **Stellar-star** solves the common *"IOU but no payment"* problem in group expense apps.
 
-Every payment can be traced through an explorer transaction hash, and settlement metadata is stored via Soroban contract calls for transparency and dispute resistance.
+Most split apps only track debts. **Stellar-star closes the loop** by letting members settle instantly with XLM and verify results on-chain.
 
-Core properties:
+Every payment can be traced through an explorer transaction hash, and settlement metadata is stored via Soroban contract calls for **transparency** and **dispute resistance**.
 
-- Non-custodial: users sign with their own wallet.
-- On-chain verifiable: each payment has a real tx hash.
-- Multi-wallet UX: Freighter, xBull, Lobstr support.
-- Realtime sync: Supabase updates shared state across participants.
+### 🔑 Core Properties
+
+| Property | Description |
+|----------|-------------|
+| 🔐 **Non-custodial** | Users sign with their own wallet |
+| 🔗 **On-chain verifiable** | Each payment has a real tx hash |
+| 💼 **Multi-wallet UX** | Freighter, xBull, Lobstr support |
+| ⚡ **Realtime sync** | Supabase updates shared state across participants |
 
 ---
 
 ## Features
 
 | Feature | Status |
-| --- | --- |
-| Multi-wallet connect (Freighter, xBull, Lobstr) | Live |
-| Expense split modes (equal, percentage, weighted/custom) | Live |
-| Per-share XLM settlement flow | Live |
-| Soroban duplicate-settlement checks (`is_paid`) | Live |
-| On-chain payment recording (`record_payment`) | Live |
-| Transaction hash receipt links | Live |
-| SEP-0007 QR generation | Live |
-| Trip net-balance optimization | Live |
-| Realtime sync (Supabase + contract events) | Live |
-| Responsive mobile-first UI | Live |
+|---------|--------|
+| Multi-wallet connect (Freighter, xBull, Lobstr) | ✅ Live |
+| Expense split modes (equal, percentage, weighted/custom) | ✅ Live |
+| Per-share XLM settlement flow | ✅ Live |
+| Soroban duplicate-settlement checks (`is_paid`) | ✅ Live |
+| On-chain payment recording (`record_payment`) | ✅ Live |
+| Transaction hash receipt links | ✅ Live |
+| SEP-0007 QR generation | ✅ Live |
+| Trip net-balance optimization | ✅ Live |
+| Realtime sync (Supabase + contract events) | ✅ Live |
+| Responsive mobile-first UI | ✅ Live |
 
 ---
 
 ## Tech Stack
 
 | Layer | Technology |
-| --- | --- |
-| App Framework | Next.js 15 (App Router) + TypeScript |
-| UI | Tailwind CSS, Framer Motion, Radix UI |
-| Blockchain | @stellar/stellar-sdk, Horizon, Soroban RPC |
-| Smart Contract | Rust + soroban-sdk |
-| Data Sync | Supabase (PostgreSQL + Realtime) |
-| Testing | Jest + ts-jest + React Testing Library |
+|-------|------------|
+| **App Framework** | Next.js 15 (App Router) + TypeScript |
+| **UI** | Tailwind CSS, Framer Motion, Radix UI |
+| **Blockchain** | @stellar/stellar-sdk, Horizon, Soroban RPC |
+| **Smart Contract** | Rust + soroban-sdk |
+| **Data Sync** | Supabase (PostgreSQL + Realtime) |
+| **Testing** | Jest + ts-jest + React Testing Library |
 
 ---
 
 ## Screenshots
 
-### Landing Page
+<details>
+<summary><strong>🏠 Landing Page</strong></summary>
+<br/>
 
-![SettleX Landing](https://ik.imagekit.io/ahfz0yimd/Screenshot%202026-04-28%20083517.png)
+![Stellar-star Landing](https://ik.imagekit.io/ahfz0yimd/Screenshot%202026-04-28%20083517.png)
 
-### Dashboard
+</details>
 
-![SettleX Dashboard](https://ik.imagekit.io/ahfz0yimd/Screenshot%202026-04-28%20083904.png)
+<details>
+<summary><strong>📊 Dashboard</strong></summary>
+<br/>
 
-### Expenses Page
+![Stellar-star Dashboard](https://ik.imagekit.io/ahfz0yimd/Screenshot%202026-04-28%20083904.png)
 
-![SettleX Expenses](https://ik.imagekit.io/ahfz0yimd/Screenshot%202026-04-28%20083925.png)
+</details>
 
-### Trips Page
+<details>
+<summary><strong>💰 Expenses Page</strong></summary>
+<br/>
 
-![SettleX Trips](https://ik.imagekit.io/ahfz0yimd/Screenshot%202026-04-28%20083946.png)
+![Stellar-star Expenses](https://ik.imagekit.io/ahfz0yimd/Screenshot%202026-04-28%20083925.png)
 
-### New Expense Form
+</details>
 
-![SettleX New Expense Form](https://ik.imagekit.io/ahfz0yimd/Screenshot%202026-04-28%20084052.png)
+<details>
+<summary><strong>🧳 Trips Page</strong></summary>
+<br/>
 
-### Test Output
+![Stellar-star Trips](https://ik.imagekit.io/ahfz0yimd/Screenshot%202026-04-28%20083946.png)
 
-![SettleX Test Output](public/testcase.png)
+</details>
+
+<details>
+<summary><strong>📝 New Expense Form</strong></summary>
+<br/>
+
+![Stellar-star New Expense Form](https://ik.imagekit.io/ahfz0yimd/Screenshot%202026-04-28%20084052.png)
+
+</details>
+
+<details>
+<summary><strong>🧪 Test Output</strong></summary>
+<br/>
+
+![Stellar-star Test Output](public/testcase.png)
+
+</details>
 
 ---
 
 ## How It Works
 
-```text
-Connect wallet -> Create expense -> Choose split mode -> Calculate shares
-  -> Build/sign XLM transaction -> Submit to Horizon
-  -> Record settlement metadata on Soroban
-  -> Sync confirmed state across members via events + Supabase
+```
+┌─────────────┐    ┌──────────────┐    ┌──────────────┐    ┌───────────────┐
+│   Connect    │───▶│    Create     │───▶│  Choose Split │───▶│   Calculate   │
+│   Wallet     │    │   Expense    │    │     Mode     │    │    Shares     │
+└─────────────┘    └──────────────┘    └──────────────┘    └───────┬───────┘
+                                                                   │
+                   ┌──────────────┐    ┌──────────────┐    ┌───────▼───────┐
+                   │  Sync State  │◀───│  Record on   │◀───│  Build/Sign   │
+                   │  via Events  │    │   Soroban    │    │  & Submit TX  │
+                   └──────────────┘    └──────────────┘    └───────────────┘
 ```
 
-Flow summary:
+### 📋 Step-by-Step Flow
 
-1. User connects wallet (Freighter/xBull/Lobstr).
-2. Expense is created with split strategy and participant weights.
-3. App computes each member share in XLM.
-4. Payment transaction is built client-side and signed in wallet.
-5. Signed envelope is submitted to Horizon.
-6. Contract read/write checks enforce no duplicate settlement.
-7. UI updates from tx hash receipts, event polling, and realtime sync.
+| Step | Action |
+|------|--------|
+| **1** | User connects wallet (Freighter / xBull / Lobstr) |
+| **2** | Expense is created with split strategy and participant weights |
+| **3** | App computes each member's share in XLM |
+| **4** | Payment transaction is built client-side and signed in wallet |
+| **5** | Signed envelope is submitted to Horizon |
+| **6** | Contract read/write checks enforce no duplicate settlement |
+| **7** | UI updates from tx hash receipts, event polling, and realtime sync |
 
 ---
 
 ## Smart Contract
 
-Latest deployed settlement contract (this workspace session):
+> Latest deployed settlement contract (this workspace session):
 
-- Contract ID:
-  - `CBS2BJQ4ZC2ZSAZ5XS47BGC6Q7VTMJA4SE2PVHFXGXAZI5ES6H645WHO`
-- Deploy transaction:
-  - https://stellar.expert/explorer/testnet/tx/4d0304dc8b176aac73686f4590dbe883df9fc555aa3a41a6e6462a285abff8e4
-- Contract explorer:
-  - https://stellar.expert/explorer/testnet/contract/CBS2BJQ4ZC2ZSAZ5XS47BGC6Q7VTMJA4SE2PVHFXGXAZI5ES6H645WHO
+| Detail | Value |
+|--------|-------|
+| **Contract ID** | `CBS2BJQ4ZC2ZSAZ5XS47BGC6Q7VTMJA4SE2PVHFXGXAZI5ES6H645WHO` |
+| **Deploy Transaction** | [View on Stellar Expert](https://stellar.expert/explorer/testnet/tx/4d0304dc8b176aac73686f4590dbe883df9fc555aa3a41a6e6462a285abff8e4) |
+| **Contract Explorer** | [View Contract](https://stellar.expert/explorer/testnet/contract/CBS2BJQ4ZC2ZSAZ5XS47BGC6Q7VTMJA4SE2PVHFXGXAZI5ES6H645WHO) |
 
-### Verified On-Chain Transactions
+### ✅ Verified On-Chain Transactions
 
-- Settlement deploy tx:
-  - https://stellar.expert/explorer/testnet/tx/826092e11281bd8fe3c8997ef0a4886b1bd3728069c6855ec4e3866f0a8f9d06
-- Pool deploy tx:
-  - https://stellar.expert/explorer/testnet/tx/fa245da3ce0a478a9146cccdfa0b1b7f918985c0c138dec3f061f104e5b8f39e
-- Pool init tx (`pool_ini`):
-  - https://stellar.expert/explorer/testnet/tx/a04a0a2f79e06448156b52ebd07060281cab5bee323889e92c584e0aaf50546d
-- Settlement init tx (`stx_ini`):
-  - https://stellar.expert/explorer/testnet/tx/f05c2f59f980a00e99f3f00d57e22b8b10fd0405064096273fd912c9b05a037e
-- Inter-contract settlement proof tx (`record_payment` + internal pool `withdraw`):
-  - https://stellar.expert/explorer/testnet/tx/04c679c7ab7ec960db505038b4c6ec1f367e5d3caae013696bf3111e493de967
+| Transaction | Link |
+|-------------|------|
+| Settlement deploy tx | [View](https://stellar.expert/explorer/testnet/tx/826092e11281bd8fe3c8997ef0a4886b1bd3728069c6855ec4e3866f0a8f9d06) |
+| Pool deploy tx | [View](https://stellar.expert/explorer/testnet/tx/fa245da3ce0a478a9146cccdfa0b1b7f918985c0c138dec3f061f104e5b8f39e) |
+| Pool init tx (`pool_ini`) | [View](https://stellar.expert/explorer/testnet/tx/a04a0a2f79e06448156b52ebd07060281cab5bee323889e92c584e0aaf50546d) |
+| Settlement init tx (`stx_ini`) | [View](https://stellar.expert/explorer/testnet/tx/f05c2f59f980a00e99f3f00d57e22b8b10fd0405064096273fd912c9b05a037e) |
+| Inter-contract settlement proof (`record_payment` + internal pool `withdraw`) | [View](https://stellar.expert/explorer/testnet/tx/04c679c7ab7ec960db505038b4c6ec1f367e5d3caae013696bf3111e493de967) |
 
-Main contract functions used by the app:
+### 🔧 Main Contract Functions
 
-- `record_payment(trip_id, expense_id, payer, member, amount, tx_hash)`
-- `get_payments(trip_id)`
-- `is_paid(expense_id, member)`
+```rust
+record_payment(trip_id, expense_id, payer, member, amount, tx_hash)
+get_payments(trip_id)
+is_paid(expense_id, member)
+```
 
-Contract guarantees leveraged by frontend:
+### 🛡️ Contract Guarantees
 
-- Prevent duplicate settlement for same expense/member pair.
-- Persist immutable settlement evidence (`tx_hash`).
-- Return payment history by trip for reconciliation.
+- ✅ **Prevent duplicate settlement** for same expense/member pair
+- ✅ **Persist immutable settlement evidence** (`tx_hash`)
+- ✅ **Return payment history** by trip for reconciliation
 
-Frontend-handled contract error mapping:
+### ⚠️ Frontend-Handled Contract Errors
 
-- `InvalidAmount` (#1): amount is zero or negative.
-- `AlreadyPaid` (#2): duplicate settlement attempt.
-- `EmptyId` (#3): missing trip or expense identifier.
+| Error Code | Name | Description |
+|------------|------|-------------|
+| `#1` | `InvalidAmount` | Amount is zero or negative |
+| `#2` | `AlreadyPaid` | Duplicate settlement attempt |
+| `#3` | `EmptyId` | Missing trip or expense identifier |
 
 ---
 
 ## Submission Checklist Evidence
 
 | Requirement | Evidence |
-| --- | --- |
-| Public repository | https://github.com/soumen0818/SettleX |
-| Live demo | https://settle-x-pi.vercel.app/ |
-| Demo video | https://youtu.be/gnUaUONmb3I |
-| Contract details and tx proof | Smart Contract section in this README |
-| UI screenshots | Screenshots section in this README |
+|-------------|----------|
+| Public repository | [GitHub Repo](https://github.com/soumen0818/SettleX) |
+| Live demo | [settle-x-pi.vercel.app](https://settle-x-pi.vercel.app/) |
+| Demo video | [YouTube](https://youtu.be/gnUaUONmb3I) |
+| Contract details and tx proof | [Smart Contract](#-smart-contract) section |
+| UI screenshots | [Screenshots](#-screenshots) section |
 | Test output screenshot | `public/testcase.png` |
-| Release/runbook/proof docs | [Documentation](#documentation) section |
+| Release/runbook/proof docs | [Documentation](#-documentation) section |
 
 ---
 
@@ -205,30 +234,36 @@ Frontend-handled contract error mapping:
 
 ### Prerequisites
 
-- Node.js 18+
-- npm 9+
-- Rust toolchain (for contract work)
-- Stellar CLI (for contract deploy)
-- Freighter wallet set to Testnet
+| Requirement | Version |
+|-------------|---------|
+| Node.js | 18+ |
+| npm | 9+ |
+| Rust toolchain | Latest (for contract work) |
+| Stellar CLI | Latest (for contract deploy) |
+| Freighter wallet | Set to **Testnet** |
 
-### Install and run
+### Install and Run
 
 ```bash
+# 1. Install dependencies
 npm install
+
+# 2. Start the dev server
 npm run dev
 ```
 
-Open http://localhost:3000
+> Open [http://localhost:3000](http://localhost:3000) in your browser.
 
-If this is your first run:
-
-1. Copy env template.
-2. Add Supabase URL and anon key.
-3. Ensure wallet is on Stellar Testnet.
+**First time setup?**
 
 ```bash
+# Copy the environment template
 cp .env.local.example .env.local
 ```
+
+Then:
+1. Add your Supabase URL and anon key to `.env.local`
+2. Ensure your wallet is on Stellar Testnet
 
 ---
 
@@ -237,17 +272,21 @@ cp .env.local.example .env.local
 Use `.env.local` (or copy from `.env.local.example`):
 
 ```env
+# ── Stellar Network ──────────────────────────────
 NEXT_PUBLIC_STELLAR_NETWORK=TESTNET
 NEXT_PUBLIC_HORIZON_URL=https://horizon-testnet.stellar.org
 NEXT_PUBLIC_STELLAR_EXPLORER=https://stellar.expert/explorer/testnet
 
+# ── Soroban / Smart Contract ─────────────────────
 NEXT_PUBLIC_SOROBAN_RPC_URL=https://soroban-testnet.stellar.org
 NEXT_PUBLIC_CONTRACT_ID=CBS2BJQ4ZC2ZSAZ5XS47BGC6Q7VTMJA4SE2PVHFXGXAZI5ES6H645WHO
 
+# ── Supabase ─────────────────────────────────────
 NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key-here
 
-NEXT_PUBLIC_APP_NAME=SettleX
+# ── App Metadata ─────────────────────────────────
+NEXT_PUBLIC_APP_NAME=Stellar-star
 NEXT_PUBLIC_APP_VERSION=1.0.0
 NEXT_PUBLIC_SITE_URL=https://settle-x-pi.vercel.app
 ```
@@ -256,24 +295,23 @@ NEXT_PUBLIC_SITE_URL=https://settle-x-pi.vercel.app
 
 ## Testing
 
-Run all frontend/unit tests:
+**Run all frontend/unit tests:**
 
 ```bash
 npm test -- --runInBand
 ```
 
-Coverage:
+**Generate coverage report:**
 
 ```bash
 npm run test:coverage
 ```
 
-Current status in this workspace:
-
+**Current status in this workspace:**
 - Run `npm test -- --runInBand` to see the latest total suites/tests after any new test cases are added.
 - Run `npm run lint`, `npx tsc --noEmit`, and `npm run build` for release checks.
 
-For Rust contract checks:
+**For Rust contract checks:**
 
 ```bash
 cd contract
@@ -282,76 +320,80 @@ cargo check
 cargo test
 ```
 
-Suggested pre-release verification checklist:
+### 📝 Pre-Release Verification Checklist
 
-- Run `npm run lint`.
-- Run `npx tsc --noEmit`.
-- Run `npm test -- --runInBand`.
-- Run `npm run build`.
-- Run `cd contract && cargo check`.
+| # | Command | Purpose |
+|---|---------|---------|
+| 1 | `npm run lint` | Lint checks |
+| 2 | `npx tsc --noEmit` | Type checking |
+| 3 | `npm test -- --runInBand` | Run tests |
+| 4 | `npm run build` | Production build |
+| 5 | `cd contract && cargo check` | Rust contract check |
 
 ---
 
 ## Deployment
 
-### App build
+### App Build
 
 ```bash
 npm run build
 npm run start
 ```
 
-### Contract deploy (Stellar Testnet)
+### Contract Deploy (Stellar Testnet)
 
-Script:
+**Script:**
 
 ```bash
 bash scripts/deploy-contract.sh <stellar-cli-account-alias-or-secret>
 ```
 
-Example:
+**Example:**
 
 ```bash
 bash scripts/deploy-contract.sh settlex-deployer
 ```
 
-After deployment, update:
-
+**After deployment**, update:
 - `NEXT_PUBLIC_CONTRACT_ID` in `.env.local`
 
-Notes:
-
-- If script is not executable in your shell, run it via `bash scripts/deploy-contract.sh <alias-or-secret>`.
-- Always verify returned tx/contract ID on Stellar Expert before updating docs.
+> **Notes:**
+> - If script is not executable in your shell, run it via `bash scripts/deploy-contract.sh <alias-or-secret>`.
+> - Always verify returned tx/contract ID on Stellar Expert before updating docs.
 
 ---
 
 ## Project Structure
 
-```text
-app/                 Next.js app routes
-components/          UI and feature components
-context/             React context providers
-hooks/               App hooks (wallet, payment, events, etc.)
-lib/                 Utilities, Stellar integration, Supabase client
-contract/            Soroban Rust smart contract
-__tests__/           Jest test suites
-docs/                Runbook, checklist, architecture, requirement matrix
-scripts/             Deployment scripts
-types/               Shared TypeScript types
+```
+stellar-star/
+│
+├── 📂 app/                → Next.js app routes
+├── 📂 components/         → UI and feature components
+├── 📂 context/            → React context providers
+├── 📂 hooks/              → App hooks (wallet, payment, events, etc.)
+├── 📂 lib/                → Utilities, Stellar integration, Supabase client
+├── 📂 contract/           → Soroban Rust smart contract
+├── 📂 __tests__/          → Jest test suites
+├── 📂 docs/               → Runbook, checklist, architecture, requirement matrix
+├── 📂 scripts/            → Deployment scripts
+└── 📂 types/              → Shared TypeScript types
 ```
 
 ---
 
 ## Documentation
 
-- [Release Checklist](docs/RELEASE_CHECKLIST.md)
-- [Production Runbook](docs/RUNBOOK.md)
-- [Requirement Proof Matrix](docs/REQUIREMENT_PROOF_MATRIX.md)
-- [Architecture and Limitations](docs/ARCHITECTURE_AND_LIMITATIONS.md)
+| Document | Link |
+|----------|------|
+| Release Checklist | [RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md) |
+| Production Runbook | [RUNBOOK.md](docs/RUNBOOK.md) |
+| Requirement Proof Matrix | [REQUIREMENT_PROOF_MATRIX.md](docs/REQUIREMENT_PROOF_MATRIX.md) |
+| Architecture and Limitations | [ARCHITECTURE_AND_LIMITATIONS.md](docs/ARCHITECTURE_AND_LIMITATIONS.md) |
 
 ---
 
 ## License
 
-MIT (2026) SettleX
+**MIT** (2026) Stellar-star
