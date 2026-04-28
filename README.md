@@ -8,13 +8,10 @@
 </p>
 
 <div align="center">
-<table>
-<tr>
-<td align="center" style="background: white; border-radius: 16px; padding: 24px 40px;">
-<h2>⭐ <span style="color: #0F0F14;">Stellar</span><span style="color: #2DD4BF;">-Star</span></h2>
-</td>
-</tr>
-</table>
+  <div style="display: inline-flex; align-items: center; justify-content: center; gap: 10px; background: white; border-radius: 16px; padding: 24px 40px;">
+    <span style="font-size: 1.5rem; line-height: 1;">⭐</span>
+    <h2 style="margin: 0;"><span style="color: #0F0F14;">Stellar</span><span style="color: #2DD4BF;">-Star</span></h2>
+  </div>
 </div>
 
 <h1 align="center">⚡ Stellar-star — Split Bills. Pay On-Chain.</h1>
@@ -28,7 +25,7 @@
 <p align="center">
   <a href="https://stellar-star-five.vercel.app/"><img src="https://img.shields.io/badge/🌐_Live_Demo-Visit-2DD4BF?style=for-the-badge" alt="Live Demo" /></a>
   &nbsp;
-  <a href="https://youtu.be/gnUaUONmb3I"><img src="https://youtu.be/Lh3TgpQHMng" alt="Demo Video" /></a>
+  <a href="https://youtu.be/Lh3TgpQHMng?si=dfwqbK7LiI2gAdQt"><img src="https://img.shields.io/badge/%E2%96%B6_Demo_Video-Watch-FF0000?style=for-the-badge&logo=youtube&logoColor=white" alt="Demo Video" /></a>
   &nbsp;
   <a href="https://github.com/Soumen1080/stellar-star"><img src="https://img.shields.io/badge/📦_GitHub-Repository-181717?style=for-the-badge" alt="GitHub Repo" /></a>
 </p>
@@ -108,6 +105,20 @@ Every payment can be traced through an explorer transaction hash, and settlement
 ---
 
 ## Screenshots
+
+<details>
+<summary><strong>📱 Mobile Views</strong></summary>
+<br/>
+
+### Landing Page on Phone
+
+![Stellar-star Landing on Phone](https://ik.imagekit.io/ahfz0yimd/Screenshot%202026-04-28%20201122.png)
+
+### Dashboard on Phone
+
+![Stellar-star Dashboard on Phone](https://ik.imagekit.io/ahfz0yimd/Screenshot%202026-04-28%20201122.png)
+
+</details>
 
 <details>
 <summary><strong>🏠 Landing Page</strong></summary>
