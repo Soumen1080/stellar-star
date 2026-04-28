@@ -40,7 +40,7 @@ const SUPPORTED_WALLETS: SupportedWallet[] = [
   {
     id: FREIGHTER_ID,
     name:       "Freighter",
-    logoUrl:    "https://raw.githubusercontent.com/stellar/freighter/main/assets/images/freighter_logo.svg",
+    logoUrl:    "/wallets/freighter.svg",
     installUrl: "https://www.freighter.app/",
     isInstalled: async () => {
       if (typeof window === "undefined") return false;
@@ -55,7 +55,7 @@ const SUPPORTED_WALLETS: SupportedWallet[] = [
   {
     id: XBULL_ID,
     name:       "xBull",
-    logoUrl:    "https://xbull.app/assets/logos/xbull-logo.svg",
+    logoUrl:    "/wallets/xbull.svg",
     installUrl: "https://xbull.app/",
     isInstalled: async () => {
       if (typeof window === "undefined") return false;
@@ -66,7 +66,7 @@ const SUPPORTED_WALLETS: SupportedWallet[] = [
   {
     id: LOBSTR_ID,
     name:       "Lobstr",
-    logoUrl:    "https://lobstr.co/static/img/lobstr-logo.svg",
+    logoUrl:    "/wallets/lobstr.svg",
     installUrl: "https://lobstr.co/",
     isInstalled: async () => {
       if (typeof window === "undefined") return false;
