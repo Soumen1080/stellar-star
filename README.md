@@ -28,7 +28,7 @@
 <p align="center">
   <a href="https://stellar-star-five.vercel.app/"><img src="https://img.shields.io/badge/🌐_Live_Demo-Visit-2DD4BF?style=for-the-badge" alt="Live Demo" /></a>
   &nbsp;
-  <a href="https://youtu.be/gnUaUONmb3I"><img src="https://img.shields.io/badge/🎬_Demo_Video-Watch-FF0000?style=for-the-badge" alt="Demo Video" /></a>
+  <a href="https://youtu.be/gnUaUONmb3I"><img src="https://youtu.be/Lh3TgpQHMng" alt="Demo Video" /></a>
   &nbsp;
   <a href="https://github.com/Soumen1080/stellar-star"><img src="https://img.shields.io/badge/📦_GitHub-Repository-181717?style=for-the-badge" alt="GitHub Repo" /></a>
 </p>
