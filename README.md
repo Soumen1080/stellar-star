@@ -28,6 +28,8 @@
   <a href="https://youtu.be/Lh3TgpQHMng?si=dfwqbK7LiI2gAdQt"><img src="https://img.shields.io/badge/%E2%96%B6_Demo_Video-Watch-FF0000?style=for-the-badge&logo=youtube&logoColor=white" alt="Demo Video" /></a>
   &nbsp;
   <a href="https://github.com/Soumen1080/stellar-star"><img src="https://img.shields.io/badge/📦_GitHub-Repository-181717?style=for-the-badge" alt="GitHub Repo" /></a>
+  &nbsp;
+  <a href="https://github.com/Soumen1080/stellar-star/actions/workflows/ci.yml"><img src="https://github.com/Soumen1080/stellar-star/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
 </p>
 
 <br/>
