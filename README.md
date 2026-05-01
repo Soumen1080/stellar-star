@@ -114,11 +114,11 @@ Every payment can be traced through an explorer transaction hash, and settlement
 
 ### Landing Page on Phone
 
-![Stellar-star Landing on Phone](https://ik.imagekit.io/ahfz0yimd/Screenshot%202026-04-28%20201122.png)
+![Stellar-star Landing Page - mobile view](https://ik.imagekit.io/ahfz0yimd/Screenshot%202026-04-28%20201122.png)
 
 ### Dashboard on Phone
 
-![Stellar-star Dashboard on Phone](https://ik.imagekit.io/ahfz0yimd/Screenshot%202026-04-28%20201122.png)
+![Stellar-star Dashboard - mobile view](https://ik.imagekit.io/ahfz0yimd/Screenshot%202026-04-28%20201155.png)
 
 </details>
 
