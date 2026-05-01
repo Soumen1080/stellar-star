@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://stellar-star-five.vercel.app/">
+  <a href="https://stellar-star-soumen1080s-projects.vercel.app/">
     <picture>
      <source media="(prefers-color-scheme: light)" srcset="https://img.shields.io/badge/%E2%AD%90_Stellar--star-Split_Bills._Pay_On--Chain.-0F0F14?style=for-the-badge&labelColor=white&color=2DD4BF" />
       <img alt="Stellar-star" src="https://img.shields.io/badge/%E2%AD%90_Stellar--star-Split_Bills._Pay_On--Chain.-0F0F14?style=for-the-badge&labelColor=white&color=2DD4BF" />
@@ -23,7 +23,7 @@
 </p>
 
 <p align="center">
-  <a href="https://stellar-star-five.vercel.app/"><img src="https://img.shields.io/badge/🌐_Live_Demo-Visit-2DD4BF?style=for-the-badge" alt="Live Demo" /></a>
+  <a href="https://stellar-star-soumen1080s-projects.vercel.app/"><img src="https://img.shields.io/badge/🌐_Live_Demo-Visit-2DD4BF?style=for-the-badge" alt="Live Demo" /></a>
   &nbsp;
   <a href="https://youtu.be/Lh3TgpQHMng?si=dfwqbK7LiI2gAdQt"><img src="https://img.shields.io/badge/%E2%96%B6_Demo_Video-Watch-FF0000?style=for-the-badge&logo=youtube&logoColor=white" alt="Demo Video" /></a>
   &nbsp;
@@ -249,7 +249,7 @@ is_paid(expense_id, member)
 | Requirement | Evidence |
 |-------------|----------|
 | Public repository | [GitHub Repo](https://github.com/Soumen1080/stellar-star) |
-| Live demo | [stellar-star-five.vercel.app](https://stellar-star-five.vercel.app/) |
+| Live demo | [stellar-star-soumen1080s-projects.vercel.app](https://stellar-star-soumen1080s-projects.vercel.app/) |
 | Demo video | [YouTube](https://youtu.be/gnUaUONmb3I) |
 | Contract details and tx proof | [Smart Contract](#-smart-contract) section |
 | UI screenshots | [Screenshots](#-screenshots) section |
@@ -316,7 +316,7 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key-here
 # ── App Metadata ─────────────────────────────────
 NEXT_PUBLIC_APP_NAME=Stellar-star
 NEXT_PUBLIC_APP_VERSION=1.0.0
-NEXT_PUBLIC_SITE_URL=https://stellar-star-five.vercel.app
+NEXT_PUBLIC_SITE_URL=https://stellar-star-soumen1080s-projects.vercel.app
 ```
 
 ---
