@@ -10,7 +10,7 @@ Date: 2026-03-29
 | Mobile responsive | Complete (code-level + validation) | Phase 9 responsive updates across landing/auth/dashboard/expenses/trips/trip detail; lint/build/tests all passing |
 | Minimum 8+ meaningful commits | Complete | Local git history count: 44 commits |
 | Production-ready advanced contract implementation | Complete | Contract hardening, versioning, errors/events, inter-contract tests (21 passing Rust tests), deployment proofs in README |
-| README includes live demo link | Complete | README top links section (`https://settle-x-pi.vercel.app/`) |
+| README includes live demo link | Complete | README top links section (`https://stellar-star-five.vercel.app/`) |
 | README includes contract address + tx hash | Complete | README Smart Contract section with current contract ID and deploy transaction link |
 | README includes pool details | Complete | Pool-related behavior and proof references are documented in repo docs and historical records |
 | README includes CI/CD proof | Complete | CI badge in README and test output screenshot |
