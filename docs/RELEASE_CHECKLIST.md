@@ -29,7 +29,7 @@ Date: 2026-03-29
 - [x] README includes live demo link
 - [x] README includes contract IDs and transaction proofs
 - [x] README includes pool address proof
-- [x] README includes deployment screenshot (`public/deployment.png`)
+- [x] README includes deployment proof via live Vercel URL
 - [x] README includes submission checklist evidence section
 - [x] Final docs package added under `docs/`
 
@@ -37,7 +37,7 @@ Date: 2026-03-29
 
 - [x] Public GitHub repository ready
 - [x] Commit history exceeds minimum requirement (44 commits)
-- [ ] Add one explicit mobile viewport screenshot (phone-sized capture) and reference it in README before final submission
+- [x] Add one explicit mobile viewport screenshot (phone-sized capture) and reference it in README before final submission
 
 Notes:
 - All automated checks are currently green locally.
