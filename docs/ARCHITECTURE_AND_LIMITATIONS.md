@@ -15,6 +15,7 @@ SettleX uses:
 - Users operate on Stellar testnet, not mainnet.
 - Wallet extensions (Freighter, xBull, Lobstr) are available client-side.
 - Supabase anon key is safe with proper RLS policies.
+- Wallet authentication uses a server-generated Stellar challenge, client signature verification, and JWT claims; data access is not based on a client-provided wallet header.
 - Contract IDs in env/docs are synchronized with deployed testnet contracts.
 
 ## Known Limitations

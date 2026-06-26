@@ -24,16 +24,17 @@ export const supabase: SupabaseClient | null = _configured
     })
   : null;
 
-export function createAuthenticatedClient(walletAddress: string): SupabaseClient {
+export function createAuthenticatedClient(walletAddress?: string): SupabaseClient {
   if (!_configured) {
     throw new Error(
       "Supabase is not configured. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY in .env.local."
     );
   }
-  if (!walletAddress) throw new Error("Wallet address is required for authenticated requests");
+  const token = typeof window !== "undefined" ? localStorage.getItem("StellarStar:authToken") : null;
+  if (!token) throw new Error("Authentication token is required for authenticated requests");
   return createClient(supabaseUrl, supabaseAnonKey, {
     auth: { persistSession: false },
     realtime: { params: { eventsPerSecond: 10 } },
-    global: { headers: { "x-wallet-address": walletAddress } },
+    global: { headers: { Authorization: `Bearer ${token}` } },
   });
 }

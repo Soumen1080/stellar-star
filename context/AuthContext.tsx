@@ -66,7 +66,40 @@ function loadUserFromCache(): User | null {
 }
 
 function clearUserCache() {
-  try { localStorage.removeItem(LS_USER); } catch {}
+  try {
+    localStorage.removeItem(LS_USER);
+    localStorage.removeItem("StellarStar:authToken");
+  } catch {}
+}
+
+async function authenticateWallet(publicKey: string): Promise<string> {
+  const resChallenge = await fetch(`/api/auth/challenge?address=${publicKey}`);
+  if (!resChallenge.ok) {
+    const err = await resChallenge.json();
+    throw new Error(err.error || "Failed to generate challenge");
+  }
+  const challenge = await resChallenge.json();
+
+  const { signXDR } = await import("@/lib/freighter");
+  const signedXdr = await signXDR(challenge.xdr);
+
+  const resVerify = await fetch("/api/auth/verify", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      address: publicKey,
+      signedXdr,
+      nonce: challenge.nonce,
+      expiration: challenge.expiration,
+      signature: challenge.signature,
+    }),
+  });
+  if (!resVerify.ok) {
+    const err = await resVerify.json();
+    throw new Error(err.error || "Signature verification failed");
+  }
+  const verifyData = await resVerify.json();
+  return verifyData.token;
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
@@ -86,7 +119,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // Wait for wallet hydration to complete before making auth decisions
     if (!isHydrated) return;
 
-    if (!publicKey) {
+    if (!publicKey || (typeof window !== "undefined" && !localStorage.getItem("StellarStar:authToken"))) {
       setUser(null);
       clearUserCache();
       setIsLoading(false);
@@ -99,26 +132,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return;
       }
       try {
-        const { data, error } = await supabase
+        const client = createAuthenticatedClient();
+        const { data, error } = await client
           .from("users")
           .select("*")
           .eq("wallet_address", publicKey)
           .single();
 
         if (error) {
-          if (error.code === "PGRST116") {
-            // No user found - user needs to sign up
+          if (error.code === "PGRST116" || error.message?.includes("token") || error.message?.includes("JWT") || error.message?.includes("invalid") || error.message?.includes("expired")) {
             setUser(null);
             clearUserCache();
           }
-          // On network errors, keep the cached user (don't log out)
         } else if (data) {
           const loadedUser = dbRowToUser(data);
           setUser(loadedUser);
           saveUserToCache(loadedUser);
         }
       } catch (err) {
-        // Network error - keep cached user so user stays logged in
+        // network or other error - keep cached user if we have one
       } finally {
         setIsLoading(false);
       }
@@ -139,8 +171,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         throw new Error("Display name is required");
       }
 
+      let token: string | null = null;
       try {
-        const client = createAuthenticatedClient(publicKey);
+        token = await authenticateWallet(publicKey);
+        localStorage.setItem("StellarStar:authToken", token);
+        
+        const client = createAuthenticatedClient();
         
         const { data, error } = await client
           .from("users")
@@ -152,6 +188,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           .single();
 
         if (error) {
+          localStorage.removeItem("StellarStar:authToken");
           if (error.code === '23505') {
             throw new Error("This wallet is already registered. Please sign in instead.");
           } else if (error.message.includes('permission denied') || error.message.includes('policy')) {
@@ -169,6 +206,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           saveUserToCache(newUser);
         }
       } catch (err: any) {
+        localStorage.removeItem("StellarStar:authToken");
         // Check for network errors
         if (err?.message?.includes('Failed to fetch') || err?.name === 'TypeError') {
           throw new Error("Cannot connect to server. Please check your internet connection or try again later.");
@@ -186,9 +224,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       throw new Error("Wallet not connected");
     }
 
+    let token: string | null = null;
     try {
-      // Use authenticated client with wallet header for RLS policies
-      const client = createAuthenticatedClient(publicKey);
+      token = await authenticateWallet(publicKey);
+      localStorage.setItem("StellarStar:authToken", token);
+
+      const client = createAuthenticatedClient();
       
       const { data, error } = await client
         .from("users")
@@ -198,6 +239,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         .single();
 
       if (error) {
+        localStorage.removeItem("StellarStar:authToken");
         if (error.code === "PGRST116") {
           throw new Error("No account found. Please sign up first.");
         }
@@ -213,6 +255,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         saveUserToCache(signedInUser);
       }
     } catch (err: any) {
+      localStorage.removeItem("StellarStar:authToken");
       // Check for network errors
       if (err?.message?.includes('Failed to fetch') || err?.name === 'TypeError') {
         throw new Error("Cannot connect to server. Please check your internet connection and try again.");
@@ -237,8 +280,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
 
       try {
-        // Use authenticated client with wallet header for RLS policies
-        const client = createAuthenticatedClient(publicKey);
+        const client = createAuthenticatedClient();
         
         const { data, error } = await client
           .from("users")

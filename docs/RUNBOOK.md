@@ -20,6 +20,7 @@ Create `.env.local` and set:
 - `NEXT_PUBLIC_CONTRACT_ID`
 - `NEXT_PUBLIC_SUPABASE_URL`
 - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+- `SUPABASE_JWT_SECRET` (or `JWT_SECRET`) matching the Supabase JWT signing secret
 
 ## 3. Local Validation
 
