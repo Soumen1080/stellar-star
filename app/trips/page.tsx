@@ -55,6 +55,19 @@ export default function TripsPage() {
   const { success: toastSuccess, error: toastError } = useToast();
   const [showForm, setShowForm] = useState(false);
   const [creating, setCreating] = useState(false);
+ 
+  const handleDeleteTrip = async (id: string) => {
+    try {
+      await deleteTrip(id);
+      toastSuccess("Trip deleted", "The trip has been successfully deleted.");
+    } catch (err: any) {
+      console.error("Failed to delete trip:", err);
+      toastError(
+        "Failed to delete trip",
+        err.message || "You do not have permission to delete this trip."
+      );
+    }
+  };
 
   const handleCreate = async (data: TripFormData) => {
     const trip: Trip = {
@@ -160,8 +173,9 @@ export default function TripsPage() {
                       trip={trip}
                       expenseCount={tripExpenses.length}
                       totalXLM={totalXLM}
-                      onDelete={deleteTrip}
+                      onDelete={handleDeleteTrip}
                       index={i}
+                      connectedWalletAddress={publicKey}
                     />
                   );
                 })}

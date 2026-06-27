@@ -8,6 +8,7 @@ export interface Trip {
   expenseIds: string[];
   createdAt: string;
   settled: boolean;
+  createdByWallet?: string;
 }
 
 export type TripFormData = {

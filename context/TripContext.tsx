@@ -42,6 +42,7 @@ function dbRowToTrip(row: any): Trip {
     expenseIds: row.expense_ids,
     createdAt: row.created_at,
     settled: row.settled,
+    createdByWallet: row.created_by_wallet,
   };
 }
 
@@ -247,25 +248,18 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
   );
 
   const deleteTrip = useCallback(async (id: string) => {
-    try {
-      const client = getClient();
-      const { error } = await client.from("trips").delete().eq("id", id);
+    const client = getClient();
+    const { error } = await client.from("trips").delete().eq("id", id);
 
-      if (error) throw error;
-
-      setTrips((prev) => {
-        const updated = prev.filter((t) => t.id !== id);
-        localStorage.setItem(LS_TRIPS, JSON.stringify(updated));
-        return updated;
-      });
-    } catch (err) {
-      console.error("Failed to delete trip from Supabase:", err);
-      setTrips((prev) => {
-        const updated = prev.filter((t) => t.id !== id);
-        localStorage.setItem(LS_TRIPS, JSON.stringify(updated));
-        return updated;
-      });
+    if (error) {
+      throw error;
     }
+
+    setTrips((prev) => {
+      const updated = prev.filter((t) => t.id !== id);
+      localStorage.setItem(LS_TRIPS, JSON.stringify(updated));
+      return updated;
+    });
   }, [getClient]);
 
   const addExpenseToTrip = useCallback(

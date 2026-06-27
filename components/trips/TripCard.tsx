@@ -13,6 +13,7 @@ interface TripCardProps {
   totalXLM?: number;
   onDelete: (id: string) => void;
   index?: number;
+  connectedWalletAddress?: string | null;
 }
 
 export function TripCard({
@@ -21,12 +22,18 @@ export function TripCard({
   totalXLM = 0,
   onDelete,
   index = 0,
+  connectedWalletAddress,
 }: TripCardProps) {
   const createdAt = new Date(trip.createdAt).toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",
     year: "numeric",
   });
+ 
+  const isOwner =
+    !!connectedWalletAddress &&
+    !!trip.createdByWallet &&
+    trip.createdByWallet === connectedWalletAddress;
 
   return (
     <motion.div
@@ -85,16 +92,18 @@ export function TripCard({
       {/* Footer */}
       <div className="flex items-center justify-between px-4 py-3 border-t border-[#F5F5F5]">
         <span className="text-[10px] text-[#BBB]">{createdAt}</span>
-        <button
-          onClick={(e) => {
-            e.preventDefault();
-            onDelete(trip.id);
-          }}
-          className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs text-[#CCC] hover:text-red-500 hover:bg-red-50 transition-colors"
-        >
-          <Trash2 size={11} />
-          Delete
-        </button>
+        {isOwner && (
+          <button
+            onClick={(e) => {
+              e.preventDefault();
+              onDelete(trip.id);
+            }}
+            className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs text-[#CCC] hover:text-red-500 hover:bg-red-50 transition-colors"
+          >
+            <Trash2 size={11} />
+            Delete
+          </button>
+        )}
       </div>
     </motion.div>
   );
