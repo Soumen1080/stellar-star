@@ -11,16 +11,25 @@
 
 ## 2. Environment Setup
 
-Create `.env.local` and set:
+Copy `.env.local.example` to `.env.local`:
+
+```bash
+cp .env.local.example .env.local
+```
+
+Ensure the following variables are configured:
 
 - `NEXT_PUBLIC_STELLAR_NETWORK=TESTNET`
-- `NEXT_PUBLIC_HORIZON_URL`
-- `NEXT_PUBLIC_STELLAR_EXPLORER`
-- `NEXT_PUBLIC_SOROBAN_RPC_URL`
-- `NEXT_PUBLIC_CONTRACT_ID`
-- `NEXT_PUBLIC_SUPABASE_URL`
-- `NEXT_PUBLIC_SUPABASE_ANON_KEY`
-- `SUPABASE_JWT_SECRET` (or `JWT_SECRET`) matching the Supabase JWT signing secret
+- `NEXT_PUBLIC_HORIZON_URL` (Horizon API URL)
+- `NEXT_PUBLIC_STELLAR_EXPLORER` (Stellar Expert/Explorer URL)
+- `NEXT_PUBLIC_SOROBAN_RPC_URL` (Soroban RPC URL)
+- `NEXT_PUBLIC_CONTRACT_ID` (Deployed Soroban contract ID)
+- `NEXT_PUBLIC_SUPABASE_URL` (Supabase Project URL)
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY` (Supabase Anonymous Client Key)
+- `SUPABASE_JWT_SECRET` (or `JWT_SECRET` matching the Supabase JWT signing secret)
+- `NEXT_PUBLIC_APP_NAME` (App metadata name)
+- `NEXT_PUBLIC_APP_VERSION` (App version)
+- `NEXT_PUBLIC_SITE_URL` (Deployment or localhost URL)
 
 ## 3. Local Validation
 
