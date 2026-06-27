@@ -4,6 +4,7 @@ import { useCallback, useState } from "react";
 import { buildPaymentTransaction } from "@/lib/stellar/buildTransaction";
 import { submitSignedTransaction } from "@/lib/stellar/submitTransaction";
 import { recordPaymentOnChain, checkIsPaid, precheckPoolBalance } from "@/lib/stellar/contract";
+import { verifyPaymentTransaction } from "@/lib/stellar/verifyTransaction";
 import { signXDR } from "@/lib/freighter";
 import { useWallet } from "@/hooks/useWallet";
 import { useExpense } from "@/hooks/useExpense";
@@ -67,6 +68,27 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
     );
     if (!poolCheck.ok) {
       const msg = poolCheck.error ?? "Pool balance precheck failed.";
+      setPaymentState({
+        status: "partial_success",
+        hash: pendingOnChain.txHash,
+        ledger: pendingOnChain.ledger,
+        onChain: false,
+        message: msg,
+      });
+      toastError("On-chain retry blocked", msg);
+      return;
+    }
+
+    setPaymentState({ status: "recording", step: "simulating" });
+    const verifyResult = await verifyPaymentTransaction({
+      txHash: pendingOnChain.txHash,
+      expectedSource: pendingOnChain.memberPublicKey,
+      expectedDestination: pendingOnChain.payerPublicKey,
+      expectedAmountXlm: pendingOnChain.amountXlm,
+    });
+
+    if (!verifyResult.valid) {
+      const msg = verifyResult.error ?? "Invalid payment transaction on network.";
       setPaymentState({
         status: "partial_success",
         hash: pendingOnChain.txHash,
@@ -153,36 +175,17 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
         let onChain = false;
         let onChainError: string | null = null;
         if (CONTRACT_ID && tripId) {
-          const poolCheck = await precheckPoolBalance(publicKey, publicKey, share.amount);
-          if (!poolCheck.ok) {
-            onChainError =
-              poolCheck.error ??
-              "Pool balance is too low to record this payment on-chain.";
-            setPendingOnChain({
-              memberPublicKey: publicKey,
-              tripId,
-              expenseId,
-              payerPublicKey: payerWalletAddress,
-              amountXlm: share.amount,
-              txHash: result.hash,
-              ledger: result.ledger,
-            });
-          } else {
           setPaymentState({ status: "recording", step: "simulating" });
-          const contractResult = await recordPaymentOnChain({
-            memberPublicKey: publicKey,
-            tripId,
-            expenseId,
-            payerPublicKey: payerWalletAddress,
-            amountXlm:      share.amount,
-            txHash:         result.hash,
-            onStatus:       (step) => setPaymentState({ status: "recording", step }),
+          
+          const verifyResult = await verifyPaymentTransaction({
+            txHash: result.hash,
+            expectedSource: publicKey,
+            expectedDestination: payerWalletAddress,
+            expectedAmountXlm: share.amount,
           });
 
-          if (contractResult.success) {
-            onChain = true;
-          } else {
-            onChainError = contractResult.error ?? "On-chain recording failed.";
+          if (!verifyResult.valid) {
+            onChainError = verifyResult.error ?? "Invalid payment transaction on network.";
             setPendingOnChain({
               memberPublicKey: publicKey,
               tripId,
@@ -192,7 +195,48 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
               txHash: result.hash,
               ledger: result.ledger,
             });
-          }
+          } else {
+            const poolCheck = await precheckPoolBalance(publicKey, publicKey, share.amount);
+            if (!poolCheck.ok) {
+              onChainError =
+                poolCheck.error ??
+                "Pool balance is too low to record this payment on-chain.";
+              setPendingOnChain({
+                memberPublicKey: publicKey,
+                tripId,
+                expenseId,
+                payerPublicKey: payerWalletAddress,
+                amountXlm: share.amount,
+                txHash: result.hash,
+                ledger: result.ledger,
+              });
+            } else {
+              setPaymentState({ status: "recording", step: "simulating" });
+              const contractResult = await recordPaymentOnChain({
+                memberPublicKey: publicKey,
+                tripId,
+                expenseId,
+                payerPublicKey: payerWalletAddress,
+                amountXlm:      share.amount,
+                txHash:         result.hash,
+                onStatus:       (step) => setPaymentState({ status: "recording", step }),
+              });
+
+              if (contractResult.success) {
+                onChain = true;
+              } else {
+                onChainError = contractResult.error ?? "On-chain recording failed.";
+                setPendingOnChain({
+                  memberPublicKey: publicKey,
+                  tripId,
+                  expenseId,
+                  payerPublicKey: payerWalletAddress,
+                  amountXlm: share.amount,
+                  txHash: result.hash,
+                  ledger: result.ledger,
+                });
+              }
+            }
           }
         }
 

@@ -26,7 +26,7 @@ SettleX uses:
 - Wallet UX depends on extension behavior and user approval flow.
 - Some screenshots in README are desktop captures; mobile screenshots should be added for evaluator clarity.
 - Pool balances are internal contract accounting credits, not native XLM/token custody transfers on-chain.
-- `record_payment` stores provided `tx_hash` metadata and relies on app flow integrity; it does not cryptographically verify Horizon payment details inside the contract.
+- **Trust Boundary & Settlement Proofs:** `record_payment` stores the provided `tx_hash` metadata after the frontend client cryptographically verifies the transaction against Horizon (ensuring source, destination, asset, amount, and success match the expense). However, this off-chain verifier resides within the client application. A sophisticated malicious actor bypassing the UI could technically call the contract directly with a fabricated `tx_hash`. In a production environment, this verification should be moved to a secure backend oracle or integrated directly into an on-chain protocol upgrade.
 
 ## Operational Constraints
 

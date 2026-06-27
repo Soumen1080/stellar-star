@@ -11,6 +11,7 @@ const { act, renderHook, waitFor } = require("@testing-library/react");
 jest.mock("@/lib/stellar/buildTransaction");
 jest.mock("@/lib/stellar/submitTransaction");
 jest.mock("@/lib/stellar/contract");
+jest.mock("@/lib/stellar/verifyTransaction");
 jest.mock("@/lib/freighter");
 jest.mock("@/hooks/useWallet", () => ({
   useWallet: jest.fn(),
@@ -73,6 +74,8 @@ describe("usePayment integration flow", () => {
       requiredStroops: 15000000n,
       balanceStroops: 15000000n,
     });
+    const verifyTransactionModule = jest.requireMock("@/lib/stellar/verifyTransaction") as { verifyPaymentTransaction: jest.Mock };
+    verifyTransactionModule.verifyPaymentTransaction.mockResolvedValue({ valid: true });
     jest.mocked(recordPaymentOnChain).mockResolvedValue({ success: true, ledger: 322 });
   });
 
