@@ -62,6 +62,7 @@ describe("parsePaymentEvent", () => {
     expect(parsePaymentEvent(raw)).toBeNull();
   });
 
+  // Verification that the parser correctly extracts independent events belonging to the same member.
   it("parses multiple events from the same member correctly", () => {
     const rawEvents = [
       {

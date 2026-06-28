@@ -96,6 +96,7 @@ describe("SettlementSummary", () => {
     jest.clearAllMocks();
   });
 
+  // Verification that only the exact matching payment row is flagged as on-chain when the same member is associated with multiple events.
   it("marks only the exact matching payment row as on-chain when the same member has multiple events", () => {
     const onChainEvents = [
       {

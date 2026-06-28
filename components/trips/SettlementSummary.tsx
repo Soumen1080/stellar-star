@@ -52,6 +52,7 @@ function deriveRawDebts(expenses: Expense[]): RawDebt[] {
   return debts;
 }
 
+// Converts an XLM amount (either a number or a string representation) into Stroops (the smallest subunit of XLM).
 function xlmToStroops(amount: string | number): string {
   const amountStr = typeof amount === "number" ? amount.toFixed(7) : amount;
   const [whole, fraction = ""] = amountStr.split(".");
@@ -60,10 +61,12 @@ function xlmToStroops(amount: string | number): string {
   return `${BigInt(normalizedWhole) * 10_000_000n + BigInt(normalizedFraction)}`;
 }
 
+// Builds a unique lookup key for an on-chain contract payment event based on the trip, expense, debtor member, and amount in stroops.
 function buildPaymentEventKey(event: ContractPaymentEvent) {
   return `${event.tripId}:${event.expenseId}:${event.member.toLowerCase()}:${event.amountStroops}`;
 }
 
+// Builds a lookup key for a debt row in the UI to match against on-chain payment keys using the exact trip, expense, debtor wallet, and amount in stroops.
 function buildDebtKey(tripId: string, debt: RawDebt) {
   if (!debt.fromWallet) return null;
   const amountStroops = xlmToStroops(debt.amount);
