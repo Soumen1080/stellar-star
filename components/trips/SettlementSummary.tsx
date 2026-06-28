@@ -52,6 +52,24 @@ function deriveRawDebts(expenses: Expense[]): RawDebt[] {
   return debts;
 }
 
+function xlmToStroops(amount: string | number): string {
+  const amountStr = typeof amount === "number" ? amount.toFixed(7) : amount;
+  const [whole, fraction = ""] = amountStr.split(".");
+  const normalizedWhole = whole.replace(/^0+(?=\d)/, "") || "0";
+  const normalizedFraction = (fraction + "0000000").slice(0, 7);
+  return `${BigInt(normalizedWhole) * 10_000_000n + BigInt(normalizedFraction)}`;
+}
+
+function buildPaymentEventKey(event: ContractPaymentEvent) {
+  return `${event.tripId}:${event.expenseId}:${event.member.toLowerCase()}:${event.amountStroops}`;
+}
+
+function buildDebtKey(tripId: string, debt: RawDebt) {
+  if (!debt.fromWallet) return null;
+  const amountStroops = xlmToStroops(debt.amount);
+  return `${tripId}:${debt.expenseId}:${debt.fromWallet.toLowerCase()}:${amountStroops}`;
+}
+
 function NetPaymentRow({
   payment,
   index,
@@ -188,11 +206,16 @@ export function SettlementSummary({ trip, expenses, onChainEvents = [] }: Settle
   const rawDebts    = useMemo(() => deriveRawDebts(expenses), [expenses]);
   const netPayments = useMemo(() => computeNetPayments(rawDebts), [rawDebts]);
 
-  // Build a set of on-chain confirmed wallet addresses (members who settled)
-  const onChainMembers = useMemo(
-    () => new Set(onChainEvents.map((e) => e.member.toLowerCase())),
+  const onChainPaymentKeys = useMemo(
+    () => new Set(onChainEvents.map(buildPaymentEventKey)),
     [onChainEvents],
   );
+
+  const isNetPaymentOnChain = (payment: NetPayment) =>
+    payment.settledDebts.every((debt) => {
+      const key = buildDebtKey(trip.id, debt);
+      return key ? onChainPaymentKeys.has(key) : false;
+    });
 
   if (netPayments.length === 0) {
     return (
@@ -228,7 +251,7 @@ export function SettlementSummary({ trip, expenses, onChainEvents = [] }: Settle
           index={i}
           tripName={trip.name}
           expenses={expenses}
-          isOnChain={!!(p.fromWallet && onChainMembers.has(p.fromWallet.toLowerCase()))}
+          isOnChain={isNetPaymentOnChain(p)}
         />
       ))}
     </div>

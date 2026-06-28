@@ -61,4 +61,44 @@ describe("parsePaymentEvent", () => {
 
     expect(parsePaymentEvent(raw)).toBeNull();
   });
+
+  it("parses multiple events from the same member correctly", () => {
+    const rawEvents = [
+      {
+        ledger: 101,
+        ledgerClosedAt: "2024-01-01T00:00:00Z",
+        txHash: "abc123",
+        topic: [
+          xdr.ScVal.scvSymbol("pmt_rec"),
+          nativeToScVal("trip-1", { type: "string" }),
+        ],
+        value: nativeToScVal(["exp-1", "GAAAA", "2500000"]),
+      },
+      {
+        ledger: 102,
+        ledgerClosedAt: "2024-01-01T00:05:00Z",
+        txHash: "def456",
+        topic: [
+          xdr.ScVal.scvSymbol("pmt_rec"),
+          nativeToScVal("trip-1", { type: "string" }),
+        ],
+        value: nativeToScVal(["exp-2", "GAAAA", "3500000"]),
+      },
+    ];
+
+    const parsed1 = parsePaymentEvent(rawEvents[0]);
+    const parsed2 = parsePaymentEvent(rawEvents[1]);
+
+    expect(parsed1).toEqual(expect.objectContaining({
+      expenseId: "exp-1",
+      member: "GAAAA",
+      amountStroops: "2500000",
+    }));
+
+    expect(parsed2).toEqual(expect.objectContaining({
+      expenseId: "exp-2",
+      member: "GAAAA",
+      amountStroops: "3500000",
+    }));
+  });
 });
