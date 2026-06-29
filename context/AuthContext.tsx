@@ -7,7 +7,7 @@ import React, {
   useEffect,
   useState,
 } from "react";
-import { supabase, createAuthenticatedClient, isSupabaseConfigured } from "@/lib/supabase/client";
+import { supabase, createAuthenticatedClient, isSupabaseConfigured, clearAuthenticatedClientCache } from "@/lib/supabase/client";
 import { useWalletContext } from "./WalletContext";
 import { LS_USER, LS_PUBLIC_KEY } from "@/lib/utils/constants";
 
@@ -76,6 +76,9 @@ function clearUserCache(walletAddress?: string | null) {
     const key = walletAddress || localStorage.getItem(LS_PUBLIC_KEY);
     if (key) {
       localStorage.removeItem(`${LS_USER}:${key}`);
+      clearAuthenticatedClientCache(key);
+    } else {
+      clearAuthenticatedClientCache();
     }
     localStorage.removeItem("StellarStar:authToken");
   } catch {}

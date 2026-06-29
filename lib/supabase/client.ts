@@ -24,6 +24,16 @@ export const supabase: SupabaseClient | null = _configured
     })
   : null;
 
+const clientCache = new Map<string, SupabaseClient>();
+
+export function clearAuthenticatedClientCache(walletAddress?: string): void {
+  if (walletAddress) {
+    clientCache.delete(walletAddress);
+  } else {
+    clientCache.clear();
+  }
+}
+
 export function createAuthenticatedClient(walletAddress?: string): SupabaseClient {
   if (!_configured) {
     throw new Error(
@@ -33,28 +43,18 @@ export function createAuthenticatedClient(walletAddress?: string): SupabaseClien
   const token = typeof window !== "undefined" ? localStorage.getItem("StellarStar:authToken") : null;
   if (!token) throw new Error("Authentication token is required for authenticated requests");
   
-  // TODO: Implement authenticated client caching and reuse:
-  // 1. Declare a module-level cache variable: `const clientCache = new Map<string, SupabaseClient>();`
-  // 2. Resolve the cache key using `walletAddress` (or fall back to a default key if not provided).
-  // 3. Before creating a client, check the cache: `if (clientCache.has(key)) return clientCache.get(key);`
-  // 4. Create the new client instance if not cached: `const client = createClient(...)`
-  // 5. Store it in the cache: `clientCache.set(key, client);`
-  // 6. Return the client.
-  //
-  // TODO: Add an exported clear cache function called on disconnect:
-  // ```typescript
-  // export function clearAuthenticatedClientCache(walletAddress?: string) {
-  //   if (walletAddress) {
-  //     clientCache.delete(walletAddress);
-  //   } else {
-  //     clientCache.clear();
-  //   }
-  // }
-  // ```
+  const key = walletAddress || (typeof window !== "undefined" ? localStorage.getItem("StellarStar:publicKey") : null) || "default";
 
-  return createClient(supabaseUrl, supabaseAnonKey, {
+  if (clientCache.has(key)) {
+    return clientCache.get(key)!;
+  }
+
+  const client = createClient(supabaseUrl, supabaseAnonKey, {
     auth: { persistSession: false },
     realtime: { params: { eventsPerSecond: 10 } },
     global: { headers: { Authorization: `Bearer ${token}` } },
   });
+
+  clientCache.set(key, client);
+  return client;
 }

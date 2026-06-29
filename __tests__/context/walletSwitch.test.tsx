@@ -24,6 +24,7 @@ jest.mock("@/lib/supabase/client", () => {
       channel: jest.fn(() => mockChannel),
     },
     createAuthenticatedClient: jest.fn(),
+    clearAuthenticatedClientCache: jest.fn(),
   };
 });
 
