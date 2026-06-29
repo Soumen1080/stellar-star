@@ -14,7 +14,7 @@
   </div>
 </div>
 
-<h1 align="center">⚡ Stellar-star — Split Bills. Pay On-Chain.</h1>
+<h1 align="center">⚡ Stellar-star - Split Bills. Pay On-Chain.</h1>
 
 <p align="center">
   <em>Decentralized expense splitting on Stellar Testnet.</em><br/>
@@ -412,16 +412,16 @@ bash scripts/deploy-contract.sh settlex-deployer
 ```
 stellar-star/
 │
-├── 📂 app/                → Next.js app routes
-├── 📂 components/         → UI and feature components
-├── 📂 context/            → React context providers
-├── 📂 hooks/              → App hooks (wallet, payment, events, etc.)
-├── 📂 lib/                → Utilities, Stellar integration, Supabase client
-├── 📂 contract/           → Soroban Rust smart contract
-├── 📂 __tests__/          → Jest test suites
-├── 📂 docs/               → Runbook, checklist, architecture, requirement matrix
-├── 📂 scripts/            → Deployment scripts
-└── 📂 types/              → Shared TypeScript types
+├── 📂 app/                -> Next.js app routes
+├── 📂 components/         -> UI and feature components
+├── 📂 context/            -> React context providers
+├── 📂 hooks/              -> App hooks (wallet, payment, events, etc.)
+├── 📂 lib/                -> Utilities, Stellar integration, Supabase client
+├── 📂 contract/           -> Soroban Rust smart contract
+├── 📂 __tests__/          -> Jest test suites
+├── 📂 docs/               -> Runbook, checklist, architecture, requirement matrix
+├── 📂 scripts/            -> Deployment scripts
+└── 📂 types/              -> Shared TypeScript types
 ```
 
 ---
