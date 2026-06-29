@@ -206,23 +206,26 @@ Every payment can be traced through an explorer transaction hash, and settlement
 
 ## Smart Contract
 
-> Latest deployed settlement contract (this workspace session):
+> Run `./scripts/deploy-contract.sh <secret-key-or-alias>` to build, deploy, and initialize both the settlement and pool contracts on Stellar testnet.
 
-| Detail | Value |
-|--------|-------|
-| **Contract ID** | `CBS2BJQ4ZC2ZSAZ5XS47BGC6Q7VTMJA4SE2PVHFXGXAZI5ES6H645WHO` |
-| **Deploy Transaction** | [View on Stellar Expert](https://stellar.expert/explorer/testnet/tx/4d0304dc8b176aac73686f4590dbe883df9fc555aa3a41a6e6462a285abff8e4) |
-| **Contract Explorer** | [View Contract](https://stellar.expert/explorer/testnet/contract/CBS2BJQ4ZC2ZSAZ5XS47BGC6Q7VTMJA4SE2PVHFXGXAZI5ES6H645WHO) |
+After successful deployment, add the settlement contract ID to `.env.local`:
 
-### ✅ Verified On-Chain Transactions
+```bash
+NEXT_PUBLIC_CONTRACT_ID=<settlement-contract-id>
+```
 
-| Transaction | Link |
-|-------------|------|
-| Settlement deploy tx | [View](https://stellar.expert/explorer/testnet/tx/826092e11281bd8fe3c8997ef0a4886b1bd3728069c6855ec4e3866f0a8f9d06) |
-| Pool deploy tx | [View](https://stellar.expert/explorer/testnet/tx/fa245da3ce0a478a9146cccdfa0b1b7f918985c0c138dec3f061f104e5b8f39e) |
-| Pool init tx (`pool_ini`) | [View](https://stellar.expert/explorer/testnet/tx/a04a0a2f79e06448156b52ebd07060281cab5bee323889e92c584e0aaf50546d) |
-| Settlement init tx (`stx_ini`) | [View](https://stellar.expert/explorer/testnet/tx/f05c2f59f980a00e99f3f00d57e22b8b10fd0405064096273fd912c9b05a037e) |
-| Inter-contract settlement proof (`record_payment` + internal pool `withdraw`) | [View](https://stellar.expert/explorer/testnet/tx/04c679c7ab7ec960db505038b4c6ec1f367e5d3caae013696bf3111e493de967) |
+### ✅ Deployment Script
+
+- `scripts/deploy-contract.sh` builds the `settlex-contract` package once
+- Deploys a settlement contract instance
+- Deploys a pool contract instance from the same WASM
+- Initializes the pool contract with the settlement contract reference
+- Initializes the settlement contract with the pool contract reference
+- Prints settlement and pool contract IDs plus explorer links
+
+### 🔍 Explorer verification
+
+After running the script, use the printed Stellar Expert URLs to confirm contract deployment and initialization transactions.
 
 ### 🔧 Main Contract Functions
 
