@@ -64,18 +64,43 @@ export function TripForm({ onSubmit, onCancel, initialData, currentUserPublicKey
   const validate = (): boolean => {
     const errs: Record<string, string> = {};
     if (!name.trim()) errs.name = "Trip name is required";
+
     const namedMembers = members.filter((m) => m.name.trim());
     if (namedMembers.length < 2) errs.members = "Add at least 2 members";
+
+    // Track seen addresses for duplicate detection (case-insensitive).
+    const seenAddresses = new Map<string, number>(); // normalised address → first-seen index
+
     members.forEach((m, i) => {
       if (!m.name.trim()) return;
-      if (!m.walletAddress?.trim())
+
+      const raw = m.walletAddress?.trim() ?? "";
+      if (!raw) {
         errs[`member_addr_${i}`] = "Stellar address is required.";
-      else if (!/^G[A-Z2-7]{55}$/.test(m.walletAddress.trim()))
+      } else if (!/^G[A-Z2-7]{55}$/i.test(raw)) {
         errs[`member_addr_${i}`] = "Invalid Stellar address (must start with G, 56 chars).";
+      } else {
+        // Address is syntactically valid — check for duplicates.
+        const normalised = raw.toUpperCase();
+        if (seenAddresses.has(normalised)) {
+          const firstIdx = seenAddresses.get(normalised)!;
+          errs[`member_addr_${i}`] =
+            `Duplicate wallet address — already used by member ${firstIdx + 1}.`;
+          // Also flag the first member if not already errored.
+          if (!errs[`member_addr_${firstIdx}`]) {
+            errs[`member_addr_${firstIdx}`] =
+              `Duplicate wallet address — also used by member ${i + 1}.`;
+          }
+        } else {
+          seenAddresses.set(normalised, i);
+        }
+      }
     });
+
     setErrors(errs);
     return Object.keys(errs).length === 0;
   };
+
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
