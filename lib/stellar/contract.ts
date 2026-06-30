@@ -75,6 +75,49 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+/**
+ * Submit an assembled, signed Soroban transaction and poll until confirmed.
+ * Shared by `depositPoolBalance` and `recordPaymentOnChain` to avoid duplication.
+ */
+async function submitAndPoll(
+  signedXdr: string,
+  onStatus?: (step: "simulating" | "signing" | "sending" | "confirming") => void,
+): Promise<{ ledger: number }> {
+  onStatus?.("sending");
+  const sendResult = await sorobanServer.sendTransaction(
+    TransactionBuilder.fromXDR(signedXdr, NETWORK_PASSPHRASE)
+  );
+
+  if (sendResult.status === "ERROR") {
+    throw new Error(
+      `Contract send failed: ${
+        sendResult.errorResult?.result()?.toXDR("base64") ?? "unknown error"
+      }`,
+    );
+  }
+
+  onStatus?.("confirming");
+  const txHash = sendResult.hash;
+
+  for (let i = 0; i < MAX_POLL_ATTEMPTS; i++) {
+    await sleep(POLL_INTERVAL_MS);
+    const pollResult = await sorobanServer.getTransaction(txHash);
+
+    if (pollResult.status === rpc.Api.GetTransactionStatus.SUCCESS) {
+      return { ledger: (pollResult as { ledger: number }).ledger };
+    }
+    if (pollResult.status === rpc.Api.GetTransactionStatus.FAILED) {
+      const failedResult = pollResult as { resultXdr?: { toXDR?: () => unknown } };
+      const rawMsg = failedResult.resultXdr
+        ? `Contract error: ${String(failedResult.resultXdr)}`
+        : "Contract transaction was submitted but failed on-chain.";
+      throw new Error(decodeContractError(rawMsg));
+    }
+  }
+
+  throw new Error("Contract transaction timed out waiting for confirmation.");
+}
+
 function xlmToStroops(xlm: string): bigint {
   const parts = xlm.split(".");
   const whole = BigInt(parts[0] ?? "0");
@@ -261,37 +304,8 @@ export async function depositPoolBalance(
     onStatus?.("signing");
     const signedXdr = await signXDR(assembled.toXDR(), NETWORK_PASSPHRASE);
 
-    onStatus?.("sending");
-    const sendResult = await sorobanServer.sendTransaction(
-      TransactionBuilder.fromXDR(signedXdr, NETWORK_PASSPHRASE)
-    );
-
-    if (sendResult.status === "ERROR") {
-      throw new Error(
-        `Contract send failed: ${sendResult.errorResult?.result()?.toXDR("base64") ?? "unknown error"}`
-      );
-    }
-
-    onStatus?.("confirming");
-    const txHash_ = sendResult.hash;
-
-    for (let i = 0; i < MAX_POLL_ATTEMPTS; i++) {
-      await sleep(POLL_INTERVAL_MS);
-      const pollResult = await sorobanServer.getTransaction(txHash_);
-
-      if (pollResult.status === rpc.Api.GetTransactionStatus.SUCCESS) {
-        return { success: true, ledger: (pollResult as { ledger: number }).ledger };
-      }
-      if (pollResult.status === rpc.Api.GetTransactionStatus.FAILED) {
-        const failedResult = pollResult as { resultXdr?: { toXDR?: () => unknown } };
-        const rawMsg = failedResult.resultXdr
-          ? `Contract error: ${String(failedResult.resultXdr)}`
-          : "Contract transaction was submitted but failed on-chain.";
-        throw new Error(decodeContractError(rawMsg));
-      }
-    }
-
-    throw new Error("Contract transaction timed out waiting for confirmation.");
+    const { ledger } = await submitAndPoll(signedXdr, onStatus);
+    return { success: true, ledger };
   } catch (err) {
     const message = err instanceof Error ? err.message : "Deposit failed.";
     return { success: false, error: message };
@@ -352,37 +366,8 @@ export async function recordPaymentOnChain(
     onStatus?.("signing");
     const signedXdr = await signXDR(assembled.toXDR(), NETWORK_PASSPHRASE);
 
-    onStatus?.("sending");
-    const sendResult = await sorobanServer.sendTransaction(
-      TransactionBuilder.fromXDR(signedXdr, NETWORK_PASSPHRASE)
-    );
-
-    if (sendResult.status === "ERROR") {
-      throw new Error(
-        `Contract send failed: ${sendResult.errorResult?.result()?.toXDR("base64") ?? "unknown error"}`
-      );
-    }
-
-    onStatus?.("confirming");
-    const txHash_ = sendResult.hash;
-
-    for (let i = 0; i < MAX_POLL_ATTEMPTS; i++) {
-      await sleep(POLL_INTERVAL_MS);
-      const pollResult = await sorobanServer.getTransaction(txHash_);
-
-      if (pollResult.status === rpc.Api.GetTransactionStatus.SUCCESS) {
-        return { success: true, ledger: (pollResult as { ledger: number }).ledger };
-      }
-      if (pollResult.status === rpc.Api.GetTransactionStatus.FAILED) {
-        const failedResult = pollResult as { resultXdr?: { toXDR?: () => unknown } };
-        const rawMsg = failedResult.resultXdr
-          ? `Contract error: ${String(failedResult.resultXdr)}`
-          : "Contract transaction was submitted but failed on-chain.";
-        throw new Error(decodeContractError(rawMsg));
-      }
-    }
-
-    throw new Error("Contract transaction timed out waiting for confirmation.");
+    const { ledger } = await submitAndPoll(signedXdr, onStatus);
+    return { success: true, ledger };
   } catch (err) {
     const message = err instanceof Error ? err.message : "Contract call failed.";
     console.error("[StellarStar:contract] recordPaymentOnChain error:", message);

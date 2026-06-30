@@ -143,14 +143,14 @@ export function useExpenseForm({
         await addExpense(expense);
         toastSuccess("Expense created!", `"${expense.title}" split among ${cleanMembers.length} members.`);
         onSuccess?.(expense.id);
-      } catch (err: any) {
-        const message = err?.message || "Failed to create expense.";
-        if (message.includes("policy") || message.includes("permission") || message.includes("uuid") || message.includes("syntax")) {
+      } catch (err: unknown) {
+        const raw = err instanceof Error ? err.message : "Failed to create expense.";
+        if (raw.includes("policy") || raw.includes("permission") || raw.includes("uuid") || raw.includes("syntax")) {
           toastError("Save failed", "Database error. Please check your setup or try again.");
-        } else if (message.includes("fetch") || message.includes("network") || message.includes("Network")) {
+        } else if (raw.includes("fetch") || raw.includes("network") || raw.includes("Network")) {
           toastError("No connection", "Cannot reach server. Check your connection (WARP on?).");
         } else {
-          toastError("Error", message);
+          toastError("Error", raw);
         }
       } finally {
         setSubmitting(false);

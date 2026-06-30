@@ -1,9 +1,16 @@
-                                                                 "use client";
+"use client";
 
 import { useCallback, useState, useEffect } from "react";
 import { buildPaymentTransaction } from "@/lib/stellar/buildTransaction";
 import { submitSignedTransaction } from "@/lib/stellar/submitTransaction";
-import { recordPaymentOnChain, checkIsPaid, precheckPoolBalance, getPoolBalanceStroops, depositPoolBalance, stroopsToXlm } from "@/lib/stellar/contract";
+import {
+  recordPaymentOnChain,
+  checkIsPaid,
+  precheckPoolBalance,
+  getPoolBalanceStroops,
+  depositPoolBalance,
+  stroopsToXlm,
+} from "@/lib/stellar/contract";
 import { verifyPaymentTransaction } from "@/lib/stellar/verifyTransaction";
 import { signXDR } from "@/lib/freighter";
 import { useWallet } from "@/hooks/useWallet";
@@ -18,8 +25,12 @@ import {
 } from "@/lib/utils/pendingOnChain";
 import type { SplitShare } from "@/types/expense";
 
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
 type OnChainStep = "simulating" | "signing" | "sending" | "confirming";
- 
+
 export type PaymentState =
   | { status: "idle" }
   | { status: "building" }
@@ -44,6 +55,10 @@ interface PayShareParams {
 // Re-export so consumers can import the type from the hook module directly.
 export type { PendingOnChainRecord };
 
+// ---------------------------------------------------------------------------
+// Hook
+// ---------------------------------------------------------------------------
+
 export function usePayment({ expenseId }: UsePaymentOpts) {
   const { publicKey, refreshBalance } = useWallet();
   const { markSharePaid } = useExpense();
@@ -51,15 +66,14 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
 
   const [paymentState, setPaymentState] = useState<PaymentState>({ status: "idle" });
   const [pendingOnChain, setPendingOnChainState] = useState<PendingOnChainRecord | null>(null);
-
   const [poolBalance, setPoolBalance] = useState<string | null>(null);
   const [depositLoading, setDepositLoading] = useState(false);
 
   // ---------------------------------------------------------------------------
-  // Persistence helpers — wrap state setter so storage stays in sync
+  // Persistence helpers — keep localStorage in sync with React state
   // ---------------------------------------------------------------------------
 
-  /** Persist + update state */
+  /** Write to localStorage then update state. */
   const persistPendingOnChain = useCallback(
     (record: PendingOnChainRecord) => {
       if (publicKey) savePendingOnChain(publicKey, record);
@@ -68,11 +82,38 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
     [publicKey],
   );
 
-  /** Clear storage + clear state */
+  /** Wipe from localStorage then clear state. */
   const clearPersistedPendingOnChain = useCallback(() => {
     if (publicKey) clearPendingOnChain(publicKey, expenseId);
     setPendingOnChainState(null);
   }, [publicKey, expenseId]);
+
+  /**
+   * Build a PendingOnChainRecord from payShare arguments and persist it.
+   * Stable callback — placed at hook level so it is not recreated inside payShare.
+   */
+  const buildAndPersistPending = useCallback(
+    (
+      txHash: string,
+      ledger: number,
+      payerWalletAddress: string,
+      amountXlm: string,
+      tripId: string,
+    ) => {
+      if (!publicKey) return;
+      const record: PendingOnChainRecord = {
+        memberPublicKey: publicKey,
+        tripId,
+        expenseId,
+        payerPublicKey: payerWalletAddress,
+        amountXlm,
+        txHash,
+        ledger,
+      };
+      persistPendingOnChain(record);
+    },
+    [publicKey, expenseId, persistPendingOnChain],
+  );
 
   // ---------------------------------------------------------------------------
   // On mount — restore any persisted pending retry from localStorage
@@ -88,12 +129,11 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
         hash: restored.txHash,
         ledger: restored.ledger,
         onChain: false,
-        message:
-          "A previous on-chain recording attempt failed. Click Retry to complete it.",
+        message: "A previous on-chain recording attempt failed. Click Retry to complete it.",
       });
     }
-  // Only run once per (publicKey, expenseId) combination — intentional deps.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // Only run once per (publicKey, expenseId) combination — intentional deps.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [publicKey, expenseId]);
 
   // ---------------------------------------------------------------------------
@@ -128,13 +168,15 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
       try {
         const result = await depositPoolBalance(publicKey, amountXlm);
         if (result.success) {
-          toastSuccess("Deposit successful", `Deposited ${parseFloat(amountXlm).toFixed(4)} XLM into pool.`);
+          toastSuccess(
+            "Deposit successful",
+            `Deposited ${parseFloat(amountXlm).toFixed(4)} XLM into pool.`,
+          );
           await loadPoolBalance();
           return true;
-        } else {
-          toastError("Deposit failed", result.error ?? "Unknown error");
-          return false;
         }
+        toastError("Deposit failed", result.error ?? "Unknown error");
+        return false;
       } catch (err) {
         const msg = err instanceof Error ? err.message : "Deposit failed.";
         toastError("Deposit failed", msg);
@@ -147,7 +189,7 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
   );
 
   // ---------------------------------------------------------------------------
-  // reset — also wipes persisted record
+  // reset — also wipes the persisted record
   // ---------------------------------------------------------------------------
 
   const reset = useCallback(() => {
@@ -246,7 +288,10 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
         return;
       }
       if (!payerWalletAddress) {
-        toastError("Payer has no wallet", "The expense creator hasn't added their Stellar address.");
+        toastError(
+          "Payer has no wallet",
+          "The expense creator hasn't added their Stellar address.",
+        );
         return;
       }
 
@@ -281,9 +326,10 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
 
         let onChain = false;
         let onChainError: string | null = null;
+
         if (CONTRACT_ID && tripId) {
           setPaymentState({ status: "recording", step: "simulating" });
-          
+
           const verifyResult = await verifyPaymentTransaction({
             txHash: result.hash,
             expectedSource: publicKey,
@@ -291,30 +337,15 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
             expectedAmountXlm: share.amount,
           });
 
-          /** Helper to build and durably persist the pending record */
-          const buildAndPersistPending = () => {
-            const record: PendingOnChainRecord = {
-              memberPublicKey: publicKey,
-              tripId: tripId!,
-              expenseId,
-              payerPublicKey: payerWalletAddress,
-              amountXlm: share.amount,
-              txHash: result.hash,
-              ledger: result.ledger,
-            };
-            persistPendingOnChain(record);
-          };
-
           if (!verifyResult.valid) {
             onChainError = verifyResult.error ?? "Invalid payment transaction on network.";
-            buildAndPersistPending();
+            buildAndPersistPending(result.hash, result.ledger, payerWalletAddress, share.amount, tripId);
           } else {
             const poolCheck = await precheckPoolBalance(publicKey, publicKey, share.amount);
             if (!poolCheck.ok) {
               onChainError =
-                poolCheck.error ??
-                "Pool balance is too low to record this payment on-chain.";
-              buildAndPersistPending();
+                poolCheck.error ?? "Pool balance is too low to record this payment on-chain.";
+              buildAndPersistPending(result.hash, result.ledger, payerWalletAddress, share.amount, tripId);
             } else {
               setPaymentState({ status: "recording", step: "simulating" });
               const contractResult = await recordPaymentOnChain({
@@ -332,7 +363,7 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
                 loadPoolBalance();
               } else {
                 onChainError = contractResult.error ?? "On-chain recording failed.";
-                buildAndPersistPending();
+                buildAndPersistPending(result.hash, result.ledger, payerWalletAddress, share.amount, tripId);
               }
             }
           }
@@ -377,8 +408,22 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
         toastError("Payment failed", display);
       }
     },
-    [publicKey, expenseId, markSharePaid, refreshBalance, toastSuccess, toastError, toastInfo, loadPoolBalance, persistPendingOnChain],
+    [
+      publicKey,
+      expenseId,
+      markSharePaid,
+      refreshBalance,
+      toastSuccess,
+      toastError,
+      toastInfo,
+      loadPoolBalance,
+      buildAndPersistPending,
+    ],
   );
+
+  // ---------------------------------------------------------------------------
+  // Return
+  // ---------------------------------------------------------------------------
 
   return {
     paymentState,
@@ -395,11 +440,17 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
     isLoading: ["building", "signing", "submitting", "recording"].includes(paymentState.status),
     isSuccess: paymentState.status === "success",
     isError:   paymentState.status === "error",
-    txHash:    paymentState.status === "success" || paymentState.status === "partial_success" ? paymentState.hash : null,
-    onChain:   paymentState.status === "success" || paymentState.status === "partial_success" ? paymentState.onChain : false,
-    explorerUrl: paymentState.status === "success" || paymentState.status === "partial_success"
-      ? `${STELLAR_EXPLORER}/tx/${paymentState.hash}`
-      : null,
+    txHash:
+      paymentState.status === "success" || paymentState.status === "partial_success"
+        ? paymentState.hash
+        : null,
+    onChain:
+      paymentState.status === "success" || paymentState.status === "partial_success"
+        ? paymentState.onChain
+        : false,
+    explorerUrl:
+      paymentState.status === "success" || paymentState.status === "partial_success"
+        ? `${STELLAR_EXPLORER}/tx/${paymentState.hash}`
+        : null,
   };
 }
-
