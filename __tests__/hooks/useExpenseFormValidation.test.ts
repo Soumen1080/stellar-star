@@ -1,6 +1,19 @@
 import { validateExpenseFormFields } from "@/hooks/useExpenseForm";
 import type { Member } from "@/types/expense";
 
+// ─── Shared fixture ────────────────────────────────────────────────────────────
+
+const ADDR_A = "G" + "A".repeat(55); // valid, 56 chars
+const ADDR_B = "G" + "B".repeat(55);
+const ADDR_C = "G" + "C".repeat(55);
+
+const validMembers: Member[] = [
+  { id: "member-1", name: "Asha", walletAddress: ADDR_A },
+  { id: "member-2", name: "Ravi", walletAddress: ADDR_B },
+];
+
+// ─── Existing tests ────────────────────────────────────────────────────────────
+
 describe("validateExpenseFormFields", () => {
   it("requires a title, valid amount, member names, and Stellar addresses", () => {
     const errors = validateExpenseFormFields({
@@ -28,9 +41,80 @@ describe("validateExpenseFormFields", () => {
 
     expect(errors).toEqual({});
   });
+
+  // ─── Duplicate wallet tests ────────────────────────────────────────────────
+
+  it("rejects two members with the same wallet address (exact match)", () => {
+    const errors = validateExpenseFormFields({
+      title: "Lunch",
+      totalAmount: "5",
+      members: [
+        { id: "m1", name: "Alice", walletAddress: ADDR_A },
+        { id: "m2", name: "Bob",   walletAddress: ADDR_A },
+      ],
+    });
+
+    expect(errors.member_addr_1).toMatch(/Duplicate wallet address/);
+    expect(errors.member_addr_0).toMatch(/Duplicate wallet address/);
+  });
+
+  it("treats addresses case-insensitively (lowercase vs uppercase)", () => {
+    const errors = validateExpenseFormFields({
+      title: "Taxi",
+      totalAmount: "3",
+      members: [
+        { id: "m1", name: "Alice", walletAddress: ADDR_A },
+        { id: "m2", name: "Bob",   walletAddress: ADDR_A.toLowerCase() },
+      ],
+    });
+
+    expect(errors.member_addr_1).toMatch(/Duplicate wallet address/);
+  });
+
+  it("trims whitespace before comparing addresses", () => {
+    const errors = validateExpenseFormFields({
+      title: "Hotel",
+      totalAmount: "50",
+      members: [
+        { id: "m1", name: "Alice", walletAddress: `  ${ADDR_A}  ` },
+        { id: "m2", name: "Bob",   walletAddress: ADDR_A },
+      ],
+    });
+
+    expect(errors.member_addr_1).toMatch(/Duplicate wallet address/);
+  });
+
+  it("flags all duplicates when three members share the same address", () => {
+    const errors = validateExpenseFormFields({
+      title: "Groceries",
+      totalAmount: "20",
+      members: [
+        { id: "m1", name: "Alice", walletAddress: ADDR_A },
+        { id: "m2", name: "Bob",   walletAddress: ADDR_A },
+        { id: "m3", name: "Carol", walletAddress: ADDR_A },
+      ],
+    });
+
+    // Member 0 is flagged because it collides with 1 (and later 2)
+    expect(errors.member_addr_0).toMatch(/Duplicate wallet address/);
+    expect(errors.member_addr_1).toMatch(/Duplicate wallet address/);
+    expect(errors.member_addr_2).toMatch(/Duplicate wallet address/);
+  });
+
+  it("does not flag members with distinct valid addresses", () => {
+    const errors = validateExpenseFormFields({
+      title: "Dinner",
+      totalAmount: "30",
+      members: [
+        { id: "m1", name: "Alice", walletAddress: ADDR_A },
+        { id: "m2", name: "Bob",   walletAddress: ADDR_B },
+        { id: "m3", name: "Carol", walletAddress: ADDR_C },
+      ],
+    });
+
+    expect(errors.member_addr_0).toBeUndefined();
+    expect(errors.member_addr_1).toBeUndefined();
+    expect(errors.member_addr_2).toBeUndefined();
+  });
 });
 
-const validMembers: Member[] = [
-  { id: "member-1", name: "Asha", walletAddress: "G".padEnd(56, "A") },
-  { id: "member-2", name: "Ravi", walletAddress: "G".padEnd(56, "B") },
-];

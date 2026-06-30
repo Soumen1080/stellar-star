@@ -35,14 +35,34 @@ export function validateExpenseFormFields({
     errors.totalAmount = "Enter a valid XLM amount (e.g. 10.5).";
   }
 
+  // Track seen addresses for duplicate detection (case-insensitive).
+  const seenAddresses = new Map<string, number>(); // normalised address → first-seen index
+
   members.forEach((member, index) => {
     if (!member.name.trim()) {
       errors[`member_name_${index}`] = "Name is required.";
     }
-    if (!member.walletAddress?.trim()) {
+
+    const raw = member.walletAddress?.trim() ?? "";
+    if (!raw) {
       errors[`member_addr_${index}`] = "Stellar address is required to enable payments.";
-    } else if (!isValidStellarAddress(member.walletAddress.trim())) {
+    } else if (!isValidStellarAddress(raw)) {
       errors[`member_addr_${index}`] = "Invalid Stellar address (must start with G, 56 chars).";
+    } else {
+      // Address is syntactically valid — check for duplicates.
+      const normalised = raw.toUpperCase();
+      if (seenAddresses.has(normalised)) {
+        const firstIdx = seenAddresses.get(normalised)!;
+        errors[`member_addr_${index}`] =
+          `Duplicate wallet address — already used by member ${firstIdx + 1}.`;
+        // Also flag the first member if not already errored.
+        if (!errors[`member_addr_${firstIdx}`]) {
+          errors[`member_addr_${firstIdx}`] =
+            `Duplicate wallet address — also used by member ${index + 1}.`;
+        }
+      } else {
+        seenAddresses.set(normalised, index);
+      }
     }
   });
 
@@ -52,6 +72,7 @@ export function validateExpenseFormFields({
 
   return errors;
 }
+
 
 export function useExpenseForm({
   onSuccess,

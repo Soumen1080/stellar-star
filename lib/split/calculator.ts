@@ -81,5 +81,5 @@ export function isValidXLMAmount(value: string): boolean {
 }
 
 export function isValidStellarAddress(address: string): boolean {
-  return /^G[A-Z2-7]{55}$/.test(address);
+  return /^G[A-Z2-7]{55}$/i.test(address);
 }
