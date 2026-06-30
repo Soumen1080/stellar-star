@@ -398,12 +398,15 @@ bash scripts/deploy-contract.sh <stellar-cli-account-alias-or-secret>
 bash scripts/deploy-contract.sh settlex-deployer
 ```
 
+The script builds, deploys, and cross-initializes both the **SettleX Settlement** contract and the **Settlement Pool** contract on testnet automatically.
+
 **After deployment**, update:
-- `NEXT_PUBLIC_CONTRACT_ID` in `.env.local`
+- `NEXT_PUBLIC_CONTRACT_ID` with the printed settlement contract ID in `.env.local`.
 
 > **Notes:**
-> - If script is not executable in your shell, run it via `bash scripts/deploy-contract.sh <alias-or-secret>`.
-> - Always verify returned tx/contract ID on Stellar Expert before updating docs.
+> - If the script is not executable in your shell, run it via `bash scripts/deploy-contract.sh <alias-or-secret>`.
+> - The script resolves the deployer's address to initialize both contract structures properly.
+> - Always verify the returned contract IDs on Stellar Expert explorer.
 
 ---
 

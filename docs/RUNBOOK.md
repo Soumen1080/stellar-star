@@ -45,14 +45,23 @@ Run contract tests:
 
 ## 4. Contract Deployment (Testnet)
 
-Recommended flow:
+Run the automated contract deployment script:
 
-1. Build contract via Stellar CLI tooling.
-2. Deploy settlement and pool contract instances.
-3. Initialize pool and settlement references.
-4. Execute one `record_payment` flow that triggers pool withdraw to prove inter-contract behavior.
-5. Update `NEXT_PUBLIC_CONTRACT_ID` with settlement contract ID.
-6. Save all explorer links in README/docs.
+```bash
+bash scripts/deploy-contract.sh <secret-key-or-stellar-cli-alias>
+```
+
+This script will:
+1. Build the WASM contract package (`settlex_contract.wasm`).
+2. Resolve the deployer's public key address (`G...`).
+3. Deploy the Settlement Pool contract instance and get its `POOL_CONTRACT_ID`.
+4. Deploy the Settlement contract instance and get its `SETTLEMENT_CONTRACT_ID`.
+5. Cross-initialize both contracts by calling `init_pool` on the pool contract (referencing the settlement contract) and `init` on the settlement contract (referencing the pool contract).
+6. Print the contract IDs and Stellar Expert explorer links.
+
+After deployment:
+1. Update `NEXT_PUBLIC_CONTRACT_ID` with the printed settlement contract ID in `.env.local`.
+2. Save the printed explorer links in `README.md` and documentation if needed.
 
 ## 5. CI/CD Verification
 
