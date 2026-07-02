@@ -12,8 +12,8 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import { TripForm } from "@/components/trips/TripForm";
 import type { TripFormData } from "@/types/trip";
 
-const ADDR_A = "G" + "A".repeat(55); // valid Stellar address
-const ADDR_B = "G" + "B".repeat(55);
+const ADDR_A = "GDQAXCC66ZI3RLPA72TTWGI2MN6K4LH3JEM6NKXKR7LPJ3R7OYIJF5LV"; // real SDK-valid address
+const ADDR_B = "GAYP4BR4UCI2OT6T7OMVZWWDGCFXHCB7NH64UNGPUHSND3F5SJKBS7AU";
 
 /** Render TripForm pre-filled with the first member's wallet. */
 function renderForm(
@@ -90,8 +90,8 @@ describe("TripForm — duplicate wallet validation", () => {
     fireEvent.change(nameInput, { target: { value: "Euro Trip" } });
 
     fillName(container, 1, "Bob");
-    // Lowercase version of ADDR_A — should still be detected as duplicate
-    fillWallet(container, 1, ADDR_A.toLowerCase());
+    // Same address again — SDK only accepts uppercase, so duplicate detection uses exact match
+    fillWallet(container, 1, ADDR_A);
 
     submit(container);
 

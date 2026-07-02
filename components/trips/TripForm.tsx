@@ -5,6 +5,7 @@ import { Plus, Trash2, UserPlus } from "lucide-react";
 import type { Member } from "@/types/expense";
 import type { TripFormData } from "@/types/trip";
 import { Input } from "@/components/ui/Input";
+import { isValidStellarAddress } from "@/lib/split/calculator";
 import { cn } from "@/lib/utils";
 
 interface TripFormProps {
@@ -77,7 +78,7 @@ export function TripForm({ onSubmit, onCancel, initialData, currentUserPublicKey
       const raw = m.walletAddress?.trim() ?? "";
       if (!raw) {
         errs[`member_addr_${i}`] = "Stellar address is required.";
-      } else if (!/^G[A-Z2-7]{55}$/i.test(raw)) {
+      } else if (!isValidStellarAddress(raw)) {
         errs[`member_addr_${i}`] = "Invalid Stellar address (must start with G, 56 chars).";
       } else {
         // Address is syntactically valid — check for duplicates.
