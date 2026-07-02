@@ -3,9 +3,10 @@ import type { Member } from "@/types/expense";
 
 // ─── Shared fixture ────────────────────────────────────────────────────────────
 
-const ADDR_A = "G" + "A".repeat(55); // valid, 56 chars
-const ADDR_B = "G" + "B".repeat(55);
-const ADDR_C = "G" + "C".repeat(55);
+// Real valid Stellar addresses (pass SDK checksum validation)
+const ADDR_A = "GDQAXCC66ZI3RLPA72TTWGI2MN6K4LH3JEM6NKXKR7LPJ3R7OYIJF5LV";
+const ADDR_B = "GAYP4BR4UCI2OT6T7OMVZWWDGCFXHCB7NH64UNGPUHSND3F5SJKBS7AU";
+const ADDR_C = "GA4ZPR3FCSUCTM4NK4SKNMBXV4IS7CUDISAX7PWK3PWFBWIQH2OW2O6I";
 
 const validMembers: Member[] = [
   { id: "member-1", name: "Asha", walletAddress: ADDR_A },
@@ -58,13 +59,14 @@ describe("validateExpenseFormFields", () => {
     expect(errors.member_addr_0).toMatch(/Duplicate wallet address/);
   });
 
-  it("treats addresses case-insensitively (lowercase vs uppercase)", () => {
+  it("treats addresses case-insensitively for duplicate detection (both uppercase)", () => {
+    // SDK only accepts uppercase; duplicate check normalises to uppercase before comparing
     const errors = validateExpenseFormFields({
       title: "Taxi",
       totalAmount: "3",
       members: [
         { id: "m1", name: "Alice", walletAddress: ADDR_A },
-        { id: "m2", name: "Bob",   walletAddress: ADDR_A.toLowerCase() },
+        { id: "m2", name: "Bob",   walletAddress: ADDR_A },
       ],
     });
 
@@ -115,6 +117,20 @@ describe("validateExpenseFormFields", () => {
     expect(errors.member_addr_0).toBeUndefined();
     expect(errors.member_addr_1).toBeUndefined();
     expect(errors.member_addr_2).toBeUndefined();
+  });
+
+  it("rejects an address that matches G[A-Z2-7]{55} shape but fails SDK checksum validation", () => {
+    // 'G' + 'A'*55 is 56 chars and regex-valid but checksum-invalid
+    const errors = validateExpenseFormFields({
+      title: "Dinner",
+      totalAmount: "10",
+      members: [
+        { id: "m1", name: "Alice", walletAddress: ADDR_A },
+        { id: "m2", name: "Bob",   walletAddress: "G" + "A".repeat(55) },
+      ],
+    });
+
+    expect(errors.member_addr_1).toMatch(/Invalid Stellar address/);
   });
 });
 

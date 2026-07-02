@@ -133,7 +133,7 @@ describe("isValidXLMAmount", () => {
 describe("isValidStellarAddress", () => {
   it("accepts a valid Stellar G-address (56 chars)", () => {
     expect(
-      isValidStellarAddress("GBGJFHVDS5CQJCFGGLOFMFXZJ3RCUZHDNJV5PBSYVLVQNKFX7SRP7CDR"),
+      isValidStellarAddress("GDQAXCC66ZI3RLPA72TTWGI2MN6K4LH3JEM6NKXKR7LPJ3R7OYIJF5LV"),
     ).toBe(true);
   });
 
@@ -147,5 +147,14 @@ describe("isValidStellarAddress", () => {
 
   it("rejects empty string", () => {
     expect(isValidStellarAddress("")).toBe(false);
+  });
+
+  it("rejects an address that matches G[A-Z2-7]{55} shape but has an invalid checksum", () => {
+    // Correct length and charset but checksum is wrong
+    expect(isValidStellarAddress("GBGJFHVDS5CQJCFGGLOFMFXZJ3RCUZHDNJV5PBSYVLVQNKFX7SRP7CDS")).toBe(false);
+  });
+
+  it("rejects another regex-shaped address with bad checksum", () => {
+    expect(isValidStellarAddress("G" + "A".repeat(55))).toBe(false);
   });
 });

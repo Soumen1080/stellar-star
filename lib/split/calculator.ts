@@ -1,3 +1,4 @@
+import { StrKey } from "@stellar/stellar-sdk";
 import type { Member, SplitShare } from "@/types/expense";
 
 function toXLM(n: number): string {
@@ -81,5 +82,5 @@ export function isValidXLMAmount(value: string): boolean {
 }
 
 export function isValidStellarAddress(address: string): boolean {
-  return /^G[A-Z2-7]{55}$/i.test(address);
+  return StrKey.isValidEd25519PublicKey(address);
 }
