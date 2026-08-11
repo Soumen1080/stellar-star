@@ -244,17 +244,12 @@ WITH CHECK (
 
 -- EXPENSES POLICIES --
 
--- Members can view expenses they're part of
--- Also allows any wallet that appears on a share (covers trip members who
--- were added without a wallet address at trip creation time)
+-- Members can view expenses they're part of. `member_wallets` is maintained
+-- by the application and indexed with GIN, so this policy remains indexable.
 CREATE POLICY "Members can view their expenses" ON expenses
 FOR SELECT
 USING (
     current_setting('request.jwt.claims', true)::json->>'wallet_address' = ANY(member_wallets)
-    OR EXISTS (
-        SELECT 1 FROM jsonb_array_elements(shares) AS s
-        WHERE s->>'walletAddress' = current_setting('request.jwt.claims', true)::json->>'wallet_address'
-    )
 );
 
 -- Any authenticated wallet can create an expense (they become the creator)
@@ -266,24 +261,15 @@ WITH CHECK (
     created_by_wallet = ANY(member_wallets)
 );
 
--- Members can update expenses they're part of
--- Also allows any wallet that appears on a share (even if not in member_wallets)
--- so members can record their own payment regardless of how the expense was created
+-- Members can update expenses they're part of. Do not expand JSONB shares in
+-- an RLS policy: the indexed wallet array is the single access-control source.
 CREATE POLICY "Members can update their expenses" ON expenses
 FOR UPDATE
 USING (
     current_setting('request.jwt.claims', true)::json->>'wallet_address' = ANY(member_wallets)
-    OR EXISTS (
-        SELECT 1 FROM jsonb_array_elements(shares) AS s
-        WHERE s->>'walletAddress' = current_setting('request.jwt.claims', true)::json->>'wallet_address'
-    )
 )
 WITH CHECK (
     current_setting('request.jwt.claims', true)::json->>'wallet_address' = ANY(member_wallets)
-    OR EXISTS (
-        SELECT 1 FROM jsonb_array_elements(shares) AS s
-        WHERE s->>'walletAddress' = current_setting('request.jwt.claims', true)::json->>'wallet_address'
-    )
 );
 
 -- Only the creator can delete an expense

@@ -13,7 +13,7 @@
 #
 # Usage:
 #   chmod +x scripts/deploy-contract.sh
-#   ./scripts/deploy-contract.sh <YOUR_SECRET_KEY_OR_ALIAS>
+#   ./scripts/deploy-contract.sh <YOUR_SECRET_KEY_OR_ALIAS> <TOKEN_CONTRACT_ID>
 #
 # After successful deployment, copy the printed CONTRACT_ID to .env.local:
 #   NEXT_PUBLIC_CONTRACT_ID=C...
@@ -43,9 +43,10 @@ START_TIME=$(date +%s)
 trap on_error ERR
 
 ACCOUNT="${1:-}"
-if [[ -z "$ACCOUNT" ]]; then
-  echo "❌  Usage: $0 <secret-key-or-stellar-cli-alias>"
-  echo "   Example: $0 SDXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+TOKEN_CONTRACT_ID="${2:-}"
+if [[ -z "$ACCOUNT" || -z "$TOKEN_CONTRACT_ID" ]]; then
+  echo "❌  Usage: $0 <secret-key-or-stellar-cli-alias> <token-contract-id>"
+  echo "   Example: $0 SDXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX C..."
   exit 1
 fi
 
@@ -144,7 +145,8 @@ stellar contract invoke \
   -- \
   init_pool \
   --admin "$DEPLOYER_ADDRESS" \
-  --settlement-contract "$SETTLEMENT_CONTRACT_ID"
+  --settlement-contract "$SETTLEMENT_CONTRACT_ID" \
+  --token "$TOKEN_CONTRACT_ID"
 echo "  [OK] Pool contract initialized."
 echo ""
 
@@ -192,6 +194,7 @@ echo "---------------------"
 echo "NEXT_PUBLIC_CONTRACT_ID=$SETTLEMENT_CONTRACT_ID"
 echo "NEXT_PUBLIC_SETTLEMENT_CONTRACT_ID=$SETTLEMENT_CONTRACT_ID"
 echo "NEXT_PUBLIC_POOL_CONTRACT_ID=$POOL_CONTRACT_ID"
+echo "NEXT_PUBLIC_POOL_TOKEN_ID=$TOKEN_CONTRACT_ID"
 echo ""
 
 echo "Completed in ${ELAPSED_TIME} seconds."

@@ -1,11 +1,12 @@
 "use client";
 
-import React from "react";
+import React, { useState } from "react";
 import Link from "next/link";
 import { motion } from "framer-motion";
 import { Users, ReceiptText, ChevronRight, Trash2, CheckCheck } from "lucide-react";
 import type { Trip } from "@/types/trip";
 import { cn } from "@/lib/utils";
+import { Modal, ModalFooter } from "@/components/ui/Modal";
 
 interface TripCardProps {
   trip: Trip;
@@ -24,6 +25,7 @@ export function TripCard({
   index = 0,
   connectedWalletAddress,
 }: TripCardProps) {
+  const [isDeleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const createdAt = new Date(trip.createdAt).toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",
@@ -98,7 +100,7 @@ export function TripCard({
           <button
             onClick={(e) => {
               e.preventDefault();
-              onDelete(trip.id);
+              setDeleteConfirmOpen(true);
             }}
             className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs text-[#CCC] hover:text-red-500 hover:bg-red-50 transition-colors"
           >
@@ -109,6 +111,34 @@ export function TripCard({
           <span className="text-[10px] text-[#CCC] italic">Only the creator can delete</span>
         ) : null}
       </div>
+
+      <Modal
+        open={isDeleteConfirmOpen}
+        onClose={() => setDeleteConfirmOpen(false)}
+        title="Delete this trip?"
+        description="This permanently removes the trip. Its expenses will not be deleted."
+        size="sm"
+      >
+        <ModalFooter>
+          <button
+            type="button"
+            onClick={() => setDeleteConfirmOpen(false)}
+            className="px-3 py-2 rounded-lg text-sm font-semibold text-[#555] hover:bg-[#F5F5F5] transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setDeleteConfirmOpen(false);
+              onDelete(trip.id);
+            }}
+            className="px-3 py-2 rounded-lg text-sm font-semibold text-white bg-red-600 hover:bg-red-700 transition-colors"
+          >
+            Delete trip
+          </button>
+        </ModalFooter>
+      </Modal>
     </motion.div>
   );
 }

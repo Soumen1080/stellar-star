@@ -67,7 +67,7 @@ Supabase env vars already set in `playwright.config.ts`'s `webServer`.
 Run the automated contract deployment script:
 
 ```bash
-bash scripts/deploy-contract.sh <secret-key-or-stellar-cli-alias>
+bash scripts/deploy-contract.sh <secret-key-or-stellar-cli-alias> <token-contract-id>
 ```
 
 This script will:
@@ -75,12 +75,13 @@ This script will:
 2. Resolve the deployer's public key address (`G...`).
 3. Deploy the Settlement Pool contract instance and get its `POOL_CONTRACT_ID`.
 4. Deploy the Settlement contract instance and get its `SETTLEMENT_CONTRACT_ID`.
-5. Cross-initialize both contracts by calling `init_pool` on the pool contract (referencing the settlement contract) and `init` on the settlement contract (referencing the pool contract).
+5. Cross-initialize both contracts by calling `init_pool` with the settlement and token contract IDs, then `init` on the settlement contract (referencing the pool contract).
 6. Print the contract IDs and Stellar Expert explorer links.
 
 After deployment:
-1. Update `NEXT_PUBLIC_CONTRACT_ID` with the printed settlement contract ID in `.env.local`.
-2. Save the printed explorer links in `README.md` and documentation if needed.
+1. Update `NEXT_PUBLIC_CONTRACT_ID` and `NEXT_PUBLIC_SETTLEMENT_CONTRACT_ID` with the printed settlement contract ID.
+2. Update `NEXT_PUBLIC_POOL_CONTRACT_ID` and `NEXT_PUBLIC_POOL_TOKEN_ID` with the printed values.
+3. Save the printed explorer links in `README.md` and documentation if needed.
 
 ## 5. CI/CD Verification
 

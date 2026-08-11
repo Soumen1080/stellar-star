@@ -31,7 +31,7 @@ describe("TripCard Owner-Aware Delete Controls", () => {
     jest.clearAllMocks();
   });
 
-  it("renders the Delete button when connected wallet matches the trip creator", () => {
+  it("requires confirmation before deleting a creator-owned trip", () => {
     render(
       <TripCard
         trip={mockTrip}
@@ -42,8 +42,12 @@ describe("TripCard Owner-Aware Delete Controls", () => {
 
     const deleteBtn = screen.getByRole("button", { name: /delete/i });
     expect(deleteBtn).toBeTruthy();
-
+    expect(mockOnDelete).not.toHaveBeenCalled();
     fireEvent.click(deleteBtn);
+    expect(screen.getByRole("dialog", { name: /delete this trip/i })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete trip" }));
+
     expect(mockOnDelete).toHaveBeenCalledWith("trip-1");
   });
 

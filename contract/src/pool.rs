@@ -244,21 +244,21 @@ mod test {
     use soroban_sdk::{testutils::Address as _, Env};
 
     macro_rules! setup_pool {
-        ($env:ident, $client:ident, $admin:ident, $settlement:ident) => {
+        ($env:ident, $client:ident, $admin:ident, $settlement:ident, $token_addr:ident, $token_admin_client:ident) => {
             let $env = Env::default();
             $env.mock_all_auths();
             let contract_id = $env.register_contract(None, SettlementPoolContract);
             let $client = SettlementPoolContractClient::new(&$env, &contract_id);
             let $admin = Address::generate(&$env);
             let $settlement = Address::generate(&$env);
-            let token_addr = $env.register_stellar_asset_contract($admin.clone());
-            let token_admin_client = token::StellarAssetClient::new(&$env, &token_addr);
+            let $token_addr = $env.register_stellar_asset_contract($admin.clone());
+            let $token_admin_client = token::StellarAssetClient::new(&$env, &$token_addr);
         };
     }
 
     #[test]
     fn test_init_and_get_config() {
-        setup_pool!(env, client, admin, settlement_contract);
+        setup_pool!(env, client, admin, settlement_contract, token_addr, _token_admin_client);
 
         client.init_pool(&admin, &settlement_contract, &token_addr);
         let cfg = client.get_config();
@@ -270,7 +270,7 @@ mod test {
     #[test]
     #[should_panic]
     fn test_double_init_rejected() {
-        setup_pool!(env, client, admin, settlement_contract);
+        setup_pool!(env, client, admin, settlement_contract, token_addr, _token_admin_client);
 
         client.init_pool(&admin, &settlement_contract, &token_addr);
         client.init_pool(&admin, &settlement_contract, &token_addr);
@@ -278,7 +278,7 @@ mod test {
 
     #[test]
     fn test_deposit_and_balance() {
-        setup_pool!(env, client, admin, settlement_contract);
+        setup_pool!(env, client, admin, settlement_contract, token_addr, token_admin_client);
 
         let member = Address::generate(&env);
         token_admin_client.mint(&member, &100_000_000_i128);
@@ -290,7 +290,7 @@ mod test {
 
     #[test]
     fn test_withdraw_reduces_balance() {
-        setup_pool!(env, client, admin, settlement_contract);
+        setup_pool!(env, client, admin, settlement_contract, token_addr, token_admin_client);
 
         let member = Address::generate(&env);
         token_admin_client.mint(&member, &100_000_000_i128);
@@ -305,7 +305,7 @@ mod test {
     #[test]
     #[should_panic]
     fn test_withdraw_insufficient_rejected() {
-        setup_pool!(env, client, admin, settlement_contract);
+        setup_pool!(env, client, admin, settlement_contract, token_addr, token_admin_client);
 
         let member = Address::generate(&env);
         token_admin_client.mint(&member, &100_000_000_i128);
@@ -317,7 +317,7 @@ mod test {
 
     #[test]
     fn test_update_settlement_contract() {
-        setup_pool!(env, client, admin, settlement_contract);
+        setup_pool!(env, client, admin, settlement_contract, token_addr, _token_admin_client);
 
         let next_contract = Address::generate(&env);
         client.init_pool(&admin, &settlement_contract, &token_addr);
@@ -343,7 +343,7 @@ mod test {
     #[test]
     #[should_panic]
     fn test_deposit_amount_too_large_rejected() {
-        setup_pool!(env, client, admin, settlement_contract);
+        setup_pool!(env, client, admin, settlement_contract, token_addr, _token_admin_client);
         let member = Address::generate(&env);
 
         client.init_pool(&admin, &settlement_contract, &token_addr);
@@ -353,7 +353,7 @@ mod test {
     #[test]
     #[should_panic]
     fn test_deposit_requires_init() {
-        setup_pool!(env, client, _admin, _settlement_contract);
+        setup_pool!(env, client, _admin, _settlement_contract, _token_addr, _token_admin_client);
 
         let member = Address::generate(&env);
         client.deposit(&member, &1_i128);

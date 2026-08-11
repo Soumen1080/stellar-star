@@ -263,7 +263,7 @@ mod test {
     use soroban_sdk::{testutils::Address as _, Address, Env, String};
 
     macro_rules! setup {
-        ($env:ident, $client:ident, $pool_client:ident) => {
+        ($env:ident, $client:ident, $pool_client:ident, $token_addr:ident, $token_admin_client:ident) => {
             let $env = Env::default();
             $env.mock_all_auths();
             let settlement_contract_id = $env.register_contract(None, SettleXContract);
@@ -274,17 +274,17 @@ mod test {
             let admin = Address::generate(&$env);
             let settlement_address = settlement_contract_id.clone();
             let pool_address = pool_contract_id.clone();
-            let token_addr = $env.register_stellar_asset_contract(admin.clone());
-            let token_admin_client = soroban_sdk::token::StellarAssetClient::new(&$env, &token_addr);
+            let $token_addr = $env.register_stellar_asset_contract(admin.clone());
+            let $token_admin_client = soroban_sdk::token::StellarAssetClient::new(&$env, &$token_addr);
 
-            $pool_client.init_pool(&admin, &settlement_address, &token_addr);
+            $pool_client.init_pool(&admin, &settlement_address, &$token_addr);
             $client.init(&admin, &pool_address);
         };
     }
 
     #[test]
     fn test_record_and_query() {
-        setup!(env, client, pool_client);
+        setup!(env, client, pool_client, _token_addr, token_admin_client);
 
         let trip_id    = String::from_str(&env, "trip-123");
         let expense_id = String::from_str(&env, "exp-456");
@@ -316,7 +316,7 @@ mod test {
 
     #[test]
     fn test_multiple_members() {
-        setup!(env, client, pool_client);
+        setup!(env, client, pool_client, _token_addr, token_admin_client);
 
         let trip_id    = String::from_str(&env, "trip-multi");
         let expense_id = String::from_str(&env, "exp-multi");
@@ -341,7 +341,7 @@ mod test {
 
     #[test]
     fn test_multiple_expenses_same_trip() {
-        setup!(env, client, pool_client);
+        setup!(env, client, pool_client, _token_addr, token_admin_client);
 
         let trip_id  = String::from_str(&env, "trip-abc");
         let exp_1    = String::from_str(&env, "exp-001");
@@ -365,7 +365,7 @@ mod test {
     #[test]
     #[should_panic]
     fn test_duplicate_payment_rejected() {
-        setup!(env, client, pool_client);
+        setup!(env, client, pool_client, _token_addr, token_admin_client);
 
         let trip_id    = String::from_str(&env, "trip-dup");
         let expense_id = String::from_str(&env, "exp-dup");
@@ -383,7 +383,7 @@ mod test {
     #[test]
     #[should_panic]
     fn test_zero_amount_rejected() {
-        setup!(env, client, _pool_client);
+        setup!(env, client, _pool_client, _token_addr, _token_admin_client);
 
         let trip_id    = String::from_str(&env, "trip-zero");
         let expense_id = String::from_str(&env, "exp-zero");
@@ -397,7 +397,7 @@ mod test {
     #[test]
     #[should_panic]
     fn test_negative_amount_rejected() {
-        setup!(env, client, _pool_client);
+        setup!(env, client, _pool_client, _token_addr, _token_admin_client);
 
         let trip_id    = String::from_str(&env, "trip-neg");
         let expense_id = String::from_str(&env, "exp-neg");
@@ -411,7 +411,7 @@ mod test {
     #[test]
     #[should_panic]
     fn test_empty_tx_hash_rejected() {
-        setup!(env, client, _pool_client);
+        setup!(env, client, _pool_client, _token_addr, _token_admin_client);
 
         let trip_id    = String::from_str(&env, "trip-empty-tx");
         let expense_id = String::from_str(&env, "exp-empty-tx");
@@ -424,7 +424,7 @@ mod test {
 
     #[test]
     fn test_is_paid_unknown_returns_false() {
-        setup!(env, client, _pool_client);
+        setup!(env, client, _pool_client, _token_addr, _token_admin_client);
 
         let expense_id = String::from_str(&env, "exp-never");
         let member     = Address::generate(&env);
@@ -434,7 +434,7 @@ mod test {
 
     #[test]
     fn test_get_payments_unknown_trip_is_empty() {
-        setup!(env, client, _pool_client);
+        setup!(env, client, _pool_client, _token_addr, _token_admin_client);
 
         let trip_id = String::from_str(&env, "trip-ghost");
         assert_eq!(client.get_payments(&trip_id).len(), 0);
@@ -443,7 +443,7 @@ mod test {
     #[test]
     #[should_panic]
     fn test_record_payment_fails_with_insufficient_pool_balance() {
-        setup!(env, client, _pool_client);
+        setup!(env, client, _pool_client, _token_addr, _token_admin_client);
 
         let trip_id    = String::from_str(&env, "trip-balance");
         let expense_id = String::from_str(&env, "exp-balance");
@@ -458,7 +458,7 @@ mod test {
     #[test]
     #[should_panic]
     fn test_payer_cannot_equal_member() {
-        setup!(env, client, pool_client);
+        setup!(env, client, pool_client, _token_addr, token_admin_client);
 
         let trip_id = String::from_str(&env, "trip-role");
         let expense_id = String::from_str(&env, "exp-role");
@@ -473,7 +473,7 @@ mod test {
     #[test]
     #[should_panic]
     fn test_amount_too_large_rejected() {
-        setup!(env, client, pool_client);
+        setup!(env, client, pool_client, _token_addr, token_admin_client);
 
         let trip_id = String::from_str(&env, "trip-big");
         let expense_id = String::from_str(&env, "exp-big");

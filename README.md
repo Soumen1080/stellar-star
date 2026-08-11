@@ -421,22 +421,24 @@ npm run start
 **Script:**
 
 ```bash
-bash scripts/deploy-contract.sh <stellar-cli-account-alias-or-secret>
+bash scripts/deploy-contract.sh <stellar-cli-account-alias-or-secret> <token-contract-id>
 ```
 
 **Example:**
 
 ```bash
-bash scripts/deploy-contract.sh stellar-star-deployer
+bash scripts/deploy-contract.sh stellar-star-deployer C... # Stellar Asset Contract ID
 ```
 
 The script builds, deploys, and cross-initializes both the **Stellar-star Settlement** contract and the **Settlement Pool** contract on testnet automatically.
 
 **After deployment**, update:
-- `NEXT_PUBLIC_CONTRACT_ID` with the printed settlement contract ID in `.env.local`.
+- `NEXT_PUBLIC_CONTRACT_ID` and `NEXT_PUBLIC_SETTLEMENT_CONTRACT_ID` with the printed settlement contract ID.
+- `NEXT_PUBLIC_POOL_CONTRACT_ID` with the printed pool contract ID.
+- `NEXT_PUBLIC_POOL_TOKEN_ID` with the token contract ID supplied to the script.
 
 > **Notes:**
-> - If the script is not executable in your shell, run it via `bash scripts/deploy-contract.sh <alias-or-secret>`.
+> - If the script is not executable in your shell, run it via `bash scripts/deploy-contract.sh <alias-or-secret> <token-contract-id>`.
 > - The script resolves the deployer's address to initialize both contract structures properly.
 > - Always verify the returned contract IDs on Stellar Expert explorer.
 

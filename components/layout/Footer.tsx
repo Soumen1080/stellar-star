@@ -8,9 +8,9 @@ import { StellarStarLogo } from "@/components/ui/Logo";
 
 const footerLinks = {
   Product: [
-    { label: "Features", href: "#features" },
-    { label: "How It Works", href: "#how-it-works" },
-    { label: "Pricing", href: "#pricing" },
+    { label: "Features", href: "/#features" },
+    { label: "How It Works", href: "/#how-it-works" },
+    { label: "Pricing", href: "/#pricing" },
     { label: "Changelog", href: "#" },
     { label: "Roadmap", href: "#" },
   ],
