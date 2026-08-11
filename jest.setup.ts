@@ -8,7 +8,7 @@ if (!process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = "test-anon-key";
 }
 if (!process.env.NEXT_PUBLIC_CONTRACT_ID) {
-  process.env.NEXT_PUBLIC_CONTRACT_ID = "CTestContractIdForJest";
+  process.env.NEXT_PUBLIC_CONTRACT_ID = "CBS2BJQ4ZC2ZSAZ5XS47BGC6Q7VTMJA4SE2PVHFXGXAZI5ES6H645WHO";
 }
 if (!process.env.SUPABASE_JWT_SECRET) {
   process.env.SUPABASE_JWT_SECRET = "test-only-jwt-secret-not-used-in-production";

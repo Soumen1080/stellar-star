@@ -163,10 +163,10 @@ describe("usePayment integration flow", () => {
       });
     });
 
-    // Should lead to partial success due to insufficient pool balance
+    // A preflight failure must block the transfer until pool credit is added.
     await waitFor(() => {
-      expect(result.current.paymentState.status).toBe("partial_success");
-      expect(result.current.paymentState.onChain).toBe(false);
+      expect(result.current.paymentState.status).toBe("blocked");
+      expect(result.current.paymentState.message).toMatch(/pool balance too low/i);
     });
 
     // Now call deposit to resolve the shortfall
@@ -181,16 +181,15 @@ describe("usePayment integration flow", () => {
       "1.5000000"
     );
 
-    // Mock pool check to succeed now that the user has refilled
-    jest.mocked(precheckPoolBalance).mockResolvedValueOnce({
-      ok: true,
-      requiredStroops: 15000000n,
-      balanceStroops: 15000000n,
-    });
-
-    // Retry recording
+    // No transfer was submitted while blocked, so submit the payment now that
+    // the pool has been refilled rather than retrying an on-chain record.
     await act(async () => {
-      await result.current.retryOnChainRecord();
+      await result.current.payShare({
+        share,
+        expenseTitle: "Lunch",
+        payerWalletAddress: "GEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE",
+        tripId: "trip-3",
+      });
     });
 
     await waitFor(() => {

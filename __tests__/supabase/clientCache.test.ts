@@ -44,6 +44,13 @@ describe("Supabase Client Caching", () => {
   });
 
   it("caches and reuses the client instance for the same wallet address", () => {
+    const wallet = "GB123";
+    const client1 = createAuthenticatedClient(wallet);
+    const client2 = createAuthenticatedClient(wallet);
+
+    expect(client1).toBe(client2);
+    expect(mockCreateClient).toHaveBeenCalledTimes(1);
+  });
 
   it("recreates a cached client when the wallet receives a new token", () => {
     const wallet = "GB123";
@@ -54,13 +61,6 @@ describe("Supabase Client Caching", () => {
 
     expect(refreshedClient).not.toBe(firstClient);
     expect(mockCreateClient).toHaveBeenCalledTimes(2);
-  });
-    const wallet = "GB123";
-    const client1 = createAuthenticatedClient(wallet);
-    const client2 = createAuthenticatedClient(wallet);
-
-    expect(client1).toBe(client2);
-    expect(mockCreateClient).toHaveBeenCalledTimes(1);
   });
 
   it("returns different client instances for different wallet addresses", () => {

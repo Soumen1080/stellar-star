@@ -16,6 +16,7 @@ const MAX_PENDING_CHALLENGES = 10_000;
 
 declare global {
   // Preserve issued challenges through Next.js development hot reloads.
+  // eslint-disable-next-line no-var
   var stellarStarChallenges: Map<string, Challenge> | undefined;
 }
 

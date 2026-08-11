@@ -72,7 +72,7 @@ describe("read-only contract queries with unfunded caller", () => {
       }
       expect(tx.source).toBe(UNFUNDED_CALLER);
       expect(tx.sequence).toBe("0");
-      return simulationSuccess(nativeToScVal(false)) as unknown as Awaited<
+      return simulationSuccess(nativeToScVal(false)) as Awaited<
         ReturnType<typeof sorobanServer.simulateTransaction>
       >;
     });
@@ -109,7 +109,7 @@ describe("read-only contract queries with unfunded caller", () => {
             timestamp: 1n,
           },
         ])
-      ) as unknown as Awaited<ReturnType<typeof sorobanServer.simulateTransaction>>;
+      ) as Awaited<ReturnType<typeof sorobanServer.simulateTransaction>>;
     });
 
     const result = await getContractPayments(UNFUNDED_CALLER, "trip-1");
@@ -129,10 +129,8 @@ describe("read-only contract queries with unfunded caller", () => {
     });
 
     jest.mocked(sorobanServer.simulateTransaction).mockImplementation(async (tx) => {
-      if (!("sequence" in tx)) {
-        throw new Error("Expected a standard transaction for simulation");
-      }
-      return simulationSuccess(nativeToScVal(true)) as unknown as Awaited<
+      expect(tx.sequence).toBe(FUNDED_SEQUENCE);
+      return simulationSuccess(nativeToScVal(true)) as Awaited<
         ReturnType<typeof sorobanServer.simulateTransaction>
       >;
     });
