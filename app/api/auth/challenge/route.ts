@@ -2,7 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { Account, TransactionBuilder, Memo, Operation, Keypair } from "@stellar/stellar-sdk";
 import { NETWORK_PASSPHRASE, TX_BASE_FEE } from "@/lib/utils/constants";
 import { generateChallengeSignature } from "@/lib/supabase/serverAuth";
+import { issueChallenge } from "@/lib/auth/challengeStore";
 import crypto from "crypto";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
   try {
@@ -24,6 +28,7 @@ export async function GET(request: NextRequest) {
     const expiration = Date.now() + 5 * 60 * 1000; // 5 minutes validity
     const signature = generateChallengeSignature(address, nonce, expiration);
 
+    issueChallenge(address, nonce, expiration);
     // Build challenge transaction
     // Sequence number -1 so it gets incremented to 0 when building.
     const account = new Account(address, "-1");
@@ -44,12 +49,10 @@ export async function GET(request: NextRequest) {
 
     const xdr = tx.toXDR();
 
-    return NextResponse.json({
-      xdr,
-      nonce,
-      expiration,
-      signature,
-    });
+    return NextResponse.json(
+      { xdr, nonce, expiration, signature },
+      { headers: { "Cache-Control": "no-store, max-age=0" } }
+    );
   } catch (error: any) {
     console.error("Challenge generation error:", error);
     return NextResponse.json({ error: error.message || "Failed to generate challenge" }, { status: 500 });

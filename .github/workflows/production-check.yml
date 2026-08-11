@@ -13,6 +13,7 @@ jobs:
     timeout-minutes: 20
 
     env:
+      SUPABASE_JWT_SECRET: ${{ secrets.SUPABASE_JWT_SECRET }}
       NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
       NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
 
@@ -41,6 +42,11 @@ jobs:
 
           if [ -z "$NEXT_PUBLIC_SUPABASE_ANON_KEY" ]; then
             echo "::error::Missing secret NEXT_PUBLIC_SUPABASE_ANON_KEY"
+            missing=1
+          fi
+
+          if [ -z "$SUPABASE_JWT_SECRET" ]; then
+            echo "::error::Missing secret SUPABASE_JWT_SECRET"
             missing=1
           fi
 

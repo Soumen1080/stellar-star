@@ -4,6 +4,10 @@ import crypto from "crypto";
 import { NETWORK_PASSPHRASE } from "@/lib/utils/constants";
 import { generateChallengeSignature, signSupabaseJwt } from "@/lib/supabase/serverAuth";
 import { supabase } from "@/lib/supabase/client";
+import { consumeChallenge } from "@/lib/auth/challengeStore";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 function timingSafeStringEqual(a: string, b: string): boolean {
   const bufA = Buffer.from(a);
@@ -17,7 +21,17 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const { address, signedXdr, nonce, expiration, signature } = body;
 
-    if (!address || !signedXdr || !nonce || !expiration || !signature) {
+    if (
+      typeof address !== "string" ||
+      typeof signedXdr !== "string" ||
+      typeof nonce !== "string" ||
+      !Number.isSafeInteger(expiration) ||
+      typeof signature !== "string" ||
+      !address ||
+      !signedXdr ||
+      !nonce ||
+      !signature
+    ) {
       return NextResponse.json({ error: "Missing required parameters" }, { status: 400 });
     }
 
@@ -53,6 +67,7 @@ export async function POST(request: NextRequest) {
     // Ensure the operation matches the nonce
     const op = tx.operations[0];
     if (
+      tx.operations.length !== 1 ||
       !op ||
       op.type !== "manageData" ||
       op.name !== "StellarStar Auth" ||
@@ -75,6 +90,16 @@ export async function POST(request: NextRequest) {
 
     if (!hasValidSignature) {
       return NextResponse.json({ error: "Signature verification failed" }, { status: 401 });
+    }
+
+    // HMAC validation proves the challenge was minted by this deployment;
+    // consuming it after wallet-signature validation prevents reusing the
+    // same signed XDR to mint another session on this server instance.
+    if (!consumeChallenge(address, nonce, expiration)) {
+      return NextResponse.json(
+        { error: "Challenge is invalid or has already been used" },
+        { status: 400 }
+      );
     }
 
     // 4. Query user database to fetch user's UUID for sub claim (if they exist).

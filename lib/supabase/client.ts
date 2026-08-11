@@ -24,17 +24,22 @@ export const supabase: SupabaseClient | null = _configured
     })
   : null;
 
-const clientCache = new Map<string, SupabaseClient>();
+type CachedAuthenticatedClient = {
+  client: SupabaseClient;
+  token: string;
+};
+
+const clientCache = new Map<string, CachedAuthenticatedClient>();
 
 export function clearAuthenticatedClientCache(walletAddress?: string): void {
   if (walletAddress) {
-    const client = clientCache.get(walletAddress);
-    if (client) {
-      client.removeAllChannels();
+    const cached = clientCache.get(walletAddress);
+    if (cached) {
+      cached.client.removeAllChannels();
       clientCache.delete(walletAddress);
     }
   } else {
-    for (const client of clientCache.values()) {
+    for (const { client } of clientCache.values()) {
       client.removeAllChannels();
     }
     clientCache.clear();
@@ -52,8 +57,13 @@ export function createAuthenticatedClient(walletAddress?: string): SupabaseClien
   
   const key = walletAddress || (typeof window !== "undefined" ? localStorage.getItem("StellarStar:publicKey") : null) || "default";
 
-  if (clientCache.has(key)) {
-    return clientCache.get(key)!;
+  const cached = clientCache.get(key);
+  if (cached?.token === token) {
+    return cached.client;
+  }
+  if (cached) {
+    cached.client.removeAllChannels();
+    clientCache.delete(key);
   }
 
   const client = createClient(supabaseUrl, supabaseAnonKey, {
@@ -63,6 +73,6 @@ export function createAuthenticatedClient(walletAddress?: string): SupabaseClien
   });
 
   client.realtime.setAuth(token);
-  clientCache.set(key, client);
+  clientCache.set(key, { client, token });
   return client;
 }

@@ -17,7 +17,7 @@ challenge and never through a value the client merely asserts.
    minute `expiration`, then computes `signature = HMAC-SHA256(address:nonce:expiration)`
    keyed by `SUPABASE_JWT_SECRET`. This HMAC lets the verify step later
    confirm the nonce/expiration pair actually came from this server and was
-   not forged or replayed with a different address. The endpoint also builds
+   not forged or paired with a different address. The endpoint also builds
    an unsigned Stellar transaction (source = the claimed address, a single
    `manageData` operation named `"StellarStar Auth"` carrying the nonce as
    its value) and returns it as unsigned XDR alongside the nonce, expiration,
@@ -35,10 +35,10 @@ challenge and never through a value the client merely asserts.
    - The HMAC signature matches (recomputed server-side, compared with
      `crypto.timingSafeEqual`) - proves the challenge was minted by this
      server.
-   - `Date.now()` is before `expiration` - bounds the replay window.
+   - `Date.now()` is before `expiration` - bounds the challenge lifetime.
    - The XDR parses as a standard (non fee-bump) transaction whose `source`
      equals the claimed `address`.
-   - Its single operation is the expected `manageData("StellarStar Auth", nonce)`
+   - It contains exactly one operation, the expected `manageData("StellarStar Auth", nonce)`
      - binds the signature to this specific challenge, preventing reuse of a
      signature minted for a different session.
    - `Keypair.fromPublicKey(address).verify(tx.hash(), ...)` succeeds against
@@ -48,6 +48,9 @@ challenge and never through a value the client merely asserts.
      payload), not the payload itself, so verification must hash it the same
      way; checking against the unhashed payload would reject every
      legitimately signed challenge.
+   - The issued nonce is consumed after successful signature verification, so
+     it cannot mint a second session on the same warm server instance.
+
 
 4. **Session token** - once verified, the server mints a standards-compliant
    HS256 JWT (`lib/supabase/serverAuth.ts#signSupabaseJwt`) with
@@ -109,3 +112,7 @@ database and application together, not incrementally:
   is no per-session asymmetric signing or key rotation mechanism.
 - Sessions are bearer tokens with a 24 hour lifetime and no server-side
   revocation list; compromise of a token is valid until expiry.
+- The single-use challenge registry is process-local. It prevents replay on a
+  warm Vercel function instance, but a high-assurance multi-instance deployment
+  should replace it with an atomic shared store (for example Redis or a
+  server-only Supabase table) keyed by nonce.
