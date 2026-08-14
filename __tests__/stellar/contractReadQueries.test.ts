@@ -71,7 +71,9 @@ describe("read-only contract queries with unfunded caller", () => {
         throw new Error("Expected a standard transaction for simulation");
       }
       expect(tx.source).toBe(UNFUNDED_CALLER);
-      expect(tx.sequence).toBe("0");
+      // TransactionBuilder increments the account sequence by 1 on build,
+      // so Account("...", "0") yields a transaction with sequence "1".
+      expect(tx.sequence).toBe("1");
       return simulationSuccess(nativeToScVal(false)) as unknown as Awaited<
         ReturnType<typeof sorobanServer.simulateTransaction>
       >;
@@ -97,7 +99,9 @@ describe("read-only contract queries with unfunded caller", () => {
         throw new Error("Expected a standard transaction for simulation");
       }
       expect(tx.source).toBe(UNFUNDED_CALLER);
-      expect(tx.sequence).toBe("0");
+      // TransactionBuilder increments the account sequence by 1 on build,
+      // so Account("...", "0") yields a transaction with sequence "1".
+      expect(tx.sequence).toBe("1");
       return simulationSuccess(
         nativeToScVal([
           {
