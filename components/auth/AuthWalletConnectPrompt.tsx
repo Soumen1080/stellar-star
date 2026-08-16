@@ -38,7 +38,7 @@ export function AuthWalletConnectPrompt({ onConnect }: AuthWalletConnectPromptPr
           className="w-full bg-[#0F0F14] text-white hover:bg-[#2a2a2f] h-14 text-base font-bold rounded-xl flex items-center justify-center gap-2 transition-all"
         >
           <Wallet size={20} />
-          Connect Freighter Wallet
+          Connect Wallet
           <ArrowRight size={18} />
         </Button>
 
