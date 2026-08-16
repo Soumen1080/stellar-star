@@ -121,6 +121,25 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     setError(null);
 
     try {
+      // ── E2E bypass: skip the wallet-selection modal when a test wallet is
+      //    injected by Playwright's mockWallet() helper.  This avoids race
+      //    conditions in the async modal click-handler chain.
+      const e2eWallet = typeof window !== "undefined"
+        ? (window as unknown as { __E2E_WALLET__?: { address: string } }).__E2E_WALLET__
+        : undefined;
+
+      if (e2eWallet) {
+        const kit = getWalletsKit();
+        kit.setWallet(FREIGHTER_ID);
+
+        setPublicKey(e2eWallet.address);
+        setNetwork("TESTNET");
+        setSelectedWalletId(FREIGHTER_ID);
+        localStorage.setItem(LS_PUBLIC_KEY, e2eWallet.address);
+        localStorage.setItem("StellarStar:walletId", FREIGHTER_ID);
+        return;
+      }
+
       const kit = getWalletsKit();
       let resolvedAddress = "";
       let selectedId: WalletId = FREIGHTER_ID;

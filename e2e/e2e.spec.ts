@@ -196,12 +196,12 @@ test.describe("Trips page – auth guard", () => {
   test("trips page heading is visible after guard", async ({ page }) => {
     await page.goto("/trips");
     await page.waitForLoadState("networkidle");
-    // Either the auth prompt OR the trips heading is rendered
-    const hasTripsHeading =
-      (await page.getByRole("heading", { name: /trips/i }).count()) > 0;
-    const hasAuthPrompt =
-      (await page.getByText(/connect.*wallet|wallet.*connect/i).count()) > 0;
-    expect(hasTripsHeading || hasAuthPrompt).toBe(true);
+    // Either the auth prompt (if redirected to /auth) OR the trips heading is rendered
+    const tripsHeading = page.getByRole("heading", { name: /trips/i });
+    const authPrompt = page.getByText(
+      /connect.*wallet|wallet.*connect|welcome to stellar/i
+    );
+    await expect(tripsHeading.or(authPrompt).first()).toBeVisible({ timeout: 10_000 });
   });
 });
 
@@ -213,13 +213,9 @@ test.describe("Trip detail – unknown trip ID", () => {
     await page.goto("/trips/nonexistent-trip-id-xyz");
     await page.waitForLoadState("networkidle");
     // Should either redirect to auth, show a not-found message, or show the auth guard
-    const url = page.url();
     const notFoundText = page.getByText(/not found|404|trip.*not|no trip/i);
-    const authText = page.getByText(/connect.*wallet|sign in/i);
-    const hasNotFound = (await notFoundText.count()) > 0;
-    const hasAuth = (await authText.count()) > 0;
-    const redirected = !url.includes("nonexistent-trip-id-xyz");
-    expect(hasNotFound || hasAuth || redirected).toBe(true);
+    const authText = page.getByText(/connect.*wallet|sign in|welcome to stellar/i);
+    await expect(notFoundText.or(authText).first()).toBeVisible({ timeout: 10_000 });
   });
 });
 

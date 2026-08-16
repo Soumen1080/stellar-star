@@ -120,8 +120,11 @@ export async function mockSupabaseBackend(page: Page) {
 /** Connects the mock wallet and completes sign-up, landing on /dashboard. */
 export async function signUpAndReachDashboard(page: Page, displayName = "Test User") {
   await page.goto("/auth", { waitUntil: "networkidle" });
+  // In E2E mode, clicking "Connect Wallet" triggers a direct connection via
+  // the injected __E2E_WALLET__ — no wallet-picker modal appears.
   await page.getByRole("button", { name: /connect wallet/i }).click();
-  await page.getByRole("button", { name: /freighter/i }).click();
+  // Wait for the auth form to render after the wallet connects.
+  await page.getByPlaceholder(/enter your full name/i).waitFor({ state: "visible", timeout: 10_000 });
   await page.getByPlaceholder(/enter your full name/i).fill(displayName);
   await page.getByRole("button", { name: /create account/i }).click();
   await page.waitForURL("**/dashboard");

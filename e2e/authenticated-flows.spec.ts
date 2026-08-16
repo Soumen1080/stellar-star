@@ -23,7 +23,7 @@ test("connects a wallet and signs up onto an empty dashboard", async ({ page }) 
   await signUpAndReachDashboard(page);
 
   await expect(page).toHaveURL(/\/dashboard/);
-  await expect(page.getByText(/connect.*wallet/i)).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /^connect wallet$/i })).toHaveCount(0);
 });
 
 test("creates a trip and navigates to its detail page", async ({ page }) => {

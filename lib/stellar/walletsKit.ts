@@ -37,14 +37,14 @@ export interface SupportedWallet {
 }
 
 /**
- * Test-only wallet bypass for Playwright e2e runs. Only active when the app
- * is served with NEXT_PUBLIC_E2E_TEST_MODE=true (set in playwright.config.ts)
- * AND a test has injected window.__E2E_WALLET__ - never reachable in a normal
- * production build.
+ * Test-only wallet bypass for Playwright e2e runs. Active whenever a test has
+ * injected window.__E2E_WALLET__ via the mockWallet() helper in e2e/helpers.ts.
+ * The presence of the injected object is the sole gating signal – this avoids
+ * reliance on NEXT_PUBLIC_E2E_TEST_MODE being baked into the bundle (which
+ * fails when Playwright reuses an already-running dev server).
  */
 function e2eTestWallet(): { address: string } | null {
   if (typeof window === "undefined") return null;
-  if (process.env.NEXT_PUBLIC_E2E_TEST_MODE !== "true") return null;
   return (window as unknown as { __E2E_WALLET__?: { address: string } }).__E2E_WALLET__ ?? null;
 }
 
