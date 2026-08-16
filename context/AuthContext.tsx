@@ -203,6 +203,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           localStorage.removeItem("StellarStar:authToken");
           if (error.code === '23505') {
             throw new Error("This wallet is already registered. Please sign in instead.");
+          } else if (
+            error.code === 'PGRST205' ||
+            error.message.includes('schema cache') ||
+            error.message.includes('relation') ||
+            error.message.includes('does not exist')
+          ) {
+            throw new Error("Database tables not found. Please run supabase-setup.sql in your Supabase SQL Editor.");
           } else if (error.message.includes('permission denied') || error.message.includes('policy')) {
             throw new Error("Access denied. Please make sure your database is properly configured.");
           } else if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
@@ -254,6 +261,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         localStorage.removeItem("StellarStar:authToken");
         if (error.code === "PGRST116") {
           throw new Error("No account found. Please sign up first.");
+        }
+        if (
+          error.code === 'PGRST205' ||
+          error.message?.includes('schema cache') ||
+          error.message?.includes('relation') ||
+          error.message?.includes('does not exist')
+        ) {
+          throw new Error("Database tables not found. Please run supabase-setup.sql in your Supabase SQL Editor.");
         }
         if (error.message?.includes('Failed to fetch') || error.message?.includes('NetworkError')) {
           throw new Error("Cannot connect to server. Please check your internet connection.");
