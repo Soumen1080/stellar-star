@@ -119,7 +119,7 @@ export async function mockSupabaseBackend(page: Page) {
 
 /** Connects the mock wallet and completes sign-up, landing on /dashboard. */
 export async function signUpAndReachDashboard(page: Page, displayName = "Test User") {
-  await page.goto("/auth");
+  await page.goto("/auth", { waitUntil: "networkidle" });
   await page.getByRole("button", { name: /connect wallet/i }).click();
   await page.getByRole("button", { name: /freighter/i }).click();
   await page.getByPlaceholder(/enter your full name/i).fill(displayName);
