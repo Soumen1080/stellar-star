@@ -208,39 +208,6 @@ export function ConnectWalletButton({
     return () => document.removeEventListener("mousedown", handler);
   }, []);
 
-  // Check if at least one wallet is installed
-  const [walletMissing, setWalletMissing] = useState(false);
-
-  useEffect(() => {
-    import("@/lib/stellar/walletsKit").then(({ StellarWalletsKit }) => {
-      const wallets = StellarWalletsKit.getSupportedWallets();
-      Promise.all(wallets.map((w) => w.isInstalled())).then((installedArray) => {
-        const anyInstalled = installedArray.some((installed) => installed);
-        setWalletMissing(!anyInstalled);
-      });
-    });
-  }, []);
-
-  // ── Not installed ──────────────────────────────────────────────────────────
-
-  if (walletMissing && !isConnected) {
-    return (
-      <a
-        href="https://freighter.app"
-        target="_blank"
-        rel="noopener noreferrer"
-        className={cn(
-          "inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold",
-          "bg-amber-50 border border-amber-200 text-amber-700 hover:bg-amber-100 transition-colors",
-          className
-        )}
-      >
-        <AlertCircle size={14} />
-        Install Wallet
-      </a>
-    );
-  }
-
   // ── Connected ──────────────────────────────────────────────────────────────
 
   if (isConnected && publicKey) {

@@ -9,6 +9,9 @@ import crypto from "crypto";
 function getJwtSecret(): string {
   const secret = process.env.SUPABASE_JWT_SECRET || process.env.JWT_SECRET;
   if (!secret) {
+    if (process.env.NODE_ENV === "development") {
+      return "dev-local-jwt-secret-not-for-production-use";
+    }
     throw new Error(
       "SUPABASE_JWT_SECRET (or JWT_SECRET) is not configured. Set it to the Supabase project's JWT signing secret."
     );

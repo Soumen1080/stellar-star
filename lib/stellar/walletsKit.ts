@@ -57,6 +57,8 @@ const SUPPORTED_WALLETS: SupportedWallet[] = [
     isInstalled: async () => {
       if (e2eTestWallet()) return true;
       if (typeof window === "undefined") return false;
+      const win = window as unknown as { freighter?: unknown; freighterApi?: unknown };
+      if (win.freighter || win.freighterApi) return true;
       try {
         const result = await isConnected();
         return !result.error && (result.isConnected ?? false);
@@ -279,13 +281,10 @@ export class StellarWalletsKit {
           badge.textContent     = "Available";
           badge.style.background = "#ECFDF5";
           badge.style.color      = "#059669";
-          btn.style.cursor       = "pointer";
         } else {
           badge.textContent     = unavailText;
-          badge.style.background = "#FEF2F2";
-          badge.style.color      = "#DC2626";
-          btn.style.cursor       = "not-allowed";
-          btn.style.opacity      = "0.6";
+          badge.style.background = "#F5F5F5";
+          badge.style.color      = "#888";
         }
       });
 
@@ -294,18 +293,12 @@ export class StellarWalletsKit {
       btn.appendChild(badge);
 
       btn.addEventListener("click", async () => {
-        wallet.isInstalled().then(async (available) => {
-          if (!available) {
-            window.open(wallet.installUrl, "_blank", "noopener,noreferrer");
-            return;
-          }
-          this.destroyModal();
-          try {
-            await opts.onWalletSelected(wallet);
-          } finally {
-            resolve();
-          }
-        });
+        this.destroyModal();
+        try {
+          await opts.onWalletSelected(wallet);
+        } finally {
+          resolve();
+        }
       });
 
       list.appendChild(btn);
@@ -347,18 +340,37 @@ export class StellarWalletsKit {
     const testWallet = e2eTestWallet();
     if (testWallet) return { address: testWallet.address };
 
-    const allowed = await isAllowed();
-    if (!allowed.error && allowed.isAllowed) {
-      const result = await freighterGetAddress();
-      if (!result.error && result.address) return { address: result.address };
+    try {
+      const allowed = await isAllowed();
+      if (!allowed.error && allowed.isAllowed) {
+        const result = await freighterGetAddress();
+        if (!result.error && result.address) return { address: result.address };
+      }
+    } catch {
+      // Fall through to requestAccess
     }
-    const result = await requestAccess();
+
+    let result: { address?: string; error?: unknown } = {};
+    try {
+      result = await requestAccess();
+    } catch (err: unknown) {
+      throw new Error(
+        err instanceof Error ? err.message : "Failed to open Freighter extension."
+      );
+    }
+
     if (result.error) {
       const msg = String(result.error);
-      if (/reject|denied/i.test(msg)) throw new Error("Connection rejected in Freighter.");
+      if (/reject|denied|cancel|closed/i.test(msg)) {
+        throw new Error("Connection rejected in Freighter.");
+      }
       throw new Error(msg || "Freighter access denied.");
     }
-    if (!result.address) throw new Error("Freighter did not return an address.");
+    if (!result.address) {
+      throw new Error(
+        "Freighter did not return an address. Please ensure the Freighter extension is installed, unlocked, and not blocked by browser shields."
+      );
+    }
     return { address: result.address };
   }
 
