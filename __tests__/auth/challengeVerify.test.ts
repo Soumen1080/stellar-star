@@ -7,14 +7,37 @@ import { generateChallengeSignature, signSupabaseJwt } from "@/lib/supabase/serv
 import { GET as challengeGET } from "@/app/api/auth/challenge/route";
 import { POST as verifyPOST } from "@/app/api/auth/verify/route";
 
-jest.mock("@/lib/supabase/client", () => ({
-  supabase: {
-    from: jest.fn().mockReturnThis(),
-    select: jest.fn().mockReturnThis(),
-    eq: jest.fn().mockReturnThis(),
-    single: jest.fn().mockResolvedValue({ data: null, error: null }),
-  },
-}));
+// The verify route provisions the user profile through the server-side client.
+// Stub it so these tests exercise the signature-verification path without a
+// live database: `maybeSingle` resolving to no row is a wallet that has not
+// signed up yet.
+jest.mock("@/lib/supabase/server", () => {
+  const builder: any = {
+    from: jest.fn(() => builder),
+    select: jest.fn(() => builder),
+    eq: jest.fn(() => builder),
+    update: jest.fn(() => builder),
+    upsert: jest.fn(() => builder),
+    maybeSingle: jest.fn().mockResolvedValue({ data: null, error: null }),
+    single: jest.fn().mockResolvedValue({
+      data: {
+        id: "00000000-0000-4000-8000-000000000000",
+        wallet_address: "GTEST",
+        display_name: "Test User",
+        created_at: "2024-01-01T00:00:00.000Z",
+        updated_at: "2024-01-01T00:00:00.000Z",
+        last_login_at: "2024-01-01T00:00:00.000Z",
+      },
+      error: null,
+    }),
+  };
+  return {
+    isServerSupabaseConfigured: () => true,
+    createServerClientForToken: () => builder,
+    createServerAnonClient: () => builder,
+    createServiceRoleClient: () => null,
+  };
+});
 
 function decodeJwt(token: string) {
   const [headerB64, payloadB64] = token.split(".");
@@ -93,6 +116,7 @@ describe("wallet challenge verification (POST /api/auth/verify)", () => {
         nonce: challenge.nonce,
         expiration: challenge.expiration,
         signature: challenge.signature,
+        displayName: "Test User",
       })
     );
     const data = await res.json();

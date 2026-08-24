@@ -1,78 +1,117 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import type { Database } from "@/types/supabase";
+import { getAccessToken, clearSession } from "./session";
 
-const supabaseUrl     = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "";
+export type StellarStarClient = SupabaseClient<Database>;
 
-const _configured = !!(supabaseUrl && supabaseAnonKey);
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim() ?? "";
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim() ?? "";
 
-if (!_configured && typeof window !== "undefined") {
+const configured = Boolean(supabaseUrl && supabaseAnonKey);
+
+if (!configured && typeof window !== "undefined") {
   console.warn(
-    "[StellarStar] Supabase not configured - running in offline/demo mode. " +
-    "Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY in .env.local to enable cloud sync."
+    "[StellarStar] Supabase is not configured — running in offline/cache-only mode. " +
+      "Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY in .env.local."
   );
 }
 
-/** Returns true when Supabase env vars are present and the client is usable. */
+/** True when the Supabase env vars are present and the client is usable. */
 export function isSupabaseConfigured(): boolean {
-  return _configured;
+  return configured;
 }
 
-export const supabase: SupabaseClient | null = _configured
-  ? createClient(supabaseUrl, supabaseAnonKey, {
-      auth: { persistSession: false },
-      realtime: { params: { eventsPerSecond: 10 } },
-    })
-  : null;
+/**
+ * One browser client for the whole app.
+ *
+ * `accessToken` is supabase-js's third-party-auth hook: it is consulted on
+ * every PostgREST request and every Realtime (re)connect, so the current wallet
+ * JWT is always attached and an expired one is never reused. That replaces the
+ * previous approach of baking a token into `global.headers` and keeping a
+ * per-wallet cache of clients, which went stale the moment a token was renewed
+ * and left orphaned Realtime sockets behind on every wallet switch.
+ *
+ * Because the token itself carries the `wallet_address` claim that RLS filters
+ * on, a single shared client is correct across wallet switches — the identity
+ * travels with the request, not with the client instance.
+ */
+let browserClient: StellarStarClient | null = null;
 
-type CachedAuthenticatedClient = {
-  client: SupabaseClient;
-  token: string;
-};
-
-const clientCache = new Map<string, CachedAuthenticatedClient>();
-
-export function clearAuthenticatedClientCache(walletAddress?: string): void {
-  if (walletAddress) {
-    const cached = clientCache.get(walletAddress);
-    if (cached) {
-      cached.client.removeAllChannels();
-      clientCache.delete(walletAddress);
-    }
-  } else {
-    for (const { client } of clientCache.values()) {
-      client.removeAllChannels();
-    }
-    clientCache.clear();
-  }
+function createBrowserClient(): StellarStarClient {
+  return createClient<Database>(supabaseUrl, supabaseAnonKey, {
+    accessToken: async () => getAccessToken(),
+    db: { schema: "public" },
+    realtime: { params: { eventsPerSecond: 10 } },
+    global: {
+      headers: { "x-client-info": "stellar-star" },
+    },
+  });
 }
 
-export function createAuthenticatedClient(walletAddress?: string): SupabaseClient {
-  if (!_configured) {
+/**
+ * The Supabase client, or null when the project is not configured.
+ *
+ * Requests made without a wallet session are sent as `anon`, which RLS limits
+ * to public data (user profiles). Anything scoped to a wallet needs a session —
+ * use `requireClient` for those.
+ */
+export function getSupabaseClient(): StellarStarClient | null {
+  if (!configured) return null;
+  if (!browserClient) browserClient = createBrowserClient();
+  return browserClient;
+}
+
+/**
+ * The client, throwing a message worth showing a user when Supabase is not
+ * configured at all.
+ */
+export function requireSupabaseClient(): StellarStarClient {
+  const client = getSupabaseClient();
+  if (!client) {
     throw new Error(
-      "Supabase is not configured. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY in .env.local."
+      "Supabase is not configured. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY in .env.local, then restart the dev server."
     );
   }
-  const token = typeof window !== "undefined" ? localStorage.getItem("StellarStar:authToken") : null;
-  if (!token) throw new Error("Authentication token is required for authenticated requests");
-  
-  const key = walletAddress || (typeof window !== "undefined" ? localStorage.getItem("StellarStar:publicKey") : null) || "default";
-
-  const cached = clientCache.get(key);
-  if (cached?.token === token) {
-    return cached.client;
-  }
-  if (cached) {
-    cached.client.removeAllChannels();
-    clientCache.delete(key);
-  }
-
-  const client = createClient(supabaseUrl, supabaseAnonKey, {
-    auth: { persistSession: false },
-    realtime: { params: { eventsPerSecond: 10 } },
-    global: { headers: { Authorization: `Bearer ${token}` } },
-  });
-
-  client.realtime.setAuth(token);
-  clientCache.set(key, { client, token });
   return client;
+}
+
+/**
+ * The client for a request that must run as an authenticated wallet.
+ * Throws before hitting the network when no live session exists, so callers get
+ * "sign in again" instead of an empty result set that looks like missing data.
+ */
+export function requireAuthenticatedClient(): StellarStarClient {
+  const client = requireSupabaseClient();
+  if (!getAccessToken()) {
+    throw new Error("Your session has expired. Please sign in with your wallet again.");
+  }
+  return client;
+}
+
+/**
+ * Tears down every Realtime channel and forgets the session. Called on
+ * disconnect and sign-out so a subsequent wallet does not inherit live
+ * subscriptions opened for the previous one.
+ */
+export function resetSupabaseClient(): void {
+  if (browserClient) {
+    void browserClient.removeAllChannels();
+  }
+  clearSession();
+}
+
+/**
+ * Back-compat shim for callers written against the previous API.
+ * @deprecated Use `getSupabaseClient()` — the client no longer varies by wallet.
+ */
+export const supabase: StellarStarClient | null = configured ? (getSupabaseClient() as StellarStarClient) : null;
+
+/** @deprecated Use `requireAuthenticatedClient()`. */
+export function createAuthenticatedClient(_walletAddress?: string): StellarStarClient {
+  return requireAuthenticatedClient();
+}
+
+/** @deprecated Use `resetSupabaseClient()`. */
+export function clearAuthenticatedClientCache(_walletAddress?: string): void {
+  resetSupabaseClient();
 }

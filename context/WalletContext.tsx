@@ -14,7 +14,7 @@ import { getXLMBalance } from "@/lib/stellar/getBalance";
 import { LS_PUBLIC_KEY } from "@/lib/utils/constants";
 import type { WalletContextType } from "@/types/wallet";
 import { useToast } from "@/components/ui/Toast";
-import { clearAuthenticatedClientCache } from "@/lib/supabase/client";
+import { resetSupabaseClient } from "@/lib/supabase/client";
 
 
 const WalletContext = createContext<WalletContextType | null>(null);
@@ -200,7 +200,9 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     toastInfo("Wallet disconnected");
     localStorage.removeItem(LS_PUBLIC_KEY);
     localStorage.removeItem("StellarStar:walletId");
-    clearAuthenticatedClientCache();
+    // Drops the wallet session and every open Realtime channel so the next
+    // wallet starts from a clean subscription set.
+    resetSupabaseClient();
   }, [toastInfo]);
 
 

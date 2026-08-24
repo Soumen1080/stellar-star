@@ -1,381 +1,140 @@
 "use client";
 
-import React, {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useRef,
-  useState,
-} from "react";
+import React, { createContext, useCallback, useContext, useMemo } from "react";
 import type { Trip } from "@/types/trip";
 import { LS_TRIPS } from "@/lib/utils/constants";
-import { supabase, createAuthenticatedClient, isSupabaseConfigured } from "@/lib/supabase/client";
-import type { RealtimePostgresChangesPayload } from "@supabase/supabase-js";
+import {
+  fetchTrips,
+  insertTrip,
+  updateTripRow,
+  deleteTripRow,
+  addExpenseIdToTrip,
+  rowToTrip,
+} from "@/lib/supabase/queries";
+import { useRealtimeCollection } from "@/lib/supabase/useRealtimeCollection";
 import { useWalletContext } from "./WalletContext";
-
 
 interface TripContextType {
   trips: Trip[];
-  addTrip: (trip: Trip) => void;
-  updateTrip: (id: string, updates: Partial<Trip>) => void;
-  deleteTrip: (id: string) => void;
-  addExpenseToTrip: (tripId: string, expenseId: string) => void;
-  settleTrip: (id: string) => void;
+  addTrip: (trip: Trip) => Promise<void>;
+  updateTrip: (id: string, updates: Partial<Trip>) => Promise<void>;
+  deleteTrip: (id: string) => Promise<void>;
+  addExpenseToTrip: (tripId: string, expenseId: string) => Promise<void>;
+  settleTrip: (id: string) => Promise<void>;
   getTrip: (id: string) => Trip | undefined;
   isLoading: boolean;
   isOffline: boolean;
   error: string | null;
+  needsSetup: boolean;
+  refresh: () => Promise<void>;
 }
-
 
 const TripContext = createContext<TripContextType | null>(null);
 TripContext.displayName = "TripContext";
 
-
-function dbRowToTrip(row: any): Trip {
-  return {
-    id: row.id,
-    name: row.name,
-    description: row.description ?? undefined,
-    members: row.members,
-    expenseIds: row.expense_ids,
-    createdAt: row.created_at,
-    settled: row.settled,
-    createdByWallet: row.created_by_wallet,
-  };
-}
-
-function tripToDbRow(trip: Trip, creatorWallet: string) {
-  const memberWallets = trip.members
-    .map((m) => m.walletAddress)
-    .filter((addr): addr is string => !!addr);
-
-  const allMemberWallets = creatorWallet && !memberWallets.includes(creatorWallet)
-    ? [creatorWallet, ...memberWallets]
-    : memberWallets;
-
-  return {
-    id: trip.id,
-    name: trip.name,
-    description: trip.description ?? null,
-    members: trip.members,
-    expense_ids: trip.expenseIds,
-    created_at: trip.createdAt,
-    settled: trip.settled,
-    created_by_wallet: creatorWallet,
-    member_wallets: allMemberWallets,
-  };
-}
-
+const getTripId = (trip: Trip) => trip.id;
 
 export function TripProvider({ children }: { children: React.ReactNode }) {
-  const [trips, setTrips] = useState<Trip[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [isOffline, setIsOffline] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const channelRef = useRef<any>(null);
   const { publicKey } = useWalletContext();
 
-  const saveTripsToCache = useCallback((tripsToCache: Trip[]) => {
-    if (!publicKey) return;
-    try {
-      localStorage.setItem(`${LS_TRIPS}:${publicKey}`, JSON.stringify(tripsToCache));
-    } catch (err) {
-      console.warn("Failed to write trips to cache:", err);
-    }
-  }, [publicKey]);
-
-  const loadTripsFromCache = useCallback(() => {
-    if (!publicKey) return [];
-    try {
-      const raw = localStorage.getItem(`${LS_TRIPS}:${publicKey}`);
-      return raw ? (JSON.parse(raw) as Trip[]) : [];
-    } catch {
-      return [];
-    }
-  }, [publicKey]);
-
-  const getClient = useCallback(() => {
-    if (!isSupabaseConfigured() || !supabase) {
-      throw new Error("Supabase is not configured.");
-    }
-    return publicKey ? createAuthenticatedClient(publicKey) : supabase;
-  }, [publicKey]);
-
-  useEffect(() => {
-    let isMounted = true;
-
-    async function loadTrips() {
-      if (!publicKey) {
-        setTrips([]);
-        setIsLoading(false);
-        return;
-      }
-      try {
-        if (!isSupabaseConfigured()) throw new Error("Supabase not configured");
-        const client = getClient();
-        const { data, error } = await client
-          .from("trips")
-          .select("*")
-          .order("created_at", { ascending: false });
-
-        if (error) throw error;
-
-        if (isMounted && data) {
-          const trips = data.map(dbRowToTrip);
-          setTrips(trips);
-          saveTripsToCache(trips);
-        }
-      } catch (err: any) {
-        console.warn("Failed to load trips from Supabase, using localStorage:", err);
-        if (isMounted) {
-          setIsOffline(true);
-          setError(err?.message || "Failed to connect to database");
-        }
-        if (isMounted) {
-          setTrips(loadTripsFromCache());
-        }
-      } finally {
-        if (isMounted) {
-          setIsLoading(false);
-        }
-      }
-    }
-
-    loadTrips();
-
-    return () => {
-      isMounted = false;
-    };
-  }, [getClient, loadTripsFromCache, publicKey, saveTripsToCache]);
-
-
-  useEffect(() => {
-    if (isLoading) return;
-
-    let client;
-    try {
-      client = getClient();
-    } catch {
-      return;
-    }
-    if (!client) return;
-
-    const channel = client
-      .channel("trips-changes")
-      .on(
-        "postgres_changes",
-        { event: "INSERT", schema: "public", table: "trips" },
-        (payload: RealtimePostgresChangesPayload<any>) => {
-          const newTrip = dbRowToTrip(payload.new);
-          setTrips((prev) => {
-            if (prev.some((t) => t.id === newTrip.id)) return prev;
-            const updated = [newTrip, ...prev];
-            saveTripsToCache(updated);
-            return updated;
-          });
-        }
-      )
-      .on(
-        "postgres_changes",
-        { event: "UPDATE", schema: "public", table: "trips" },
-        (payload: RealtimePostgresChangesPayload<any>) => {
-          const updatedTrip = dbRowToTrip(payload.new);
-          setTrips((prev) => {
-            const updated = prev.map((t) =>
-              t.id === updatedTrip.id ? updatedTrip : t
-            );
-            saveTripsToCache(updated);
-            return updated;
-          });
-        }
-      )
-      .on(
-        "postgres_changes",
-        { event: "DELETE", schema: "public", table: "trips" },
-        (payload: RealtimePostgresChangesPayload<any>) => {
-          const deletedId = (payload.old as any)?.id;
-          if (!deletedId) return;
-          setTrips((prev) => {
-            const updated = prev.filter((t) => t.id !== deletedId);
-            saveTripsToCache(updated);
-            return updated;
-          });
-        }
-      )
-      .subscribe();
-
-    channelRef.current = channel;
-
-    return () => {
-      channel.unsubscribe();
-    };
-  }, [isLoading, getClient, publicKey, saveTripsToCache]);
-
-  const addTrip = useCallback(async (trip: Trip) => {
-    if (!publicKey) throw new Error("Wallet not connected");
-
-    setTrips((prev) => {
-      const updated = [trip, ...prev];
-      saveTripsToCache(updated);
-      return updated;
+  const { items: trips, isLoading, isOffline, error, needsSetup, refresh, mutate, wallet } =
+    useRealtimeCollection<Trip>({
+      table: "trips",
+      cacheKey: LS_TRIPS,
+      fetchAll: fetchTrips,
+      fromRow: rowToTrip,
+      getId: getTripId,
+      connectedWallet: publicKey,
     });
 
-    // Persist to Supabase - throw on failure so the caller can handle it
-    const client = getClient();
-    const { error } = await client
-      .from("trips")
-      .insert([tripToDbRow(trip, publicKey)]);
+  /**
+   * Writes go to the database first, then update local state from the row the
+   * database actually stored.
+   *
+   * The previous version wrote to state optimistically and then hand-rolled a
+   * rollback on failure, which meant a rejected write could leave the UI
+   * showing a trip that does not exist. Trusting the returned row also picks up
+   * the server-derived columns (member_wallets, updated_at) instead of guessing
+   * them.
+   */
+  const addTrip = useCallback(
+    async (trip: Trip) => {
+      if (!wallet) throw new Error("Sign in with your wallet before creating a trip.");
 
-    if (error) {
-      setTrips((prev) => {
-        const rolled = prev.filter((t) => t.id !== trip.id);
-        saveTripsToCache(rolled);
-        return rolled;
-      });
-      throw error;
-    }
-  }, [getClient, publicKey, saveTripsToCache]);
+      const saved = await insertTrip(trip, wallet);
+      mutate((previous) =>
+        previous.some((t) => t.id === saved.id) ? previous : [saved, ...previous]
+      );
+    },
+    [wallet, mutate]
+  );
 
   const updateTrip = useCallback(
     async (id: string, updates: Partial<Trip>) => {
-      try {
-        const current = trips.find((t) => t.id === id);
-        if (!current) return;
-
-        const merged = { ...current, ...updates };
-        const dbRow = tripToDbRow(merged, publicKey || '');
-
-        const client = getClient();
-        const { error } = await client
-          .from("trips")
-          .update(dbRow)
-          .eq("id", id);
-
-        if (error) throw error;
-
-        setTrips((prev) => {
-          const updated = prev.map((t) => (t.id === id ? merged : t));
-          saveTripsToCache(updated);
-          return updated;
-        });
-      } catch (err) {
-        console.error("Failed to update trip in Supabase:", err);
-        setTrips((prev) => {
-          const updated = prev.map((t) =>
-            t.id === id ? { ...t, ...updates } : t
-          );
-          saveTripsToCache(updated);
-          return updated;
-        });
-      }
+      const saved = await updateTripRow(id, updates);
+      mutate((previous) => previous.map((t) => (t.id === id ? saved : t)));
     },
-    [trips, getClient, publicKey, saveTripsToCache]
+    [mutate]
   );
 
-  const deleteTrip = useCallback(async (id: string) => {
-    const client = getClient();
-    const { error } = await client.from("trips").delete().eq("id", id);
-
-    if (error) {
-      throw error;
-    }
-
-    setTrips((prev) => {
-      const updated = prev.filter((t) => t.id !== id);
-      saveTripsToCache(updated);
-      return updated;
-    });
-  }, [getClient, saveTripsToCache]);
+  const deleteTrip = useCallback(
+    async (id: string) => {
+      await deleteTripRow(id);
+      mutate((previous) => previous.filter((t) => t.id !== id));
+    },
+    [mutate]
+  );
 
   const addExpenseToTrip = useCallback(
     async (tripId: string, expenseId: string) => {
-      try {
-        const current = trips.find((t) => t.id === tripId);
-        if (!current || current.expenseIds.includes(expenseId)) return;
-
-        const expenseIds = [...current.expenseIds, expenseId];
-
-        const client = getClient();
-        const { error } = await client
-          .from("trips")
-          .update({ expense_ids: expenseIds })
-          .eq("id", tripId);
-
-        if (error) throw error;
-
-        setTrips((prev) => {
-          const updated = prev.map((t) =>
-            t.id === tripId ? { ...t, expenseIds } : t
-          );
-          saveTripsToCache(updated);
-          return updated;
-        });
-      } catch (err) {
-        console.error("Failed to add expense to trip in Supabase:", err);
-        setTrips((prev) => {
-          const updated = prev.map((t) =>
-            t.id === tripId && !t.expenseIds.includes(expenseId)
-              ? { ...t, expenseIds: [...t.expenseIds, expenseId] }
-              : t
-          );
-          saveTripsToCache(updated);
-          return updated;
-        });
-      }
+      const expenseIds = await addExpenseIdToTrip(tripId, expenseId);
+      mutate((previous) => previous.map((t) => (t.id === tripId ? { ...t, expenseIds } : t)));
     },
-    [trips, getClient, saveTripsToCache]
+    [mutate]
   );
 
-  const settleTrip = useCallback(async (id: string) => {
-    try {
-      const client = getClient();
-      const { error } = await client
-        .from("trips")
-        .update({ settled: true })
-        .eq("id", id);
-
-      if (error) throw error;
-
-      setTrips((prev) => {
-        const updated = prev.map((t) => (t.id === id ? { ...t, settled: true } : t));
-        saveTripsToCache(updated);
-        return updated;
-      });
-    } catch (err) {
-      console.error("Failed to settle trip in Supabase:", err);
-      setTrips((prev) => {
-        const updated = prev.map((t) => (t.id === id ? { ...t, settled: true } : t));
-        saveTripsToCache(updated);
-        return updated;
-      });
-    }
-  }, [getClient, saveTripsToCache]);
-
-  const getTrip = useCallback(
-    (id: string) => trips.find((t) => t.id === id),
-    [trips]
+  const settleTrip = useCallback(
+    async (id: string) => {
+      const saved = await updateTripRow(id, { settled: true });
+      mutate((previous) => previous.map((t) => (t.id === id ? saved : t)));
+    },
+    [mutate]
   );
 
-  return (
-    <TripContext.Provider
-      value={{
-        trips,
-        addTrip,
-        updateTrip,
-        deleteTrip,
-        addExpenseToTrip,
-        settleTrip,
-        getTrip,
-        isLoading,
-        isOffline,
-        error,
-      }}
-    >
-      {children}
-    </TripContext.Provider>
+  const getTrip = useCallback((id: string) => trips.find((t) => t.id === id), [trips]);
+
+  const value = useMemo<TripContextType>(
+    () => ({
+      trips,
+      addTrip,
+      updateTrip,
+      deleteTrip,
+      addExpenseToTrip,
+      settleTrip,
+      getTrip,
+      isLoading,
+      isOffline,
+      error,
+      needsSetup,
+      refresh,
+    }),
+    [
+      trips,
+      addTrip,
+      updateTrip,
+      deleteTrip,
+      addExpenseToTrip,
+      settleTrip,
+      getTrip,
+      isLoading,
+      isOffline,
+      error,
+      needsSetup,
+      refresh,
+    ]
   );
+
+  return <TripContext.Provider value={value}>{children}</TripContext.Provider>;
 }
 
 export function useTripContext(): TripContextType {

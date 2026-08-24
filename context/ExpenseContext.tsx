@@ -1,416 +1,132 @@
 "use client";
 
-import React, {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useRef,
-  useState,
-} from "react";
-import type { Expense, SplitShare } from "@/types/expense";
+import React, { createContext, useCallback, useContext, useMemo } from "react";
+import type { Expense } from "@/types/expense";
 import { LS_EXPENSES } from "@/lib/utils/constants";
-import { supabase, createAuthenticatedClient, isSupabaseConfigured } from "@/lib/supabase/client";
-import type { RealtimePostgresChangesPayload } from "@supabase/supabase-js";
+import {
+  fetchExpenses,
+  insertExpense,
+  updateExpenseRow,
+  deleteExpenseRow,
+  detachExpenseFromTrips,
+  markSharePaidRow,
+  rowToExpense,
+} from "@/lib/supabase/queries";
+import { useRealtimeCollection } from "@/lib/supabase/useRealtimeCollection";
 import { useWalletContext } from "./WalletContext";
-
 
 interface ExpenseContextType {
   expenses: Expense[];
   addExpense: (expense: Expense) => Promise<void>;
-  updateExpense: (id: string, updates: Partial<Expense>) => void;
-  deleteExpense: (id: string) => void;
+  updateExpense: (id: string, updates: Partial<Expense>) => Promise<void>;
+  deleteExpense: (id: string) => Promise<void>;
   markSharePaid: (expenseId: string, memberId: string, txHash: string) => Promise<void>;
   getExpense: (id: string) => Expense | undefined;
   isLoading: boolean;
   isOffline: boolean;
   error: string | null;
+  needsSetup: boolean;
+  refresh: () => Promise<void>;
 }
-
 
 const ExpenseContext = createContext<ExpenseContextType | null>(null);
 ExpenseContext.displayName = "ExpenseContext";
 
-function dbRowToExpense(row: any): Expense {
-  return {
-    id: row.id,
-    title: row.title,
-    description: row.description ?? undefined,
-    totalAmount: row.total_amount,
-    currency: row.currency,
-    splitMode: row.split_mode,
-    paidByMemberId: row.paid_by_member_id,
-    members: row.members,
-    shares: row.shares,
-    createdAt: row.created_at,
-    settled: row.settled,
-  };
-}
-
-function expenseToDbRow(expense: Expense, creatorWallet: string) {
-  const memberWallets = expense.members
-    .map((m) => m.walletAddress)
-    .filter((addr): addr is string => !!addr);
-
-  const allMemberWallets =
-    creatorWallet && !memberWallets.includes(creatorWallet)
-      ? [creatorWallet, ...memberWallets]
-      : memberWallets;
-
-  return {
-    id: expense.id,
-    title: expense.title,
-    description: expense.description ?? null,
-    total_amount: expense.totalAmount,
-    currency: expense.currency,
-    split_mode: expense.splitMode,
-    paid_by_member_id: expense.paidByMemberId,
-    members: expense.members,
-    shares: expense.shares,
-    created_at: expense.createdAt,
-    settled: expense.settled,
-    created_by_wallet: creatorWallet,
-    member_wallets: allMemberWallets,
-  };
-}
-
+const getExpenseId = (expense: Expense) => expense.id;
 
 export function ExpenseProvider({ children }: { children: React.ReactNode }) {
-  const [expenses, setExpenses] = useState<Expense[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [isOffline, setIsOffline] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const channelRef = useRef<any>(null);
   const { publicKey } = useWalletContext();
- 
-  const saveExpensesToCache = useCallback((expensesToCache: Expense[]) => {
-    if (!publicKey) return;
-    try {
-      localStorage.setItem(`${LS_EXPENSES}:${publicKey}`, JSON.stringify(expensesToCache));
-    } catch (err) {
-      console.warn("Failed to write expenses to cache:", err);
-    }
-  }, [publicKey]);
- 
-  const loadExpensesFromCache = useCallback(() => {
-    if (!publicKey) return [];
-    try {
-      const raw = localStorage.getItem(`${LS_EXPENSES}:${publicKey}`);
-      return raw ? (JSON.parse(raw) as Expense[]) : [];
-    } catch {
-      return [];
-    }
-  }, [publicKey]);
 
-  // Get the appropriate Supabase client (authenticated if wallet connected)
-  const getClient = useCallback(() => {
-    if (!isSupabaseConfigured() || !supabase) {
-      throw new Error("Supabase is not configured.");
-    }
-    return publicKey ? createAuthenticatedClient(publicKey) : supabase;
-  }, [publicKey]);
-
-
-  useEffect(() => {
-    let isMounted = true;
-
-    async function loadExpenses() {
-      if (!publicKey) {
-        setExpenses([]);
-        setIsLoading(false);
-        return;
-      }
-      try {
-        if (!isSupabaseConfigured()) throw new Error("Supabase not configured");
-        const client = getClient();
-        // Try loading from Supabase
-        const { data, error } = await client
-          .from("expenses")
-          .select("*")
-          .order("created_at", { ascending: false });
-
-        if (error) throw error;
-
-        if (isMounted && data) {
-          const expenses = data.map(dbRowToExpense);
-          setExpenses(expenses);
-          saveExpensesToCache(expenses);
-        }
-      } catch (err: any) {
-        console.warn("Failed to load from Supabase, using localStorage:", err);
-        if (isMounted) {
-          setIsOffline(true);
-          setError(err?.message || "Failed to connect to database");
-        }
-        if (isMounted) {
-          setExpenses(loadExpensesFromCache());
-        }
-      } finally {
-        if (isMounted) {
-          setIsLoading(false);
-        }
-      }
-    }
-
-    loadExpenses();
-
-    return () => {
-      isMounted = false;
-    };
-  }, [getClient, loadExpensesFromCache, publicKey, saveExpensesToCache]);
-
-  useEffect(() => {
-    if (isLoading) return;
-
-    let client;
-    try {
-      client = getClient();
-    } catch {
-      return;
-    }
-    if (!client) return;
-
-    const channel = client
-      .channel("expenses-changes")
-      .on(
-        "postgres_changes",
-        { event: "INSERT", schema: "public", table: "expenses" },
-        (payload: RealtimePostgresChangesPayload<any>) => {
-          const newExpense = dbRowToExpense(payload.new);
-          setExpenses((prev) => {
-            if (prev.some((e) => e.id === newExpense.id)) return prev;
-            const updated = [newExpense, ...prev];
-            saveExpensesToCache(updated);
-            return updated;
-          });
-        }
-      )
-      .on(
-        "postgres_changes",
-        { event: "UPDATE", schema: "public", table: "expenses" },
-        (payload: RealtimePostgresChangesPayload<any>) => {
-          const updatedExpense = dbRowToExpense(payload.new);
-          setExpenses((prev) => {
-            const updated = prev.map((e) =>
-              e.id === updatedExpense.id ? updatedExpense : e
-            );
-            saveExpensesToCache(updated);
-            return updated;
-          });
-        }
-      )
-      .on(
-        "postgres_changes",
-        { event: "DELETE", schema: "public", table: "expenses" },
-        (payload: RealtimePostgresChangesPayload<any>) => {
-          const deletedId = (payload.old as any)?.id;
-          if (!deletedId) return;
-          setExpenses((prev) => {
-            const updated = prev.filter((e) => e.id !== deletedId);
-            saveExpensesToCache(updated);
-            return updated;
-          });
-        }
-      )
-      .subscribe();
-
-    channelRef.current = channel;
-
-    return () => {
-      channel.unsubscribe();
-    };
-  }, [isLoading, getClient, publicKey, saveExpensesToCache]);
-
-  const addExpense = useCallback(async (expense: Expense) => {
-    if (!publicKey) throw new Error("Wallet not connected");
-
-    setExpenses((prev) => {
-      const updated = [expense, ...prev];
-      saveExpensesToCache(updated);
-      return updated;
+  const { items: expenses, isLoading, isOffline, error, needsSetup, refresh, mutate, wallet } =
+    useRealtimeCollection<Expense>({
+      table: "expenses",
+      cacheKey: LS_EXPENSES,
+      fetchAll: fetchExpenses,
+      fromRow: rowToExpense,
+      getId: getExpenseId,
+      connectedWallet: publicKey,
     });
 
-    // Persist to Supabase - throw on failure so the caller can handle it
-    const client = getClient();
-    const { error } = await client
-      .from("expenses")
-      .insert([expenseToDbRow(expense, publicKey)]);
+  const addExpense = useCallback(
+    async (expense: Expense) => {
+      if (!wallet) throw new Error("Sign in with your wallet before adding an expense.");
 
-    if (error) {
-      setExpenses((prev) => {
-        const rolled = prev.filter((e) => e.id !== expense.id);
-        saveExpensesToCache(rolled);
-        return rolled;
-      });
-      throw error;
-    }
-  }, [getClient, publicKey, saveExpensesToCache]);
+      const saved = await insertExpense(expense, wallet);
+      mutate((previous) =>
+        previous.some((e) => e.id === saved.id) ? previous : [saved, ...previous]
+      );
+    },
+    [wallet, mutate]
+  );
 
   const updateExpense = useCallback(
     async (id: string, updates: Partial<Expense>) => {
-      try {
-        const current = expenses.find((e) => e.id === id);
-        if (!current) return;
-
-        const merged = { ...current, ...updates };
-        const dbRow = expenseToDbRow(merged, publicKey || '');
-
-        const client = getClient();
-        const { error } = await client
-          .from("expenses")
-          .update(dbRow)
-          .eq("id", id);
-
-        if (error) throw error;
-
-        setExpenses((prev) => {
-          const updated = prev.map((e) => (e.id === id ? merged : e));
-          saveExpensesToCache(updated);
-          return updated;
-        });
-      } catch (err) {
-        console.error("Failed to update expense in Supabase:", err);
-        setExpenses((prev) => {
-          const updated = prev.map((e) =>
-            e.id === id ? { ...e, ...updates } : e
-          );
-          saveExpensesToCache(updated);
-          return updated;
-        });
-      }
+      const saved = await updateExpenseRow(id, updates);
+      mutate((previous) => previous.map((e) => (e.id === id ? saved : e)));
     },
-    [expenses, getClient, publicKey, saveExpensesToCache]
+    [mutate]
   );
 
-  const deleteExpense = useCallback(async (id: string) => {
-    try {
-      const client = getClient();
+  const deleteExpense = useCallback(
+    async (id: string) => {
+      // Unlink first: if the delete succeeds but the unlink does not, trips are
+      // left pointing at an expense that no longer exists.
+      await detachExpenseFromTrips(id);
+      await deleteExpenseRow(id);
+      mutate((previous) => previous.filter((e) => e.id !== id));
+    },
+    [mutate]
+  );
 
-      // Clean up the expense ID from any trips that reference it
-      const { data: tripsWithExpense, error: tripFetchError } = await client
-        .from("trips")
-        .select("id, expense_ids")
-        .contains("expense_ids", [id]);
-
-      if (!tripFetchError && tripsWithExpense && tripsWithExpense.length > 0) {
-        for (const trip of tripsWithExpense) {
-          const newExpenseIds = (trip.expense_ids || []).filter((eid: string) => eid !== id);
-          await client
-            .from("trips")
-            .update({ expense_ids: newExpenseIds })
-            .eq("id", trip.id);
-        }
-      }
-
-      const { error } = await client.from("expenses").delete().eq("id", id);
-
-      if (error) throw error;
-
-      setExpenses((prev) => {
-        const updated = prev.filter((e) => e.id !== id);
-        saveExpensesToCache(updated);
-        return updated;
-      });
-    } catch (err) {
-      console.error("Failed to delete expense from Supabase:", err);
-        setExpenses((prev) => {
-          const updated = prev.filter((e) => e.id !== id);
-          saveExpensesToCache(updated);
-          return updated;
-        });
-    }
-  }, [getClient, saveExpensesToCache]);
-
+  /**
+   * Records an on-chain payment against a member's share.
+   *
+   * Never optimistic: the Stellar transaction has already settled by the time
+   * this runs, so showing "paid" before the database agrees would hide a
+   * genuine bookkeeping failure the user needs to know about. `markSharePaidRow`
+   * re-reads the shares immediately before writing, so a payment made
+   * concurrently by another member is not clobbered.
+   */
   const markSharePaid = useCallback(
     async (expenseId: string, memberId: string, txHash: string) => {
-      const current = expenses.find((e) => e.id === expenseId);
-      if (!current) throw new Error("Expense not found in state - please refresh and try again.");
-
-      setExpenses((prev) => {
-        const updated = prev.map((e) => {
-          if (e.id !== expenseId) return e;
-          const shares = e.shares.map((s) =>
-            s.memberId === memberId ? { ...s, paid: true, txHash } : s
-          );
-          const settled = shares.every((s) => s.paid);
-          return { ...e, shares, settled };
-        });
-        saveExpensesToCache(updated);
-        return updated;
-      });
-
-      try {
-        const client = getClient();
-
-        const { data: freshData, error: fetchErr } = await client
-          .from("expenses")
-          .select("shares")
-          .eq("id", expenseId)
-          .single();
-
-        if (fetchErr) throw fetchErr;
-
-        const freshShares = (freshData.shares as SplitShare[]).map((s: SplitShare) =>
-          s.memberId === memberId ? { ...s, paid: true, txHash } : s
-        );
-        const freshSettled = freshShares.every((s: SplitShare) => s.paid);
-
-        const { data: rowsUpdated, error: updateErr } = await client
-          .from("expenses")
-          .update({ shares: freshShares, settled: freshSettled })
-          .eq("id", expenseId)
-          .select("id");
-
-        if (updateErr) throw updateErr;
-        if (!rowsUpdated || rowsUpdated.length === 0) {
-          throw new Error(
-            "Payment sent on Stellar but could not be recorded. " +
-            "Make sure your Stellar wallet address is entered correctly in the expense member list."
-          );
-        }
-
-        setExpenses((prev) => {
-          const synced = prev.map((e) =>
-            e.id !== expenseId ? e : { ...e, shares: freshShares, settled: freshSettled }
-          );
-          saveExpensesToCache(synced);
-          return synced;
-        });
-      } catch (err) {
-        console.error("Failed to persist markSharePaid to Supabase:", err);
-        setExpenses((prev) => {
-          const rolled = prev.map((e) => (e.id === expenseId ? current : e));
-          saveExpensesToCache(rolled);
-          return rolled;
-        });
-        throw err;
-      }
+      const saved = await markSharePaidRow(expenseId, memberId, txHash);
+      mutate((previous) => previous.map((e) => (e.id === expenseId ? saved : e)));
     },
-    [expenses, getClient, saveExpensesToCache]
+    [mutate]
   );
 
-  const getExpense = useCallback(
-    (id: string) => expenses.find((e) => e.id === id),
-    [expenses]
+  const getExpense = useCallback((id: string) => expenses.find((e) => e.id === id), [expenses]);
+
+  const value = useMemo<ExpenseContextType>(
+    () => ({
+      expenses,
+      addExpense,
+      updateExpense,
+      deleteExpense,
+      markSharePaid,
+      getExpense,
+      isLoading,
+      isOffline,
+      error,
+      needsSetup,
+      refresh,
+    }),
+    [
+      expenses,
+      addExpense,
+      updateExpense,
+      deleteExpense,
+      markSharePaid,
+      getExpense,
+      isLoading,
+      isOffline,
+      error,
+      needsSetup,
+      refresh,
+    ]
   );
 
-  return (
-    <ExpenseContext.Provider
-      value={{
-        expenses,
-        addExpense,
-        updateExpense,
-        deleteExpense,
-        markSharePaid,
-        getExpense,
-        isLoading,
-        isOffline,
-        error,
-      }}
-    >
-      {children}
-    </ExpenseContext.Provider>
-  );
+  return <ExpenseContext.Provider value={value}>{children}</ExpenseContext.Provider>;
 }
 
 export function useExpenseContext(): ExpenseContextType {

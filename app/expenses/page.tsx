@@ -11,6 +11,7 @@ import { ExpenseEmptyState } from "@/components/expenses/ExpenseEmptyState";
 import { ExpenseForm } from "@/components/expenses/ExpenseForm";
 import { Modal } from "@/components/ui/Modal";
 import { Spinner } from "@/components/ui/Spinner";
+import { useToast } from "@/components/ui/Toast";
 import { useAuth } from "@/context/AuthContext";
 import { useExpense } from "@/hooks/useExpense";
 import { useWallet } from "@/hooks/useWallet";
@@ -21,6 +22,28 @@ export default function ExpensesPage() {
   const { user } = useAuth();
   const { expenses, deleteExpense, isLoading, isOffline } = useExpense();
   const [showForm, setShowForm] = useState(false);
+  const { success: toastSuccess, error: toastError } = useToast();
+
+  // Deletes now reject rather than failing silently, so the outcome has to be
+  // reported: an expense that looks deleted but is still in the database is
+  // worse than an error message.
+  const handleDeleteExpense = async (id: string) => {
+    try {
+      await deleteExpense(id);
+      toastSuccess("Expense deleted");
+    } catch (err: any) {
+      const message = String(err?.message ?? "");
+      const isPermissionDenied =
+        err?.code === "42501" ||
+        /permission|policy|row-level security/i.test(message);
+      toastError(
+        "Failed to delete expense",
+        isPermissionDenied
+          ? "Only the person who created this expense can delete it."
+          : message || "Could not delete this expense. Please try again."
+      );
+    }
+  };
 
   return (
     <AuthGuard>
@@ -78,7 +101,7 @@ export default function ExpensesPage() {
                   <ExpenseCard
                     key={expense.id}
                     expense={expense}
-                    onDelete={deleteExpense}
+                    onDelete={handleDeleteExpense}
                     currentUserPublicKey={publicKey}
                   />
                 ))}

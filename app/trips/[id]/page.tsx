@@ -6,6 +6,7 @@ import { useParams } from "next/navigation";
 import { AuthGuard } from "@/components/auth/AuthGuard";
 import { ExpenseForm } from "@/components/expenses/ExpenseForm";
 import { Modal } from "@/components/ui/Modal";
+import { useToast } from "@/components/ui/Toast";
 import { SettlementSummary } from "@/components/trips/SettlementSummary";
 import { TripDetailHeader } from "@/components/trips/TripDetailHeader";
 import { TripDetailNav } from "@/components/trips/TripDetailNav";
@@ -28,6 +29,18 @@ export default function TripDetailPage() {
   const { user } = useAuth();
   const [activeTab, setActiveTab] = useState<TripTab>("expenses");
   const [showExpenseForm, setShowExpenseForm] = useState(false);
+  const { error: toastError } = useToast();
+
+  // The expense itself saved successfully; only the link to this trip failed.
+  // Say so plainly rather than letting the promise reject unhandled.
+  const linkExpenseToTrip = (tripId: string, expenseId: string) => {
+    void addExpenseToTrip(tripId, expenseId).catch((err: any) => {
+      toastError(
+        "Expense saved, but not added to this trip",
+        err?.message || "Reload the page and add it to the trip again."
+      );
+    });
+  };
 
   const trip = getTrip(params.id);
   const tripExpenses = trip ? expenses.filter((expense) => trip.expenseIds.includes(expense.id)) : [];
@@ -87,7 +100,7 @@ export default function TripDetailPage() {
           currentUserName={user?.displayName}
           defaultMembers={trip.members}
           onSuccess={(newExpenseId?: string) => {
-            if (newExpenseId) addExpenseToTrip(trip.id, newExpenseId);
+            if (newExpenseId) linkExpenseToTrip(trip.id, newExpenseId);
             setShowExpenseForm(false);
           }}
           onCancel={() => setShowExpenseForm(false)}

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Account, TransactionBuilder, Memo, Operation, Keypair } from "@stellar/stellar-sdk";
 import { NETWORK_PASSPHRASE, TX_BASE_FEE } from "@/lib/utils/constants";
-import { generateChallengeSignature } from "@/lib/supabase/serverAuth";
+import { generateChallengeSignature, CHALLENGE_TTL_MS } from "@/lib/supabase/serverAuth";
 import { issueChallenge } from "@/lib/auth/challengeStore";
 import crypto from "crypto";
 
@@ -25,7 +25,7 @@ export async function GET(request: NextRequest) {
     }
 
     const nonce = crypto.randomUUID();
-    const expiration = Date.now() + 5 * 60 * 1000; // 5 minutes validity
+    const expiration = Date.now() + CHALLENGE_TTL_MS;
     const signature = generateChallengeSignature(address, nonce, expiration);
 
     issueChallenge(address, nonce, expiration);
@@ -37,7 +37,7 @@ export async function GET(request: NextRequest) {
       networkPassphrase: NETWORK_PASSPHRASE,
     })
       .addMemo(Memo.text(`Auth ${nonce.slice(0, 8)}`))
-      .setTimeout(300) // 5 minutes
+      .setTimeout(Math.floor(CHALLENGE_TTL_MS / 1000))
       .addOperation(
         Operation.manageData({
           name: "StellarStar Auth",

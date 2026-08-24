@@ -303,8 +303,52 @@ cp .env.local.example .env.local
 ```
 
 Then:
-1. Add your Supabase URL and anon key to `.env.local`
-2. Ensure your wallet is on Stellar Testnet
+1. Add your Supabase URL, anon key and JWT secret to `.env.local`
+2. **Create the database schema** — open the Supabase Dashboard, go to
+   **SQL Editor -> New Query**, paste the whole of [`supabase-setup.sql`](supabase-setup.sql)
+   and hit **Run**. The script is idempotent, so it is safe to run again after
+   any change.
+3. Verify the connection end to end:
+
+   ```bash
+   npm run db:check
+   ```
+
+   This checks the env vars, confirms `SUPABASE_JWT_SECRET` really signs this
+   project's tokens, proves the tables exist, and exercises the whole sign-up
+   write path (including that one wallet cannot read or take over another
+   wallet's rows). It cleans up everything it creates.
+4. Ensure your wallet is on Stellar Testnet
+
+> **Nothing loads after signing up?** That is almost always step 2: without the
+> tables, every query returns `PGRST205` and the app falls back to an empty
+> local cache. `npm run db:check` will tell you in one line.
+
+---
+
+## Database & Data Flow
+
+| Layer | File | Responsibility |
+| :---- | :--- | :------------- |
+| Schema, RLS, triggers | [`supabase-setup.sql`](supabase-setup.sql) | Tables, policies, realtime, integrity triggers |
+| Row types | `types/supabase.ts` | Typed mirror of the SQL schema |
+| Session | `lib/supabase/session.ts` | Stores the wallet JWT; notifies React when it changes |
+| Client | `lib/supabase/client.ts` | One shared client that attaches the current token per request |
+| Queries | `lib/supabase/queries.ts` | Every read and write, plus row-to-domain mapping |
+| Live data | `lib/supabase/useRealtimeCollection.ts` | Fetch + realtime + per-wallet offline cache |
+| Server | `lib/supabase/server.ts` | Route-handler clients (never bundled for the browser) |
+
+**Authentication.** There is no Supabase Auth user. `/api/auth/challenge` issues
+a nonce, the wallet signs it, and `/api/auth/verify` checks the signature and
+mints an HS256 JWT with a `wallet_address` claim, signed with the project's JWT
+secret. Postgres verifies that token on every request, and every RLS policy
+reads identity from it via `public.current_wallet()`. The same call also creates
+or refreshes the user's profile, so sign-up completes in one round trip.
+
+**Access control.** `member_wallets` is derived by a database trigger from the
+`members` JSON, never sent by the client, so the array RLS filters on cannot
+drift out of sync with the member list. `created_by_wallet` is frozen on update,
+so a member can edit a shared trip or expense without taking ownership of it.
 
 ---
 
