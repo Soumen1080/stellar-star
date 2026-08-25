@@ -200,6 +200,35 @@ BEGIN
 END;
 $fn$;
 
+-- 4d. Validate shares sum ---------------------------------------------------
+-- Ensure the sum of amounts within the shares JSONB array equals total_amount.
+CREATE OR REPLACE FUNCTION public.validate_expense_shares()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $fn$
+DECLARE
+  total NUMERIC;
+  shares_sum NUMERIC;
+BEGIN
+  BEGIN
+    total := NEW.total_amount::NUMERIC;
+  EXCEPTION WHEN OTHERS THEN
+    RAISE EXCEPTION 'total_amount must be a valid numeric string';
+  END;
+
+  SELECT COALESCE(SUM((s ->> 'amount')::NUMERIC), 0)
+    INTO shares_sum
+    FROM jsonb_array_elements(COALESCE(NEW.shares, '[]'::jsonb)) AS s
+   WHERE s ->> 'amount' IS NOT NULL;
+
+  IF shares_sum <> total THEN
+    RAISE EXCEPTION 'Sum of expense shares (%) does not equal total_amount (%)', shares_sum, total;
+  END IF;
+
+  RETURN NEW;
+END;
+$fn$;
+
 DROP TRIGGER IF EXISTS users_set_updated_at         ON public.users;
 DROP TRIGGER IF EXISTS expenses_set_updated_at      ON public.expenses;
 DROP TRIGGER IF EXISTS trips_set_updated_at         ON public.trips;
@@ -207,6 +236,7 @@ DROP TRIGGER IF EXISTS expenses_sync_member_wallets ON public.expenses;
 DROP TRIGGER IF EXISTS trips_sync_member_wallets    ON public.trips;
 DROP TRIGGER IF EXISTS expenses_freeze_identity     ON public.expenses;
 DROP TRIGGER IF EXISTS trips_freeze_identity        ON public.trips;
+DROP TRIGGER IF EXISTS expenses_validate_shares     ON public.expenses;
 -- Trigger names used by earlier revisions of this file.
 DROP TRIGGER IF EXISTS update_users_updated_at      ON public.users;
 DROP TRIGGER IF EXISTS update_expenses_updated_at   ON public.expenses;
@@ -226,6 +256,10 @@ CREATE TRIGGER expenses_freeze_identity
 CREATE TRIGGER expenses_sync_member_wallets
   BEFORE INSERT OR UPDATE ON public.expenses
   FOR EACH ROW EXECUTE FUNCTION public.sync_member_wallets();
+
+CREATE TRIGGER expenses_validate_shares
+  BEFORE INSERT OR UPDATE ON public.expenses
+  FOR EACH ROW EXECUTE FUNCTION public.validate_expense_shares();
 
 CREATE TRIGGER expenses_set_updated_at
   BEFORE UPDATE ON public.expenses
