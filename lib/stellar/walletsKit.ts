@@ -254,6 +254,10 @@ export class StellarWalletsKit {
       const img = document.createElement("img");
       img.src   = wallet.logoUrl;
       img.alt   = wallet.name;
+      img.onerror = () => {
+        img.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23E5E5E5' rx='8'/%3E%3C/svg%3E";
+        img.onerror = null;
+      };
       Object.assign(img.style, { width: "32px", height: "32px", borderRadius: "8px" });
 
       const nameEl = document.createElement("span");
