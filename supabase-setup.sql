@@ -165,13 +165,19 @@ AS $fn$
 DECLARE
   wallets TEXT[];
 BEGIN
-  SELECT COALESCE(array_agg(DISTINCT s.w), ARRAY[]::TEXT[])
-    INTO wallets
+  WITH extracted AS (
+    SELECT NULLIF(btrim(COALESCE(m ->> 'walletAddress', '')), '') AS w
     FROM jsonb_array_elements(COALESCE(NEW.members, '[]'::jsonb)) AS m
-    CROSS JOIN LATERAL (
-      SELECT NULLIF(btrim(COALESCE(m ->> 'walletAddress', '')), '') AS w
+    UNION
+    SELECT NULLIF(btrim(COALESCE(s ->> 'walletAddress', '')), '') AS w
+    FROM jsonb_array_elements(
+      COALESCE(to_jsonb(NEW) -> 'shares', '[]'::jsonb)
     ) AS s
-   WHERE s.w IS NOT NULL;
+  )
+  SELECT COALESCE(array_agg(DISTINCT w), ARRAY[]::TEXT[])
+    INTO wallets
+    FROM extracted
+   WHERE w IS NOT NULL;
 
   -- The creator always retains access to their own row.
   IF NEW.created_by_wallet IS NOT NULL
