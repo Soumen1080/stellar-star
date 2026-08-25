@@ -139,6 +139,80 @@ function makeRest(url, anonKey) {
 const SETUP_HINT =
   "Run supabase-setup.sql in the Supabase Dashboard -> SQL Editor, then re-run this check.";
 
+/**
+ * Opens a Realtime socket and joins a postgres_changes channel on `trips`,
+ * exactly as the browser client does, then reports whether the server accepted
+ * the wallet JWT. Resolves rather than rejects so a failure is a warning.
+ */
+function checkRealtime(url, anonKey, token, timeoutMs = 10_000) {
+  return new Promise((resolve) => {
+    const wsUrl =
+      url.replace(/^https:/, "wss:") +
+      `/realtime/v1/websocket?apikey=${encodeURIComponent(anonKey)}&vsn=1.0.0`;
+
+    let socket;
+    let settled = false;
+
+    const finish = (ok, detail) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try {
+        socket?.close();
+      } catch {}
+      resolve({ ok, detail });
+    };
+
+    const timer = setTimeout(() => finish(false, "timed out waiting for a channel reply"), timeoutMs);
+
+    try {
+      socket = new WebSocket(wsUrl);
+    } catch (err) {
+      return finish(false, `could not open a socket: ${err.message}`);
+    }
+
+    socket.addEventListener("open", () => {
+      socket.send(
+        JSON.stringify({
+          topic: "realtime:connection-check",
+          event: "phx_join",
+          ref: "1",
+          payload: {
+            config: {
+              broadcast: { self: false },
+              presence: { key: "" },
+              postgres_changes: [{ event: "*", schema: "public", table: "trips" }],
+            },
+            access_token: token,
+          },
+        })
+      );
+    });
+
+    socket.addEventListener("message", (event) => {
+      let msg;
+      try {
+        msg = JSON.parse(event.data);
+      } catch {
+        return;
+      }
+      if (msg.event !== "phx_reply" || msg.ref !== "1") return;
+
+      if (msg.payload?.status === "ok") {
+        const changes = msg.payload.response?.postgres_changes ?? [];
+        finish(true, `channel joined, ${changes.length} postgres_changes binding(s) accepted`);
+      } else {
+        finish(false, `server refused the join: ${JSON.stringify(msg.payload?.response ?? msg.payload)}`);
+      }
+    });
+
+    socket.addEventListener("error", () => finish(false, "socket error"));
+    socket.addEventListener("close", (event) =>
+      finish(false, `socket closed before joining (code ${event.code})`)
+    );
+  });
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -233,6 +307,7 @@ async function main() {
   // 5. Write path ────────────────────────────────────────────────────────────
   section("5. Sign-up write path");
 
+  // [id, token] pairs: only the owning wallet may delete its own row.
   const createdUsers = [];
   const createdTrips = [];
 
@@ -244,7 +319,7 @@ async function main() {
   });
 
   if (insertUser.ok && Array.isArray(insertUser.body) && insertUser.body[0]) {
-    createdUsers.push(insertUser.body[0].id);
+    createdUsers.push([insertUser.body[0].id, tokenA]);
     pass("A wallet JWT can create its own profile", `id ${insertUser.body[0].id}`);
   } else {
     fail(
@@ -261,7 +336,7 @@ async function main() {
   });
 
   if (spoof.ok) {
-    if (Array.isArray(spoof.body) && spoof.body[0]) createdUsers.push(spoof.body[0].id);
+    if (Array.isArray(spoof.body) && spoof.body[0]) createdUsers.push([spoof.body[0].id, tokenB]);
     fail("Wallet A created a profile for wallet B", "The users INSERT policy is not checking the JWT claim.");
   } else {
     pass("A wallet cannot create a profile for a different wallet", `rejected with ${spoof.status}`);
@@ -360,18 +435,18 @@ async function main() {
   // 7. Realtime ──────────────────────────────────────────────────────────────
   section("7. Realtime");
 
-  const realtimeRes = await fetch(
-    `${url}/realtime/v1/websocket?apikey=${encodeURIComponent(anonKey)}&vsn=1.0.0`,
-    { headers: { Connection: "Upgrade", Upgrade: "websocket" } }
-  ).catch((err) => ({ status: 0, err }));
-
-  if (realtimeRes.status === 426 || realtimeRes.status === 101 || realtimeRes.status === 400) {
-    pass("The Realtime endpoint is reachable", `handshake responded ${realtimeRes.status}`);
+  // `fetch` cannot perform a WebSocket upgrade, so this opens a real socket and
+  // joins a channel with a wallet token — the same thing the browser does.
+  if (typeof WebSocket !== "function") {
+    warn("No global WebSocket in this Node version", "Skipping the Realtime check.");
   } else {
-    warn(
-      `Realtime endpoint returned ${realtimeRes.status ?? "no response"}`,
-      "Live updates may not work; confirm Realtime is enabled for this project."
-    );
+    const result = await checkRealtime(url, anonKey, tokenA);
+    if (result.ok) pass("Realtime accepts a wallet JWT and joins a channel", result.detail);
+    else
+      warn(
+        "Could not join a Realtime channel",
+        `${result.detail}\n        Live updates may not work; check that Realtime is enabled for this project.`
+      );
   }
 
   // 8. Cleanup ───────────────────────────────────────────────────────────────
@@ -382,9 +457,8 @@ async function main() {
     if (res.ok) pass(`Removed test trip ${id}`);
     else warn(`Could not remove test trip ${id}`, JSON.stringify(res.body));
   }
-  for (const id of createdUsers) {
-    const owner = id === createdUsers[0] ? tokenA : tokenA;
-    const res = await rest(`users?id=eq.${id}`, { method: "DELETE", token: owner });
+  for (const [id, ownerToken] of createdUsers) {
+    const res = await rest(`users?id=eq.${id}`, { method: "DELETE", token: ownerToken });
     if (res.ok) pass(`Removed test profile ${id}`);
     else warn(`Could not remove test profile ${id}`, `${JSON.stringify(res.body)} — delete it by hand.`);
   }
