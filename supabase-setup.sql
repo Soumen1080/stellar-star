@@ -503,3 +503,59 @@ create index if not exists settlement_attestations_tx_hash_idx
 -- or write it: a client that could insert rows here could reserve allocations
 -- against other people's payments.
 alter table public.settlement_attestations enable row level security;
+
+-- ============================================================================
+-- Sponsored account onboarding  (issue #147 / epic #45)
+-- ============================================================================
+-- Sponsorship locks the sponsor's XLM durably rather than spending it, so these
+-- tables are the sponsor's balance sheet: every active row is an open liability
+-- until revoked. Without a shared store the cap is per-process, which on a
+-- multi-instance deployment is N times the cap the operator believes they set.
+
+create table if not exists public.sponsored_accounts (
+  account          text        primary key,
+  locked_stroops   numeric(30) not null check (locked_stroops > 0),
+  status           text        not null default 'active'
+                               check (status in ('active', 'revoked', 'reclaimed')),
+  created_at_ms    bigint      not null,
+  last_active_at_ms bigint     not null,
+  -- The wallet whose invite created this sponsorship. Abuse resistance keys on
+  -- the inviter, so this is the link back to who bears the cost.
+  sponsored_by     text        not null,
+  revoked_at_ms    bigint,
+  created_at       timestamptz not null default now()
+);
+
+-- The cap is computed by summing active rows, so this index is what keeps that
+-- read cheap enough to run on every sponsorship request.
+create index if not exists sponsored_accounts_status_idx
+  on public.sponsored_accounts (status);
+
+create index if not exists sponsored_accounts_idle_idx
+  on public.sponsored_accounts (status, last_active_at_ms);
+
+create index if not exists sponsored_accounts_inviter_idx
+  on public.sponsored_accounts (sponsored_by);
+
+-- Per-inviter quota and cooldown records.
+create table if not exists public.sponsorship_invites (
+  id            uuid        primary key default gen_random_uuid(),
+  inviter       text        not null,
+  invitee       text        not null,
+  created_at_ms bigint      not null,
+  created_at    timestamptz not null default now(),
+
+  -- One inviter cannot sponsor the same account twice, and concurrent
+  -- duplicate requests collide here rather than each consuming a quota slot.
+  constraint sponsorship_invites_pair_unique unique (inviter, invitee)
+);
+
+create index if not exists sponsorship_invites_inviter_idx
+  on public.sponsorship_invites (inviter, created_at_ms desc);
+
+-- Written only by the onboarding routes via the service-role key, which
+-- bypasses RLS. No policies are granted: a client that could insert or delete
+-- rows here could forge quota headroom, or release a sponsorship it does not
+-- own.
+alter table public.sponsored_accounts enable row level security;
+alter table public.sponsorship_invites enable row level security;

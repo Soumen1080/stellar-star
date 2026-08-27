@@ -70,6 +70,24 @@ Stellar-star uses:
 - **Path quotes expire after 30 seconds and must be refreshed manually.** A book
   can move past the slippage tolerance inside that window; the consequence is a
   failed transaction rather than an overspend, but the payer must retry.
+- **Users with no funded account can be onboarded via sponsored reserves**
+  (#147). The sponsor pays the base reserve and the trustline reserve; the
+  invitee signs the transaction themselves, so their keys never leave their
+  wallet and the server cannot create an account they do not control. See
+  `docs/DESIGN_ACCOUNT_ONBOARDING.md`.
+- **Sponsorship exposure is capped, and the cap is per-process without Supabase.**
+  Total locked reserve is bounded by `SPONSORSHIP_CAP_STROOPS`. With no durable
+  ledger configured that cap applies per server instance, so a multi-instance
+  deployment would permit N times the intended exposure. The capacity endpoint
+  reports `durableLedger: false` when this is the case.
+- **A dormant sponsored account can hold its reserve indefinitely.** Revocation
+  requires the account to cover its own reserve; if it never does, the operation
+  fails and the sponsorship stands. This is the deliberate cost of never taking
+  funds from a user, and it means reclamation is best-effort.
+- **Abuse resistance bounds but does not prevent capacity exhaustion.** An
+  attacker with real XLM across several funded wallets can still consume
+  sponsorship capacity. The damage is bounded to denial of *sponsored*
+  onboarding — self-funding remains available throughout.
 
 ## Operational Constraints
 
