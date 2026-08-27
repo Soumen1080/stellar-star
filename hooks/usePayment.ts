@@ -11,7 +11,7 @@ import {
   depositPoolBalance,
   stroopsToXlm,
 } from "@/lib/stellar/contract";
-import { buildExpectedPaymentMemo, verifyPaymentTransaction } from "@/lib/stellar/verifyTransaction";
+import { fetchAttestation } from "@/lib/settlement/settleOnChain";
 import { signXDR } from "@/lib/freighter";
 import { useWallet } from "@/hooks/useWallet";
 import { useExpense } from "@/hooks/useExpense";
@@ -206,8 +206,6 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
   const retryOnChainRecord = useCallback(async () => {
     if (!pendingOnChain) return;
 
-    const expectedMemo = buildExpectedPaymentMemo(pendingOnChain.memoText);
-
     const poolCheck = await precheckPoolBalance(
       pendingOnChain.memberPublicKey,
       pendingOnChain.memberPublicKey,
@@ -227,29 +225,29 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
     }
 
     setPaymentState({ status: "recording", step: "simulating" });
-    const verifyResult = await verifyPaymentTransaction({
-      txHash: pendingOnChain.txHash,
-      expectedSource: pendingOnChain.memberPublicKey,
-      expectedDestination: pendingOnChain.payerPublicKey,
-      expectedAmountXlm: pendingOnChain.amountXlm,
-      expectedMemo,
-    });
 
-    if (!verifyResult.valid) {
-      const msg = verifyResult.error ?? "Invalid payment transaction on network.";
+    // The oracle re-verifies against Horizon itself; there is no point doing a
+    // client-side check first, and its verdict would carry no weight anyway.
+    const attested = await fetchAttestation(pendingOnChain);
+
+    if (!attested.ok) {
       setPaymentState({
         status: "partial_success",
         hash: pendingOnChain.txHash,
         ledger: pendingOnChain.ledger,
         onChain: false,
-        message: msg,
+        message: attested.message,
       });
-      toastError("On-chain retry blocked", msg);
+      toastError(
+        attested.retryable ? "On-chain proof unavailable" : "On-chain retry blocked",
+        attested.message,
+      );
       return;
     }
 
     const contractResult = await recordPaymentOnChain({
       ...pendingOnChain,
+      attestation: attested.attestation,
       onStatus: (step) => setPaymentState({ status: "recording", step }),
     });
 
@@ -327,7 +325,6 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
 
         setPaymentState({ status: "building" });
         const memoText = `${expenseTitle}|${share.name}`;
-        const expectedMemo = buildExpectedPaymentMemo(memoText);
         const { xdr } = await buildPaymentTransaction({
           sourcePublicKey:      publicKey,
           destinationPublicKey: payerWalletAddress,
@@ -348,19 +345,21 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
         if (CONTRACT_ID && tripId) {
           setPaymentState({ status: "recording", step: "simulating" });
 
-          const verifyResult = await verifyPaymentTransaction({
+          // The settlement proof now comes from the oracle, which checks
+          // Horizon server-side. The client no longer verifies its own claim.
+          const attested = await fetchAttestation({
+            tripId,
+            expenseId,
+            payerPublicKey: payerWalletAddress,
+            memberPublicKey: publicKey,
+            amountXlm: share.amount,
             txHash: result.hash,
-            expectedSource: publicKey,
-            expectedDestination: payerWalletAddress,
-            expectedAmountXlm: share.amount,
-            expectedMemo,
           });
 
-          if (!verifyResult.valid) {
-            onChainError = verifyResult.error ?? "Invalid payment transaction on network.";
+          if (!attested.ok) {
+            onChainError = attested.message;
             buildAndPersistPending(result.hash, result.ledger, payerWalletAddress, share.amount, tripId, memoText);
           } else {
-            setPaymentState({ status: "recording", step: "simulating" });
             const contractResult = await recordPaymentOnChain({
               memberPublicKey: publicKey,
               tripId,
@@ -368,6 +367,7 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
               payerPublicKey: payerWalletAddress,
               amountXlm:      share.amount,
               txHash:         result.hash,
+              attestation:    attested.attestation,
               onStatus:       (step) => setPaymentState({ status: "recording", step }),
             });
 
@@ -393,8 +393,8 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
             message: onChainError,
           });
           toastInfo(
-            "Payment sent, on-chain record pending",
-            "XLM transfer succeeded. Use retry after fixing contract prerequisites (e.g. pool balance).",
+            "Payment sent — recorded off-chain only",
+            "The XLM transfer succeeded, but this settlement has no on-chain proof yet. Use retry to add it.",
           );
           setTimeout(() => refreshBalance(), 3000);
           setTimeout(() => refreshBalance(), 8000);

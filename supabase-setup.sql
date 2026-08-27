@@ -460,3 +460,46 @@ SELECT tablename AS realtime_enabled_table
   FROM pg_publication_tables
  WHERE pubname = 'supabase_realtime' AND schemaname = 'public'
  ORDER BY tablename;
+
+-- ============================================================================
+-- Settlement attestation ledger  (issue #144 / epic #42)
+-- ============================================================================
+-- The oracle's record of what it has already attested.
+--
+-- The contract's nonce burn makes each attestation single-use, but it cannot
+-- see that two claims share a transaction. Without this table, one real 10 XLM
+-- payment could earn a separate valid attestation per expense. The unique
+-- constraint below is what makes that impossible across concurrent requests
+-- and across multiple oracle instances.
+
+create table if not exists public.settlement_attestations (
+  id             uuid primary key default gen_random_uuid(),
+  tx_hash        text        not null,
+  expense_id     text        not null,
+  member         text        not null,
+  amount_stroops numeric(30) not null check (amount_stroops > 0),
+  nonce          text        not null,
+  expires_at     bigint      not null,
+  signature      text        not null,
+  created_at     timestamptz not null default now(),
+
+  -- The concurrency guarantee: two simultaneous requests for the same claim
+  -- race on this, one insert loses, and the loser re-reads the winner's row
+  -- rather than minting a second attestation for the same money.
+  constraint settlement_attestations_claim_unique
+    unique (tx_hash, expense_id, member)
+);
+
+-- Nonces are single-use on-chain; keeping them unique here too means a
+-- duplicate can never be handed out in the first place.
+create unique index if not exists settlement_attestations_nonce_idx
+  on public.settlement_attestations (nonce);
+
+create index if not exists settlement_attestations_tx_hash_idx
+  on public.settlement_attestations (tx_hash);
+
+-- Written only by the oracle route via the service-role key, which bypasses
+-- RLS. No policies are granted, so anon and authenticated clients cannot read
+-- or write it: a client that could insert rows here could reserve allocations
+-- against other people's payments.
+alter table public.settlement_attestations enable row level security;

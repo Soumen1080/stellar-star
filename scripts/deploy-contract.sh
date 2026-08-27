@@ -13,7 +13,14 @@
 #
 # Usage:
 #   chmod +x scripts/deploy-contract.sh
-#   ./scripts/deploy-contract.sh <YOUR_SECRET_KEY_OR_ALIAS> <TOKEN_CONTRACT_ID>
+#   ./scripts/deploy-contract.sh <YOUR_SECRET_KEY_OR_ALIAS> <TOKEN_CONTRACT_ID> [ORACLE_SECRET]
+#
+# The third argument is the attestation oracle's Stellar secret seed (S...).
+# `record_payment` will not accept a settlement without a signature from the
+# matching key, so the contract has to be initialised with its public half.
+# Omit it and the script generates a fresh keypair and prints the secret once —
+# store it in the server-only SETTLEMENT_ORACLE_SECRET, never in a
+# NEXT_PUBLIC_* variable, which would publish it to every browser.
 #
 # After successful deployment, copy the printed CONTRACT_ID to .env.local:
 #   NEXT_PUBLIC_CONTRACT_ID=C...
@@ -44,8 +51,9 @@ trap on_error ERR
 
 ACCOUNT="${1:-}"
 TOKEN_CONTRACT_ID="${2:-}"
+ORACLE_SECRET="${3:-}"
 if [[ -z "$ACCOUNT" || -z "$TOKEN_CONTRACT_ID" ]]; then
-  echo "❌  Usage: $0 <secret-key-or-stellar-cli-alias> <token-contract-id>"
+  echo "❌  Usage: $0 <secret-key-or-stellar-cli-alias> <token-contract-id> [oracle-secret]"
   echo "   Example: $0 SDXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX C..."
   exit 1
 fi
@@ -105,6 +113,32 @@ fi
 echo "  [OK] Resolved deployer public address: $DEPLOYER_ADDRESS"
 echo ""
 
+# ── Step 2b: Resolve Attestation Oracle Key ───────────────────────────────────
+CURRENT_STEP="Resolving attestation oracle key"
+
+echo "▸ Resolving attestation oracle key..."
+GENERATED_ORACLE=0
+if [[ -z "$ORACLE_SECRET" ]]; then
+  ORACLE_SECRET=$(node -e "const {Keypair} = require('@stellar/stellar-sdk'); console.log(Keypair.random().secret());")
+  GENERATED_ORACLE=1
+fi
+
+if [[ ! "$ORACLE_SECRET" =~ ^S[A-Z2-7]{55}$ ]]; then
+  fail "Oracle secret must be a Stellar secret seed (S...)."
+fi
+
+# The contract stores the raw 32-byte ed25519 public key; the app config uses
+# the G... form of the same key. Stellar keys are ed25519 keys, so one seed
+# gives us both.
+ORACLE_PUBLIC=$(node -e "const {Keypair} = require('@stellar/stellar-sdk'); console.log(Keypair.fromSecret(process.argv[1]).publicKey());" "$ORACLE_SECRET")
+ORACLE_RAW_HEX=$(node -e "const {Keypair} = require('@stellar/stellar-sdk'); console.log(Keypair.fromSecret(process.argv[1]).rawPublicKey().toString('hex'));" "$ORACLE_SECRET")
+
+if [[ -z "$ORACLE_PUBLIC" || -z "$ORACLE_RAW_HEX" ]]; then
+  fail "Failed to derive the oracle public key."
+fi
+echo "  [OK] Oracle public key: $ORACLE_PUBLIC"
+echo ""
+
 # ── Step 3: Deploy ────────────────────────────────────────────────────────────
 CURRENT_STEP="Deploying Settlement Pool contract"
 
@@ -150,6 +184,32 @@ stellar contract invoke \
 echo "  [OK] Pool contract initialized."
 echo ""
 
+# ── Step 4b: Additional Pool Assets ───────────────────────────────────────────
+CURRENT_STEP="Registering additional pool assets"
+
+# The pool is multi-asset (#145). init_pool registers the primary token; any
+# further assets are added here. Space-separated contract IDs.
+EXTRA_POOL_ASSETS="${EXTRA_POOL_ASSETS:-}"
+
+if [[ -n "$EXTRA_POOL_ASSETS" ]]; then
+  echo "▸ Registering additional pool assets..."
+  for asset in $EXTRA_POOL_ASSETS; do
+    if [[ "$asset" == "$TOKEN_CONTRACT_ID" ]]; then
+      echo "  [SKIP] $asset is already the primary asset."
+      continue
+    fi
+    stellar contract invoke \
+      --id "$POOL_CONTRACT_ID" \
+      --source-account "$ACCOUNT" \
+      --network testnet \
+      -- \
+      add_supported_asset \
+      --token "$asset"
+    echo "  [OK] Registered pool asset: $asset"
+  done
+  echo ""
+fi
+
 CURRENT_STEP="Initializing Settlement contract"
 
 echo "▸ Initializing Stellar-star Settlement contract reference..."
@@ -160,7 +220,9 @@ stellar contract invoke \
   -- \
   init \
   --admin "$DEPLOYER_ADDRESS" \
-  --pool-contract "$POOL_CONTRACT_ID"
+  --pool-contract "$POOL_CONTRACT_ID" \
+  --oracle-key "$ORACLE_RAW_HEX" \
+  --settlement-asset "$TOKEN_CONTRACT_ID"
 echo "  [OK] Settlement contract initialized."
 echo ""
 
@@ -195,6 +257,24 @@ echo "NEXT_PUBLIC_CONTRACT_ID=$SETTLEMENT_CONTRACT_ID"
 echo "NEXT_PUBLIC_SETTLEMENT_CONTRACT_ID=$SETTLEMENT_CONTRACT_ID"
 echo "NEXT_PUBLIC_POOL_CONTRACT_ID=$POOL_CONTRACT_ID"
 echo "NEXT_PUBLIC_POOL_TOKEN_ID=$TOKEN_CONTRACT_ID"
+echo "NEXT_PUBLIC_SETTLEMENT_ASSET_ID=$TOKEN_CONTRACT_ID"
+echo "NEXT_PUBLIC_SETTLEMENT_ORACLE_PUBLIC_KEY=$ORACLE_PUBLIC"
+echo ""
+
+echo "Attestation Oracle (SERVER-ONLY SECRET)"
+echo "---------------------------------------"
+if [[ "$GENERATED_ORACLE" -eq 1 ]]; then
+  echo "A new oracle keypair was generated. This secret is shown once —"
+  echo "store it now, and never in a NEXT_PUBLIC_* variable."
+  echo ""
+  echo "SETTLEMENT_ORACLE_SECRET=$ORACLE_SECRET"
+else
+  echo "SETTLEMENT_ORACLE_SECRET=<the secret you passed as argument 3>"
+fi
+echo ""
+echo "Anyone holding this key can mint proof of a payment that never happened."
+echo "To rotate: generate a new keypair, invoke set_oracle_key on the contract"
+echo "with its raw hex public key, then update SETTLEMENT_ORACLE_SECRET."
 echo ""
 
 echo "Completed in ${ELAPSED_TIME} seconds."

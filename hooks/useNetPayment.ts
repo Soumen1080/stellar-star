@@ -10,8 +10,7 @@ import {
   depositPoolBalance,
   stroopsToXlm,
 } from "@/lib/stellar/contract";
-import { buildExpectedPaymentMemo } from "@/lib/stellar/verifyTransaction";
-import { verifyPaymentTransaction } from "@/lib/stellar/verifyTransaction";
+import { fetchAttestationsForDebts } from "@/lib/settlement/settleOnChain";
 import { signXDR } from "@/lib/freighter";
 import { useWallet } from "@/hooks/useWallet";
 import { useExpense } from "@/hooks/useExpense";
@@ -181,8 +180,6 @@ export function useNetPayment({ tripId }: UseNetPaymentOpts) {
   const retryOnChainRecord = useCallback(async () => {
     if (!pendingNetSettlement) return;
 
-    const expectedMemo = buildExpectedPaymentMemo(pendingNetSettlement.memoText);
-
     const poolCheck = await precheckPoolBalance(
       pendingNetSettlement.memberPublicKey,
       pendingNetSettlement.memberPublicKey,
@@ -202,29 +199,38 @@ export function useNetPayment({ tripId }: UseNetPaymentOpts) {
     }
 
     setPaymentState({ status: "recording", step: "simulating" });
-    const verifyResult = await verifyPaymentTransaction({
-      txHash: pendingNetSettlement.txHash,
-      expectedSource: pendingNetSettlement.memberPublicKey,
-      expectedDestination: pendingNetSettlement.payerPublicKey,
-      expectedAmountXlm: pendingNetSettlement.totalAmountXlm,
-      expectedMemo,
-    });
 
-    if (!verifyResult.valid) {
-      const msg = verifyResult.error ?? "Invalid payment transaction on network.";
+    const attested = await fetchAttestationsForDebts(
+      {
+        tripId: pendingNetSettlement.tripId,
+        payerPublicKey: pendingNetSettlement.payerPublicKey,
+        memberPublicKey: pendingNetSettlement.memberPublicKey,
+        txHash: pendingNetSettlement.txHash,
+      },
+      pendingNetSettlement.debts,
+    );
+
+    if (!attested.ok) {
       setPaymentState({
         status: "partial_success",
         hash: pendingNetSettlement.txHash,
         ledger: pendingNetSettlement.ledger,
         onChain: false,
-        message: msg,
+        message: attested.message,
       });
-      toastError("On-chain retry blocked", msg);
+      toastError(
+        attested.retryable ? "On-chain proof unavailable" : "On-chain retry blocked",
+        attested.message,
+      );
       return;
     }
 
     const contractResult = await recordNetSettlementOnChain({
       ...pendingNetSettlement,
+      debts: pendingNetSettlement.debts.map((debt, index) => ({
+        ...debt,
+        attestation: attested.attestations[index],
+      })),
       onStatus: (step) => setPaymentState({ status: "recording", step }),
     });
 
@@ -278,7 +284,6 @@ export function useNetPayment({ tripId }: UseNetPaymentOpts) {
 
         setPaymentState({ status: "building" });
         const memoText = tripName;
-        const expectedMemo = buildExpectedPaymentMemo(memoText);
         const { xdr } = await buildPaymentTransaction({
           sourcePublicKey:      publicKey,
           destinationPublicKey: payerWalletAddress,
@@ -301,25 +306,32 @@ export function useNetPayment({ tripId }: UseNetPaymentOpts) {
         if (CONTRACT_ID && tripId) {
           setPaymentState({ status: "recording", step: "simulating" });
 
-          const verifyResult = await verifyPaymentTransaction({
-            txHash: result.hash,
-            expectedSource: publicKey,
-            expectedDestination: payerWalletAddress,
-            expectedAmountXlm: totalAmountXlm,
-            expectedMemo,
-          });
+          // One attestation per debt: the contract records each expense
+          // separately, so each needs its own single-use proof. The oracle's
+          // allocation ledger keeps their total within what was actually paid.
+          const attested = await fetchAttestationsForDebts(
+            {
+              tripId,
+              payerPublicKey: payerWalletAddress,
+              memberPublicKey: publicKey,
+              txHash: result.hash,
+            },
+            mappedDebts,
+          );
 
-          if (!verifyResult.valid) {
-            onChainError = verifyResult.error ?? "Invalid payment transaction on network.";
+          if (!attested.ok) {
+            onChainError = attested.message;
             buildAndPersistPending(result.hash, result.ledger, payerWalletAddress, totalAmountXlm, mappedDebts, memoText);
           } else {
-            setPaymentState({ status: "recording", step: "simulating" });
             const contractResult = await recordNetSettlementOnChain({
               memberPublicKey: publicKey,
               tripId,
               payerPublicKey: payerWalletAddress,
               txHash: result.hash,
-              debts: mappedDebts,
+              debts: mappedDebts.map((debt, index) => ({
+                ...debt,
+                attestation: attested.attestations[index],
+              })),
               onStatus: (step) => setPaymentState({ status: "recording", step }),
             });
 
@@ -351,8 +363,8 @@ export function useNetPayment({ tripId }: UseNetPaymentOpts) {
             message: onChainError,
           });
           toastInfo(
-            "Payment sent, on-chain record pending",
-            "XLM transfer succeeded. Use retry after fixing contract prerequisites.",
+            "Payment sent — recorded off-chain only",
+            "The XLM transfer succeeded, but this settlement has no on-chain proof yet. Use retry to add it.",
           );
           setTimeout(() => refreshBalance(), 3000);
           setTimeout(() => refreshBalance(), 8000);

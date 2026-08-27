@@ -23,11 +23,30 @@ const { act, renderHook, waitFor } = require("@testing-library/react");
 jest.mock("@/lib/stellar/buildTransaction");
 jest.mock("@/lib/stellar/submitTransaction");
 jest.mock("@/lib/stellar/contract");
-jest.mock("@/lib/stellar/verifyTransaction");
+jest.mock("@/lib/settlement/settleOnChain");
 jest.mock("@/lib/freighter");
 jest.mock("@/hooks/useWallet", () => ({ useWallet: jest.fn() }));
 jest.mock("@/hooks/useExpense", () => ({ useExpense: jest.fn() }));
 jest.mock("@/components/ui/Toast", () => ({ useToast: jest.fn() }));
+
+/** Minimal attestation shape; the hooks only pass it through to the contract. */
+const STUB_ATTESTATION = {
+  claim: {
+    contractId: "CA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVSGZ",
+    tripId: "trip-1",
+    expenseId: "exp-1",
+    payer: "GPAYER",
+    member: "GMEMBER",
+    amountStroops: "10000000",
+    asset: "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+    txHash: "a".repeat(64),
+    nonce: "b".repeat(64),
+    expiresAt: 1900000000,
+  },
+  signature: "c".repeat(128),
+  oraclePublicKey: "GORACLE",
+};
+
 
 import { buildPaymentTransaction } from "@/lib/stellar/buildTransaction";
 import { submitSignedTransaction } from "@/lib/stellar/submitTransaction";
@@ -131,10 +150,19 @@ describe("usePayment — retry persistence", () => {
       requiredStroops: 20000000n,
       balanceStroops:  20000000n,
     });
-    const verifyMod = jest.requireMock("@/lib/stellar/verifyTransaction") as {
-      verifyPaymentTransaction: jest.Mock;
+    const settleMod = jest.requireMock("@/lib/settlement/settleOnChain") as {
+      fetchAttestation: jest.Mock;
+      fetchAttestationsForDebts: jest.Mock;
+      xlmToStroopsString: jest.Mock;
     };
-    verifyMod.verifyPaymentTransaction.mockResolvedValue({ valid: true });
+    // A stand-in oracle that always attests. The adversarial cases for the
+    // attestation itself live in __tests__/settlement and in the contract.
+    settleMod.fetchAttestation.mockResolvedValue({ ok: true, attestation: STUB_ATTESTATION });
+    settleMod.fetchAttestationsForDebts.mockResolvedValue({
+      ok: true,
+      attestations: [STUB_ATTESTATION, STUB_ATTESTATION, STUB_ATTESTATION],
+    });
+    settleMod.xlmToStroopsString.mockImplementation((xlm: string) => xlm);
     jest.mocked(recordPaymentOnChain).mockResolvedValue({
       success: false,
       error:   "Soroban node busy",
@@ -207,10 +235,19 @@ describe("usePayment — retry persistence", () => {
       requiredStroops: 20000000n,
       balanceStroops:  20000000n,
     });
-    const verifyMod = jest.requireMock("@/lib/stellar/verifyTransaction") as {
-      verifyPaymentTransaction: jest.Mock;
+    const settleMod = jest.requireMock("@/lib/settlement/settleOnChain") as {
+      fetchAttestation: jest.Mock;
+      fetchAttestationsForDebts: jest.Mock;
+      xlmToStroopsString: jest.Mock;
     };
-    verifyMod.verifyPaymentTransaction.mockResolvedValue({ valid: true });
+    // A stand-in oracle that always attests. The adversarial cases for the
+    // attestation itself live in __tests__/settlement and in the contract.
+    settleMod.fetchAttestation.mockResolvedValue({ ok: true, attestation: STUB_ATTESTATION });
+    settleMod.fetchAttestationsForDebts.mockResolvedValue({
+      ok: true,
+      attestations: [STUB_ATTESTATION, STUB_ATTESTATION, STUB_ATTESTATION],
+    });
+    settleMod.xlmToStroopsString.mockImplementation((xlm: string) => xlm);
 
     await act(async () => {
       await result.current.retryOnChainRecord();
