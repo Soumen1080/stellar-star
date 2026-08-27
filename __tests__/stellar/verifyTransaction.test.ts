@@ -120,7 +120,9 @@ describe("verifyPaymentTransaction", () => {
     });
 
     expect(result.valid).toBe(false);
-    expect(result.error).toMatch(/No matching payment operation found/i);
+    // The mismatch reason is now named rather than generic, so a payer can see
+    // that the amount was wrong instead of just "no match".
+    expect(result.error).toMatch(/but 10 is owed/i);
   });
 
   it("returns false if destination does not match", async () => {

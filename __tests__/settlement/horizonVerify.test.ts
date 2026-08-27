@@ -128,10 +128,65 @@ describe("verifyPaymentByHash", () => {
   it("rejects a transaction with no native payment operation", async () => {
     mockHorizon({
       tx: successfulTx(),
-      operations: [paymentOp({ asset_type: "credit_alphanum4" })],
+      operations: [
+        paymentOp({ asset_type: "credit_alphanum4", asset_code: "USDC", asset_issuer: "GISSUER" }),
+      ],
     });
 
-    await expect(verifyPaymentByHash(TX_HASH)).rejects.toThrow("no native payment");
+    await expect(verifyPaymentByHash(TX_HASH)).rejects.toThrow(
+      "no payment or path payment delivering the native asset",
+    );
+  });
+
+  it("accepts a path payment that delivers the native asset", async () => {
+    // The payer spent USDC through the DEX; the recipient received XLM. That
+    // settles an XLM debt exactly as a direct payment would, and rejecting it
+    // would leave the payer out of pocket with the debt still open.
+    mockHorizon({
+      tx: successfulTx(),
+      operations: [
+        {
+          type: "path_payment_strict_receive",
+          from: SOURCE,
+          to: DESTINATION,
+          asset_type: "native",
+          amount: "1.0000000",
+          source_asset_type: "credit_alphanum4",
+          source_asset_code: "USDC",
+          source_asset_issuer: "GISSUER",
+          source_amount: "0.1020000",
+        },
+      ],
+    });
+
+    const result = await verifyPaymentByHash(TX_HASH);
+
+    // Attested on what arrived, never on what was spent.
+    expect(result.amountStroops).toBe(10_000_000n);
+    expect(result.viaPath).toBe(true);
+  });
+
+  it("ignores a path payment that delivers some other asset", async () => {
+    mockHorizon({
+      tx: successfulTx(),
+      operations: [
+        {
+          type: "path_payment_strict_receive",
+          from: SOURCE,
+          to: DESTINATION,
+          asset_type: "credit_alphanum4",
+          asset_code: "USDC",
+          asset_issuer: "GISSUER",
+          amount: "1.0000000",
+          source_asset_type: "native",
+          source_amount: "10.0000000",
+        },
+      ],
+    });
+
+    await expect(verifyPaymentByHash(TX_HASH)).rejects.toThrow(
+      "no payment or path payment delivering the native asset",
+    );
   });
 
   it("rejects a payment too old to attest", async () => {

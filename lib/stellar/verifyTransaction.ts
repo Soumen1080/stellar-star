@@ -1,12 +1,20 @@
 import { HORIZON_URL, MEMO_PREFIX } from "@/lib/utils/constants";
 import { trimToMemoBytes } from "@/lib/stellar/buildTransaction";
+import { NATIVE_ASSET, type AssetRef } from "@/lib/stellar/assets";
+import {
+  explainSettlementMismatch,
+  findSettlementOperation,
+} from "@/lib/stellar/verifyPaymentOperation";
 
 export interface VerifyTxParams {
   txHash: string;
   expectedSource: string;
   expectedDestination: string;
+  /** The amount the recipient must receive, in the destination asset. */
   expectedAmountXlm: string;
   expectedMemo?: string;
+  /** Destination asset. Defaults to native, preserving existing behaviour. */
+  expectedAsset?: AssetRef;
 }
 
 export function buildExpectedPaymentMemo(memoText: string): string {
@@ -19,6 +27,7 @@ export async function verifyPaymentTransaction({
   expectedDestination,
   expectedAmountXlm,
   expectedMemo,
+  expectedAsset,
 }: VerifyTxParams): Promise<{ valid: boolean; error?: string }> {
   try {
     const txRes = await fetch(`${HORIZON_URL}/transactions/${txHash}?_ts=${Date.now()}`);
@@ -58,25 +67,35 @@ export async function verifyPaymentTransaction({
       return { valid: false, error: "No operations found in transaction." };
     }
     
-    const matchingOp = ops._embedded.records.find((op: any) => {
-      if (op.type !== "payment") return false;
-      
-      const opSource = op.source_account || tx.source_account;
-      if (opSource !== expectedSource) return false;
-      
-      if (op.to !== expectedDestination) return false;
-      if (op.asset_type !== "native") return false;
-      
-      const opAmount = parseFloat(op.amount);
-      const expected = parseFloat(expectedAmountXlm);
-      
-      if (Math.abs(opAmount - expected) > 0.0000001) return false;
-      
-      return true;
-    });
+    // Accepts a path payment as readily as a direct one, asserting on what the
+    // recipient received rather than what the sender spent. The previous check
+    // required `op.type === "payment"`, which silently rejected every
+    // settlement made through the DEX.
+    const matchingOp = findSettlementOperation(
+      ops._embedded.records,
+      {
+        source: expectedSource,
+        destination: expectedDestination,
+        asset: expectedAsset ?? NATIVE_ASSET,
+        amount: expectedAmountXlm,
+      },
+      tx.source_account,
+    );
 
     if (!matchingOp) {
-      return { valid: false, error: "No matching payment operation found in transaction." };
+      return {
+        valid: false,
+        error: explainSettlementMismatch(
+          ops._embedded.records,
+          {
+            source: expectedSource,
+            destination: expectedDestination,
+            asset: expectedAsset ?? NATIVE_ASSET,
+            amount: expectedAmountXlm,
+          },
+          tx.source_account,
+        ),
+      };
     }
 
     return { valid: true };

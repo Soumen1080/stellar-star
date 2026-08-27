@@ -59,6 +59,17 @@ Stellar-star uses:
 - **The pool's supported-asset list is admin-controlled.** A compromised admin
   could add a worthless token. This is the same trust already placed in the admin
   by `set_settlement_contract`.
+- **Path payments settle debts in assets the payer does not hold** (#146). The
+  payer spends what they have; the recipient receives exactly what is owed, via
+  the Stellar DEX. Verification accepts both `payment` and
+  `path_payment_strict_receive`, asserting on the destination asset and received
+  amount. See `docs/DESIGN_PATH_PAYMENTS.md`.
+- **Price impact is measured relative to the best route found, not absolutely.**
+  With only one route available it reads 0 regardless of how poor that route is.
+  Detecting absolute mispricing needs an independent reference rate (S4).
+- **Path quotes expire after 30 seconds and must be refreshed manually.** A book
+  can move past the slippage tolerance inside that window; the consequence is a
+  failed transaction rather than an overspend, but the payer must retry.
 
 ## Operational Constraints
 
