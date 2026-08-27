@@ -15,6 +15,12 @@
  */
 
 import { HORIZON_URL } from "@/lib/utils/constants";
+import { isNative } from "@/lib/stellar/assets";
+import {
+  describeSettlementOperation,
+  type HorizonOperationRecord,
+  type SettlementMatch,
+} from "@/lib/stellar/verifyPaymentOperation";
 
 /** Classic Stellar assets are int64 stroops with exactly 7 decimals, protocol-wide. */
 const STROOPS_PER_UNIT = 10_000_000n;
@@ -34,6 +40,8 @@ export interface VerifiedPayment {
   /** Ledger close time, ISO 8601. */
   closedAt: string;
   memo: string | null;
+  /** True when the payment settled through the DEX rather than directly. */
+  viaPath: boolean;
 }
 
 export class HorizonVerificationError extends Error {
@@ -60,14 +68,10 @@ export function amountToStroops(amount: string): bigint {
   return BigInt(whole) * STROOPS_PER_UNIT + BigInt(fraction.padEnd(7, "0"));
 }
 
-interface HorizonOperation {
-  type: string;
-  source_account?: string;
-  from?: string;
-  to?: string;
-  asset_type?: string;
-  amount?: string;
-}
+// The operation shape comes from the shared verification module rather than a
+// local narrowing: a local one would omit the path-payment fields and quietly
+// drop the evidence this function now depends on.
+type HorizonOperation = HorizonOperationRecord;
 
 async function fetchJson(url: string): Promise<unknown> {
   let response: Response;
@@ -137,29 +141,43 @@ export async function verifyPaymentByHash(txHash: string): Promise<VerifiedPayme
   )) as { _embedded?: { records?: HorizonOperation[] } };
 
   const operations = opsBody._embedded?.records ?? [];
-  const payments = operations.filter(
-    (op) => op.type === "payment" && op.asset_type === "native",
-  );
 
-  if (payments.length === 0) {
-    throw new HorizonVerificationError("Transaction contains no native payment operation.");
+  // Accepts path payments alongside direct ones. A path payment settles a debt
+  // just as validly — the payer spent XLM, the recipient received USDC — and
+  // filtering on `type === "payment"` would silently reject it, leaving the
+  // payer out of pocket with the debt still showing unpaid.
+  const settlements = operations
+    .map((op) => describeSettlementOperation(op, tx.source_account))
+    .filter((op): op is SettlementMatch => op !== null)
+    // Only native receives are attestable today: the settlement contract pins
+    // one settlement asset and the pool is denominated in it. A path payment
+    // *into* XLM is fine and is the point — what the sender spent is irrelevant.
+    .filter((op) => isNative(op.receivedAsset));
+
+  if (settlements.length === 0) {
+    throw new HorizonVerificationError(
+      "Transaction contains no payment or path payment delivering the native asset.",
+    );
   }
 
   // A transaction may carry several payment operations. Attesting a specific
   // source/destination pair means summing only that pair's operations, so an
   // unrelated third-party payment riding in the same transaction cannot pad
   // the attested amount.
-  const source = payments[0].from ?? payments[0].source_account ?? tx.source_account ?? "";
-  const destination = payments[0].to ?? "";
+  const source = settlements[0].source;
+  const destination = settlements[0].destination;
   if (!source || !destination) {
     throw new HorizonVerificationError("Payment operation is missing source or destination.");
   }
 
   let amountStroops = 0n;
-  for (const op of payments) {
-    const opSource = op.from ?? op.source_account ?? tx.source_account;
-    if (opSource !== source || op.to !== destination) continue;
-    amountStroops += amountToStroops(op.amount ?? "0");
+  let viaPath = false;
+  for (const op of settlements) {
+    if (op.source !== source || op.destination !== destination) continue;
+    // The *received* amount, never the spent one. On a path payment those are
+    // different assets, and the debt is denominated in what arrived.
+    amountStroops += amountToStroops(op.receivedAmount);
+    if (op.viaPath) viaPath = true;
   }
 
   if (amountStroops <= 0n) {
@@ -173,5 +191,6 @@ export async function verifyPaymentByHash(txHash: string): Promise<VerifiedPayme
     ledger: tx.ledger,
     closedAt,
     memo: tx.memo_type === "text" ? (tx.memo ?? null) : null,
+    viaPath,
   };
 }

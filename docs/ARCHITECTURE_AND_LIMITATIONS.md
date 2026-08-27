@@ -59,6 +59,35 @@ Stellar-star uses:
 - **The pool's supported-asset list is admin-controlled.** A compromised admin
   could add a worthless token. This is the same trust already placed in the admin
   by `set_settlement_contract`.
+- **Path payments settle debts in assets the payer does not hold** (#146). The
+  payer spends what they have; the recipient receives exactly what is owed, via
+  the Stellar DEX. Verification accepts both `payment` and
+  `path_payment_strict_receive`, asserting on the destination asset and received
+  amount. See `docs/DESIGN_PATH_PAYMENTS.md`.
+- **Price impact is measured relative to the best route found, not absolutely.**
+  With only one route available it reads 0 regardless of how poor that route is.
+  Detecting absolute mispricing needs an independent reference rate (S4).
+- **Path quotes expire after 30 seconds and must be refreshed manually.** A book
+  can move past the slippage tolerance inside that window; the consequence is a
+  failed transaction rather than an overspend, but the payer must retry.
+- **Users with no funded account can be onboarded via sponsored reserves**
+  (#147). The sponsor pays the base reserve and the trustline reserve; the
+  invitee signs the transaction themselves, so their keys never leave their
+  wallet and the server cannot create an account they do not control. See
+  `docs/DESIGN_ACCOUNT_ONBOARDING.md`.
+- **Sponsorship exposure is capped, and the cap is per-process without Supabase.**
+  Total locked reserve is bounded by `SPONSORSHIP_CAP_STROOPS`. With no durable
+  ledger configured that cap applies per server instance, so a multi-instance
+  deployment would permit N times the intended exposure. The capacity endpoint
+  reports `durableLedger: false` when this is the case.
+- **A dormant sponsored account can hold its reserve indefinitely.** Revocation
+  requires the account to cover its own reserve; if it never does, the operation
+  fails and the sponsorship stands. This is the deliberate cost of never taking
+  funds from a user, and it means reclamation is best-effort.
+- **Abuse resistance bounds but does not prevent capacity exhaustion.** An
+  attacker with real XLM across several funded wallets can still consume
+  sponsorship capacity. The damage is bounded to denial of *sponsored*
+  onboarding — self-funding remains available throughout.
 
 ## Operational Constraints
 
