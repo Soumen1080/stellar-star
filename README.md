@@ -209,9 +209,24 @@ Every payment can be traced through an explorer transaction hash, and settlement
 
 > Latest deployed settlement contract (this workspace session):
 
+> [!IMPORTANT]
+> **The deployment below predates the v2 contracts** (attestation oracle, #144;
+> multi-asset pool, #145). It runs v1 storage and the v1 ABI, so its
+> `record_payment` takes no attestation and its pool is single-asset. The
+> transaction links remain valid as historical proof of the deployed v1
+> behaviour, which is why they are kept rather than removed.
+>
+> Redeploy with `./scripts/deploy-contract.sh` and update the IDs below before
+> relying on v2 behaviour. Deploying the v2 wasm over this contract's existing
+> storage is safe — the pool rolls its layout forward instead of trapping — but
+> the settlement contract must be re-initialised, since v1 storage carries no
+> oracle key or settlement asset. See
+> [Multi-asset pool design](docs/DESIGN_MULTI_ASSET_POOL.md).
+
 | Detail | Value |
 |--------|-------|
 | **Contract ID** | `CBS2BJQ4ZC2ZSAZ5XS47BGC6Q7VTMJA4SE2PVHFXGXAZI5ES6H645WHO` |
+| **Storage version** | v1 — predates #144/#145 |
 | **Deploy Transaction** | [View on Stellar Expert](https://stellar.expert/explorer/testnet/tx/4d0304dc8b176aac73686f4590dbe883df9fc555aa3a41a6e6462a285abff8e4) |
 | **Contract Explorer** | [View Contract](https://stellar.expert/explorer/testnet/contract/CBS2BJQ4ZC2ZSAZ5XS47BGC6Q7VTMJA4SE2PVHFXGXAZI5ES6H645WHO) |
 
@@ -225,20 +240,64 @@ Every payment can be traced through an explorer transaction hash, and settlement
 | Settlement init tx (`stx_ini`) | [View](https://stellar.expert/explorer/testnet/tx/f05c2f59f980a00e99f3f00d57e22b8b10fd0405064096273fd912c9b05a037e) |
 | Inter-contract settlement proof (`record_payment` + internal pool `withdraw`) | [View](https://stellar.expert/explorer/testnet/tx/04c679c7ab7ec960db505038b4c6ec1f367e5d3caae013696bf3111e493de967) |
 
+The inter-contract call proved above is preserved in v2: `record_payment` still
+calls the same pool contract, now through `withdraw_asset` so the debit follows
+the attested asset. Choosing one multi-asset pool over a pool per asset is what
+keeps this a single stable proof link rather than one per asset — see
+[Multi-asset pool design](docs/DESIGN_MULTI_ASSET_POOL.md).
+
 ### 🔧 Main Contract Functions
 
 ```rust
-record_payment(trip_id, expense_id, payer, member, amount, tx_hash)
+// Settlement contract (storage v2)
+init(admin, pool_contract, oracle_key, settlement_asset)
+record_payment(trip_id, expense_id, payer, member, amount, tx_hash, attestation)
 get_payments(trip_id)
 is_paid(expense_id, member)
+is_nonce_used(nonce)
+set_oracle_key(oracle_key)          // admin only — rotation
+get_oracle_key() / get_settlement_asset()
 ```
+
+`record_payment` requires an oracle attestation signed over the full claim. See
+[Attestation oracle design](docs/DESIGN_ATTESTATION_ORACLE.md).
 
 ### 💰 Settlement Pool Contract
 
-Stellar-star employs a pool contract architecture where member balances are tracked. When recording a payment on-chain, the settlement contract calls the pool contract to withdraw the member's share amount:
-- **`deposit(member, amount)`**: Allows any member to deposit mock pool credits for themselves (requires member's signature).
-- **`withdraw(from, amount)`**: Withdraws credit from a member (requires member's signature).
-- **`balance_of(member)`**: Returns the current mock pool credit balance for a member.
+The pool holds member balances keyed by **`(member, token)`**, so a settlement
+denominated in one asset can never debit a balance denominated in another. When
+recording a payment on-chain, the settlement contract calls the pool to withdraw
+the member's share **in the attested asset**:
+
+```rust
+// Multi-asset entry points (storage v2)
+deposit_asset(member, token, amount)
+withdraw_asset(from, token, amount)
+balance_of_asset(member, token)
+
+// v1-compatible wrappers, defaulting to the pool's configured token
+deposit(member, amount)
+withdraw(from, amount)
+balance_of(member)
+
+// Asset registry and migration
+get_supported_assets()
+add_supported_asset(token)          // admin only
+migrate(member)                     // idempotent; anyone may call
+is_migrated(member) / get_version()
+```
+
+- **`deposit_asset` / `withdraw_asset`**: move credit in a named, allowlisted
+  asset (requires the member's signature).
+- **`balance_of_asset`**: the member's credit in that one asset.
+- The v1-arity functions are retained so existing clients keep working; they
+  resolve to the pool's configured default token.
+
+**Migrating a live v1 pool:** deploy the v2 wasm to the same contract ID, then
+run `./scripts/migrate-pool.sh <deployer> <pool-id> [member...]`. Instance
+storage rolls forward on the first read and member balances migrate on first
+touch, so the script is a convenience rather than a prerequisite, and it is
+idempotent. See [Multi-asset pool design](docs/DESIGN_MULTI_ASSET_POOL.md).
 
 ### 🛡️ Contract Guarantees
 
@@ -474,17 +533,42 @@ bash scripts/deploy-contract.sh <stellar-cli-account-alias-or-secret> <token-con
 bash scripts/deploy-contract.sh stellar-star-deployer C... # Stellar Asset Contract ID
 ```
 
-The script builds, deploys, and cross-initializes both the **Stellar-star Settlement** contract and the **Settlement Pool** contract on testnet automatically.
+Register additional pool assets at deploy time with `EXTRA_POOL_ASSETS`:
+
+```bash
+EXTRA_POOL_ASSETS="C_USDC C_OTHER" \
+  bash scripts/deploy-contract.sh stellar-star-deployer C_PRIMARY
+```
+
+The script builds, deploys, and cross-initializes both the **Stellar-star Settlement** contract and the **Settlement Pool** contract on testnet automatically. It also derives (or generates) the attestation oracle keypair and initializes the settlement contract with its public key.
 
 **After deployment**, update:
 - `NEXT_PUBLIC_CONTRACT_ID` and `NEXT_PUBLIC_SETTLEMENT_CONTRACT_ID` with the printed settlement contract ID.
 - `NEXT_PUBLIC_POOL_CONTRACT_ID` with the printed pool contract ID.
-- `NEXT_PUBLIC_POOL_TOKEN_ID` with the token contract ID supplied to the script.
+- `NEXT_PUBLIC_POOL_TOKEN_ID` / `NEXT_PUBLIC_SETTLEMENT_ASSET_ID` with the token contract ID supplied to the script.
+- `NEXT_PUBLIC_SETTLEMENT_ORACLE_PUBLIC_KEY` with the printed oracle public key.
+- `SETTLEMENT_ORACLE_SECRET` (**server-only**) with the oracle secret seed. Never
+  give this a `NEXT_PUBLIC_` name — that publishes it to every browser, and the
+  oracle refuses to sign if it finds one.
+
+### Migrating an existing pool (v1 → v2)
+
+```bash
+bash scripts/migrate-pool.sh stellar-star-deployer <pool-contract-id> [member...]
+```
+
+Deploy the v2 wasm to the same contract ID first. Instance storage rolls its
+layout forward on the first read and member balances migrate on first touch, so
+this script is a convenience for migrating known members eagerly rather than a
+prerequisite. It is idempotent — running it twice does not double-credit anyone.
 
 > **Notes:**
 > - If the script is not executable in your shell, run it via `bash scripts/deploy-contract.sh <alias-or-secret> <token-contract-id>`.
 > - The script resolves the deployer's address to initialize both contract structures properly.
 > - Always verify the returned contract IDs on Stellar Expert explorer.
+> - The settlement contract cannot be migrated from v1 in place — v1 storage
+>   carries no oracle key or settlement asset, so it must be re-initialised. The
+>   pool *can* be migrated in place.
 
 ---
 

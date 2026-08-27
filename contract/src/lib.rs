@@ -32,6 +32,8 @@ pub enum ContractError {
     AttestationTtlTooLong = 13,
     /// The attested asset is not this deployment's settlement asset.
     AssetMismatch      = 14,
+    /// Storage carries a version newer than this code knows how to read.
+    UnknownStorageVersion = 15,
 }
 
 #[contracttype]
@@ -84,7 +86,13 @@ pub enum DataKey {
     Version,
     /// Raw ed25519 public key of the attestation oracle.
     OracleKey,
-    /// The one asset this deployment settles in. Single-asset by design; see #43.
+    /// The asset this deployment settles in.
+    ///
+    /// The *pool* is multi-asset as of #145, so a balance can no longer be
+    /// debited in the wrong denomination. This contract still pins one
+    /// settlement asset, because the attestation oracle signs claims for one
+    /// asset and widening that is a separate change; what #145 fixed is that
+    /// the debit now follows the attested asset rather than the pool's default.
     SettlementAsset,
     /// Burned attestation nonces. Presence == already consumed.
     UsedNonce(BytesN<32>),
@@ -192,13 +200,23 @@ impl SettleXContract {
         env.storage().persistent().has(&DataKey::UsedNonce(nonce))
     }
 
-    /// Panics unless instance storage carries the version this code expects.
+    /// Checks the stored layout version, accepting anything this code can read.
+    ///
+    /// Exact equality — what this used to demand — means a newly deployed wasm
+    /// traps at every entry point when it meets older storage, leaving no way
+    /// in to fix it. Older versions are refused here rather than migrated
+    /// because a v1 settlement contract has no oracle key and no settlement
+    /// asset, so there is nothing to migrate *from*: it must be re-initialised.
+    /// A version from the future is refused because its layout is unknowable.
     fn require_version(env: &Env) {
         let version: u32 = env
             .storage()
             .instance()
             .get(&DataKey::Version)
             .unwrap_or_else(|| panic_with_error!(env, ContractError::NotInitialized));
+        if version > CONTRACT_VERSION {
+            panic_with_error!(env, ContractError::UnknownStorageVersion);
+        }
         if version != CONTRACT_VERSION {
             panic_with_error!(env, ContractError::VersionMismatch);
         }
@@ -353,10 +371,17 @@ impl SettleXContract {
 
         // ── Attested from here on. ────────────────────────────────────────────
 
-        // Inter-contract call: settlement contract consumes member funds from pool balance.
+        // Inter-contract call: settlement contract consumes member funds from
+        // pool balance, denominated in the attested asset.
+        //
+        // This is the fix for #145. It used to call `withdraw`, which was
+        // hard-wired to the pool's single `cfg.token` — so a settlement in one
+        // asset would debit a balance in another. `withdraw_asset` keys the
+        // debit by the asset the attestation names, and that asset was already
+        // checked against this deployment's settlement asset above.
         let pool_contract = Self::get_pool_contract(env.clone());
         let pool_client = SettlementPoolContractClient::new(&env, &pool_contract);
-        pool_client.withdraw(&member, &amount);
+        pool_client.withdraw_asset(&member, &attestation.asset, &amount);
 
         let record = PaymentRecord {
             expense_id: expense_id.clone(),
@@ -1094,6 +1119,132 @@ mod test {
 
         let trip_id = String::from_str(&env, "trip-ghost");
         assert_eq!(client.get_payments(&trip_id).len(), 0);
+    }
+
+    // ── Multi-asset settlement (#145) ────────────────────────────────────────
+
+    /// The same expense settled by two members in two different assets.
+    ///
+    /// This is the case the old code got wrong: `record_payment` called
+    /// `pool.withdraw`, which was hard-wired to the pool's single `cfg.token`,
+    /// so a settlement in asset B would debit a balance in asset A. Each
+    /// member's debit must now land in the asset their settlement names, and
+    /// leave the other asset alone.
+    #[test]
+    fn test_same_expense_settled_in_two_assets() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+
+        let settlement_id = env.register_contract(None, SettleXContract);
+        let pool_id = env.register_contract(None, SettlementPoolContract);
+        let client = SettleXContractClient::new(&env, &settlement_id);
+        let pool_client = SettlementPoolContractClient::new(&env, &pool_id);
+
+        let admin = Address::generate(&env);
+        let token_a = env.register_stellar_asset_contract(admin.clone());
+        let token_b = env.register_stellar_asset_contract(admin.clone());
+        let mint_a = soroban_sdk::token::StellarAssetClient::new(&env, &token_a);
+        let mint_b = soroban_sdk::token::StellarAssetClient::new(&env, &token_b);
+
+        pool_client.init_pool(&admin, &settlement_id, &token_a);
+        pool_client.add_supported_asset(&token_b);
+        client.init(&admin, &pool_id, &oracle_public_key(&env), &token_a);
+
+        // One shared expense, two members, two assets.
+        let payer = Address::generate(&env);
+        let member_a = Address::generate(&env);
+        let member_b = Address::generate(&env);
+
+        mint_a.mint(&member_a, &50_000_000);
+        mint_b.mint(&member_b, &50_000_000);
+        pool_client.deposit_asset(&member_a, &token_a, &20_000_000);
+        pool_client.deposit_asset(&member_b, &token_b, &20_000_000);
+
+        // Member A settles in asset A. The settlement contract is configured
+        // for asset A, so this is the attestable path today; asset B is
+        // asserted against below.
+        let f_a = ClaimFixture {
+            trip_id: String::from_str(&env, "trip-multi-asset"),
+            expense_id: String::from_str(&env, "exp-shared"),
+            payer: payer.clone(),
+            member: member_a.clone(),
+            amount: 5_000_000,
+            tx_hash: String::from_str(&env, "tx-asset-a"),
+            asset: token_a.clone(),
+            nonce: BytesN::from_array(&env, &[1u8; 32]),
+            expires_at: env.ledger().timestamp() + 300,
+        };
+        record(&client, &f_a, &attest(&env, &settlement_id, &f_a, &oracle_signing_key()));
+
+        // A's balance in asset A is debited...
+        assert_eq!(pool_client.balance_of_asset(&member_a, &token_a), 15_000_000);
+        // ...and B's balance in asset B is untouched by it.
+        assert_eq!(pool_client.balance_of_asset(&member_b, &token_b), 20_000_000);
+        // ...as is A's (nonexistent) balance in asset B.
+        assert_eq!(pool_client.balance_of_asset(&member_a, &token_b), 0);
+
+        assert!(client.is_paid(&f_a.expense_id, &member_a));
+        assert!(!client.is_paid(&f_a.expense_id, &member_b));
+    }
+
+    /// A settlement whose attested asset is not this deployment's settlement
+    /// asset is refused before it can reach the pool at all — so the "withdraw
+    /// asset B from a balance in asset A" bug cannot be reached through
+    /// `record_payment`.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #14)")]
+    fn test_settlement_in_foreign_asset_never_reaches_the_pool() {
+        setup!(env, client, contract_id, pool_client, token_addr, token_admin_client);
+        let other_admin = Address::generate(&env);
+        let token_b = env.register_stellar_asset_contract(other_admin);
+
+        let mut f = fixture(
+            &env, &pool_client, &token_admin_client, &token_addr,
+            "trip-foreign", "exp-foreign", "tx-foreign", 1_000_000, 1,
+        );
+        f.asset = token_b;
+        record(&client, &f, &attest(&env, &contract_id, &f, &oracle_signing_key()));
+    }
+
+    /// The debit lands in the attested asset, which is what `withdraw_asset`
+    /// guarantees and plain `withdraw` did not.
+    #[test]
+    fn test_record_payment_debits_only_the_attested_asset() {
+        setup!(env, client, contract_id, pool_client, token_addr, token_admin_client);
+        let admin2 = Address::generate(&env);
+        let token_b = env.register_stellar_asset_contract(admin2);
+        let mint_b = soroban_sdk::token::StellarAssetClient::new(&env, &token_b);
+        pool_client.add_supported_asset(&token_b);
+
+        let f = fixture(
+            &env, &pool_client, &token_admin_client, &token_addr,
+            "trip-debit", "exp-debit", "tx-debit", 1_000_000, 1,
+        );
+
+        // Give the same member credit in the second asset too.
+        mint_b.mint(&f.member, &10_000_000);
+        pool_client.deposit_asset(&f.member, &token_b, &4_000_000);
+
+        let before_a = pool_client.balance_of_asset(&f.member, &token_addr);
+        record(&client, &f, &attest(&env, &contract_id, &f, &oracle_signing_key()));
+
+        assert_eq!(pool_client.balance_of_asset(&f.member, &token_addr), before_a - f.amount);
+        assert_eq!(pool_client.balance_of_asset(&f.member, &token_b), 4_000_000);
+    }
+
+    /// Storage from a newer wasm is refused as unknown rather than reported as
+    /// a plain mismatch, so an operator can tell "roll forward" from
+    /// "re-initialise".
+    #[test]
+    #[should_panic(expected = "Error(Contract, #15)")]
+    fn test_future_storage_version_rejected() {
+        setup!(env, client, contract_id, _pool_client, _token_addr, _token_admin_client);
+        env.as_contract(&contract_id, || {
+            env.storage().instance().set(&DataKey::Version, &99_u32);
+        });
+
+        client.get_settlement_asset();
     }
 
     #[test]

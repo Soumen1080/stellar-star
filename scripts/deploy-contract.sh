@@ -184,6 +184,32 @@ stellar contract invoke \
 echo "  [OK] Pool contract initialized."
 echo ""
 
+# ── Step 4b: Additional Pool Assets ───────────────────────────────────────────
+CURRENT_STEP="Registering additional pool assets"
+
+# The pool is multi-asset (#145). init_pool registers the primary token; any
+# further assets are added here. Space-separated contract IDs.
+EXTRA_POOL_ASSETS="${EXTRA_POOL_ASSETS:-}"
+
+if [[ -n "$EXTRA_POOL_ASSETS" ]]; then
+  echo "▸ Registering additional pool assets..."
+  for asset in $EXTRA_POOL_ASSETS; do
+    if [[ "$asset" == "$TOKEN_CONTRACT_ID" ]]; then
+      echo "  [SKIP] $asset is already the primary asset."
+      continue
+    fi
+    stellar contract invoke \
+      --id "$POOL_CONTRACT_ID" \
+      --source-account "$ACCOUNT" \
+      --network testnet \
+      -- \
+      add_supported_asset \
+      --token "$asset"
+    echo "  [OK] Registered pool asset: $asset"
+  done
+  echo ""
+fi
+
 CURRENT_STEP="Initializing Settlement contract"
 
 echo "▸ Initializing Stellar-star Settlement contract reference..."

@@ -41,8 +41,24 @@ Stellar-star uses:
   allocation ledger is process-local, so running multiple oracle instances would
   allow one payment to be over-allocated across expenses. The endpoint reports
   `durableLedger: false` when this is the case.
-- **Single-asset settlement.** The contract compares the attested asset against
-  one configured settlement asset for equality. Multi-asset pool routing is #43.
+- **Multi-asset pool, single-asset settlement contract.** The pool holds balances
+  keyed by `(member, token)` as of #145, so a settlement can no longer debit a
+  balance in the wrong denomination — `record_payment` withdraws in the attested
+  asset. The settlement contract still pins one settlement asset, because the
+  attestation oracle signs claims for one asset; widening that is a separate
+  change. See `docs/DESIGN_MULTI_ASSET_POOL.md`.
+- **Pool balances migrate lazily.** A member's v1 balance is re-keyed on first
+  touch rather than by a sweep, because a Soroban contract cannot enumerate its
+  own storage keys. Nothing is lost in the interim — every read migrates before
+  it answers — but a member's v2 entry does not exist until something touches
+  them. `scripts/migrate-pool.sh` migrates known members eagerly.
+- **TTL-archived balances are recorded, not restored.** If a v1 balance entry is
+  archived before migration, the migration records zero and marks the member so a
+  late restore cannot double-credit. Restoring archived ledger state is outside
+  the contract's reach.
+- **The pool's supported-asset list is admin-controlled.** A compromised admin
+  could add a worthless token. This is the same trust already placed in the admin
+  by `set_settlement_contract`.
 
 ## Operational Constraints
 

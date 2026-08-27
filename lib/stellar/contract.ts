@@ -15,13 +15,14 @@ import {
   CONTRACT_ID,
   NETWORK_PASSPHRASE,
   HORIZON_URL,
+  SETTLEMENT_ASSET_ID,
 } from "@/lib/utils/constants";
 import type {
   ContractPaymentRecord,
   GetPaymentsResult,
   IsPaidResult,
 } from "@/types/contract";
-import { ContractErrorCode } from "@/types/contract";
+import { ContractErrorCode, PoolErrorCode } from "@/types/contract";
 
 const SOROBAN_BASE_FEE  = "1000";
 const MAX_POLL_ATTEMPTS  = 20;
@@ -60,11 +61,47 @@ export function decodeContractError(raw: string): string {
         return "The settlement attestation's validity window is longer than the contract allows.";
       case ContractErrorCode.AssetMismatch:
         return "The attestation is for a different asset than this contract settles in.";
+      case ContractErrorCode.UnknownStorageVersion:
+        return "The contract's stored data is newer than this app understands. Update the app.";
       default:
         return `Contract error #${code}.`;
     }
   }
   return raw;
+}
+
+/**
+ * Decodes an error raised by the *pool* contract.
+ *
+ * Kept separate from `decodeContractError` because the two contracts number
+ * their errors independently — code 5 is `NotInitialized` in the settlement
+ * contract and `InsufficientBalance` in the pool — so using one table for both
+ * yields a confidently wrong message rather than an unhelpful one.
+ */
+export function decodePoolError(raw: string): string {
+  const match = raw.match(/Error\(Contract,\s*#(\d+)\)/);
+  if (!match) return raw;
+
+  switch (Number(match[1])) {
+    case PoolErrorCode.InvalidAmount:
+      return "Pool amount must be greater than zero.";
+    case PoolErrorCode.InsufficientBalance:
+      return "Not enough pool credit in this asset.";
+    case PoolErrorCode.NotInitialized:
+      return "The settlement pool is not initialized yet.";
+    case PoolErrorCode.UnsupportedAsset:
+      return "This asset is not accepted by the settlement pool.";
+    case PoolErrorCode.UnknownStorageVersion:
+      return "The pool's stored data is newer than this app understands. Update the app.";
+    case PoolErrorCode.TooManyAssets:
+      return "The settlement pool is at its supported-asset limit.";
+    case PoolErrorCode.AmountTooLarge:
+      return "Amount is above the pool's allowed limit.";
+    case PoolErrorCode.BalanceOverflow:
+      return "Pool balance would overflow.";
+    default:
+      return `Pool contract error #${match[1]}.`;
+  }
 }
 
 async function loadAccount(publicKey: string): Promise<Account> {
@@ -251,25 +288,43 @@ async function getPoolContractId(callerPublicKey: string): Promise<string> {
   return native;
 }
 
+/**
+ * Reads a member's pool credit in one asset.
+ *
+ * The pool is keyed by `(member, token)` as of #145, so a balance read has to
+ * name its asset — asking for "the" balance is the ambiguity that let a
+ * settlement in one asset debit another. `assetId` defaults to this
+ * deployment's settlement asset; passing nothing falls back to the pool's own
+ * `balance_of`, which resolves the default on-chain.
+ */
 export async function getPoolBalanceStroops(
   callerPublicKey: string,
   memberPublicKey: string,
+  assetId: string = SETTLEMENT_ASSET_ID,
 ): Promise<bigint> {
   const account = await loadAccount(callerPublicKey);
   const poolContractId = await getPoolContractId(callerPublicKey);
   const poolContract = new Contract(poolContractId);
 
+  const call = assetId
+    ? poolContract.call(
+        "balance_of_asset",
+        new Address(memberPublicKey).toScVal(),
+        new Address(assetId).toScVal(),
+      )
+    : poolContract.call("balance_of", new Address(memberPublicKey).toScVal());
+
   const tx = new TransactionBuilder(account, {
     fee: SOROBAN_BASE_FEE,
     networkPassphrase: NETWORK_PASSPHRASE,
   })
-    .addOperation(poolContract.call("balance_of", new Address(memberPublicKey).toScVal()))
+    .addOperation(call)
     .setTimeout(30)
     .build();
 
   const simResult = await sorobanServer.simulateTransaction(tx);
   if (rpc.Api.isSimulationError(simResult)) {
-    throw new Error(decodeContractError(simResult.error));
+    throw new Error(decodePoolError(simResult.error));
   }
   if (!rpc.Api.isSimulationSuccess(simResult) || !simResult.result?.retval) {
     throw new Error("Unable to read member pool balance.");
@@ -283,6 +338,7 @@ export async function precheckPoolBalance(
   callerPublicKey: string,
   memberPublicKey: string,
   amountXlm: string,
+  assetId: string = SETTLEMENT_ASSET_ID,
 ): Promise<PoolPrecheckResult> {
   const requiredStroops = xlmToStroops(amountXlm);
 
@@ -291,7 +347,11 @@ export async function precheckPoolBalance(
   }
 
   try {
-    const balanceStroops = await getPoolBalanceStroops(callerPublicKey, memberPublicKey);
+    const balanceStroops = await getPoolBalanceStroops(
+      callerPublicKey,
+      memberPublicKey,
+      assetId,
+    );
     if (balanceStroops >= requiredStroops) {
       return { ok: true, requiredStroops, balanceStroops };
     }
@@ -321,6 +381,7 @@ export async function depositPoolBalance(
   memberPublicKey: string,
   amountXlm: string,
   onStatus?: (step: "simulating" | "signing" | "sending" | "confirming") => void,
+  assetId: string = SETTLEMENT_ASSET_ID,
 ): Promise<DepositPoolResult> {
   if (!contractReady("depositPoolBalance")) {
     return { success: false, error: "Contract not configured." };
@@ -332,16 +393,28 @@ export async function depositPoolBalance(
     const poolContract = new Contract(poolContractId);
 
     const amountStroops = xlmToStroops(amountXlm);
-    const contractArgs = [
-      new Address(memberPublicKey).toScVal(),
-      nativeToScVal(amountStroops, { type: "i128" }),
-    ];
+
+    // Name the asset explicitly where we know it: crediting the pool's default
+    // when the caller meant something else is the same class of bug as
+    // debiting it.
+    const call = assetId
+      ? poolContract.call(
+          "deposit_asset",
+          new Address(memberPublicKey).toScVal(),
+          new Address(assetId).toScVal(),
+          nativeToScVal(amountStroops, { type: "i128" }),
+        )
+      : poolContract.call(
+          "deposit",
+          new Address(memberPublicKey).toScVal(),
+          nativeToScVal(amountStroops, { type: "i128" }),
+        );
 
     const tx = new TransactionBuilder(account, {
       fee: SOROBAN_BASE_FEE,
       networkPassphrase: NETWORK_PASSPHRASE,
     })
-      .addOperation(poolContract.call("deposit", ...contractArgs))
+      .addOperation(call)
       .setTimeout(60)
       .build();
 
@@ -349,7 +422,7 @@ export async function depositPoolBalance(
     const simResult = await sorobanServer.simulateTransaction(tx);
 
     if (rpc.Api.isSimulationError(simResult)) {
-      throw new Error(decodeContractError(simResult.error));
+      throw new Error(decodePoolError(simResult.error));
     }
     if (!rpc.Api.isSimulationSuccess(simResult)) {
       throw new Error("Contract simulation returned an unexpected result.");
