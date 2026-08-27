@@ -6,7 +6,9 @@ import {
   nativeToScVal,
   scValToNative,
   Address,
+  xdr,
 } from "@stellar/stellar-sdk";
+import type { Attestation } from "@/lib/settlement/attest";
 import { sorobanServer } from "./soroban";
 import { signXDR } from "@/lib/freighter";
 import {
@@ -50,6 +52,14 @@ export function decodeContractError(raw: string): string {
         return "Contract storage version mismatch.";
       case ContractErrorCode.TxHashTooLong:
         return "Transaction hash is too long.";
+      case ContractErrorCode.AttestationExpired:
+        return "The settlement attestation expired before it was submitted. Retry to get a fresh one.";
+      case ContractErrorCode.AttestationReplayed:
+        return "This settlement attestation was already used. Retry to get a fresh one.";
+      case ContractErrorCode.AttestationTtlTooLong:
+        return "The settlement attestation's validity window is longer than the contract allows.";
+      case ContractErrorCode.AssetMismatch:
+        return "The attestation is for a different asset than this contract settles in.";
       default:
         return `Contract error #${code}.`;
     }
@@ -165,6 +175,26 @@ function contractReady(caller: string): boolean {
   return true;
 }
 
+/**
+ * Encodes an `Attestation` as the contract's `#[contracttype]` struct.
+ *
+ * Soroban represents such a struct as an `ScMap` keyed by field-name symbols,
+ * and the host requires those keys in sorted order — hence the field ordering
+ * below (asset, expires_at, nonce, signature), which is alphabetical rather
+ * than the declaration order in `attest.rs`.
+ */
+function attestationToScVal(attestation: Attestation): xdr.ScVal {
+  const entry = (key: string, val: xdr.ScVal) =>
+    new xdr.ScMapEntry({ key: xdr.ScVal.scvSymbol(key), val });
+
+  return xdr.ScVal.scvMap([
+    entry("asset", new Address(attestation.claim.asset).toScVal()),
+    entry("expires_at", nativeToScVal(BigInt(attestation.claim.expiresAt), { type: "u64" })),
+    entry("nonce", xdr.ScVal.scvBytes(Buffer.from(attestation.claim.nonce, "hex"))),
+    entry("signature", xdr.ScVal.scvBytes(Buffer.from(attestation.signature, "hex"))),
+  ]);
+}
+
 export interface RecordPaymentParams {
   memberPublicKey: string;
   tripId: string;
@@ -172,6 +202,11 @@ export interface RecordPaymentParams {
   payerPublicKey: string;
   amountXlm: string;
   txHash: string;
+  /**
+   * Oracle attestation for this exact claim. Required — the contract rejects
+   * any `record_payment` without one, which is the point of the whole seam.
+   */
+  attestation: Attestation;
   onStatus?: (step: "simulating" | "signing" | "sending" | "confirming") => void;
 }
 
@@ -347,6 +382,7 @@ export async function recordPaymentOnChain(
     payerPublicKey,
     amountXlm,
     txHash,
+    attestation,
     onStatus,
   } = params;
 
@@ -355,6 +391,14 @@ export async function recordPaymentOnChain(
     const contract = new Contract(CONTRACT_ID);
 
     const amountStroops = xlmToStroops(amountXlm);
+
+    // The attestation covers these exact values. Submitting anything else
+    // produces a claim the oracle never signed, so the contract would reject
+    // it — better to catch the mismatch here than to spend a fee proving it.
+    if (BigInt(attestation.claim.amountStroops) !== amountStroops) {
+      throw new Error("Attestation amount does not match the payment being recorded.");
+    }
+
     const contractArgs = [
       nativeToScVal(tripId,           { type: "string" }),
       nativeToScVal(expenseId,        { type: "string" }),
@@ -362,6 +406,7 @@ export async function recordPaymentOnChain(
       new Address(memberPublicKey).toScVal(),
       nativeToScVal(amountStroops,    { type: "i128" }),
       nativeToScVal(txHash,           { type: "string" }),
+      attestationToScVal(attestation),
     ];
 
     const tx = new TransactionBuilder(account, {
@@ -396,12 +441,24 @@ export async function recordPaymentOnChain(
   }
 }
 
+export interface NetSettlementDebt {
+  expenseId: string;
+  amountXlm: string;
+  /**
+   * Attestation for this individual debt. A net settlement is one payment
+   * covering several expenses, and the contract records each one separately,
+   * so each needs its own single-use attestation. The oracle's allocation
+   * ledger is what stops their total exceeding the payment.
+   */
+  attestation: Attestation;
+}
+
 export interface RecordNetSettlementParams {
   memberPublicKey: string;
   tripId: string;
   payerPublicKey: string;
   txHash: string;
-  debts: { expenseId: string; amountXlm: string }[];
+  debts: NetSettlementDebt[];
   onStatus?: (step: "simulating" | "signing" | "sending" | "confirming") => void;
 }
 
@@ -432,6 +489,12 @@ export async function recordNetSettlementOnChain(
 
     for (const debt of debts) {
       const amountStroops = xlmToStroops(debt.amountXlm);
+      if (BigInt(debt.attestation.claim.amountStroops) !== amountStroops) {
+        throw new Error(
+          `Attestation amount does not match the debt being recorded for expense ${debt.expenseId}.`,
+        );
+      }
+
       const contractArgs = [
         nativeToScVal(tripId,           { type: "string" }),
         nativeToScVal(debt.expenseId,   { type: "string" }),
@@ -439,6 +502,7 @@ export async function recordNetSettlementOnChain(
         new Address(memberPublicKey).toScVal(),
         nativeToScVal(amountStroops,    { type: "i128" }),
         nativeToScVal(txHash,           { type: "string" }),
+        attestationToScVal(debt.attestation),
       ];
       txBuilder = txBuilder.addOperation(contract.call("record_payment", ...contractArgs));
     }

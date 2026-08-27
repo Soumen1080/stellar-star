@@ -30,6 +30,10 @@ export enum ContractErrorCode {
   AmountTooLarge = 8,
   VersionMismatch = 9,
   TxHashTooLong = 10,
+  AttestationExpired = 11,
+  AttestationReplayed = 12,
+  AttestationTtlTooLong = 13,
+  AssetMismatch = 14,
 }
 
 export interface ContractPaymentEvent {

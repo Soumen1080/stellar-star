@@ -26,7 +26,23 @@ Stellar-star uses:
 - Wallet UX depends on extension behavior and user approval flow.
 - Some screenshots in README are desktop captures; mobile screenshots should be added for evaluator clarity.
 - Pool balances are internal contract accounting credits, not native XLM/token custody transfers on-chain.
-- **Trust Boundary & Settlement Proofs:** `record_payment` stores the provided `tx_hash` metadata only after the frontend client verifies the Horizon transaction details against the intended payment claim: source, destination, native asset, amount, memo, and successful ledger inclusion. This is still an off-chain client-side check, so a malicious actor bypassing the UI could call the contract directly with a fabricated `tx_hash` if the app or backend enforcement is circumvented. In production, this proof step should move to a secure backend oracle or an on-chain protocol upgrade.
+- **Trust Boundary & Settlement Proofs — closed.** `record_payment` now requires
+  an ed25519 attestation from the settlement oracle, signed over the full claim
+  (trip, expense, payer, member, amount, asset, tx hash, nonce, expiry) and
+  verified inside the contract. Calling the contract directly with a fabricated
+  `tx_hash` fails. The oracle verifies against Horizon server-side and treats the
+  tx hash as a lookup key only. See `docs/DESIGN_ATTESTATION_ORACLE.md`.
+- **Residual trust in the oracle key.** The design replaces a client-side check
+  with a single server-held signing key. Anyone holding that key can mint proof
+  of a payment that never happened. Mitigated by 5-minute attestation lifetimes,
+  admin-held key rotation (`set_oracle_key`), and server-only custody; not
+  eliminated. Threshold signing is the upgrade path.
+- **Attestation ledger durability.** Without Supabase configured, the oracle's
+  allocation ledger is process-local, so running multiple oracle instances would
+  allow one payment to be over-allocated across expenses. The endpoint reports
+  `durableLedger: false` when this is the case.
+- **Single-asset settlement.** The contract compares the attested asset against
+  one configured settlement asset for equality. Multi-asset pool routing is #43.
 
 ## Operational Constraints
 
@@ -44,4 +60,4 @@ Stellar-star uses:
 - Add a script to validate README proof links are live.
 - Add an automated checklist CI job that verifies required docs/sections exist.
 - Introduce token/native-asset backed pool settlement model (transfer in/out) for stronger economic guarantees.
-- Add off-chain verifier service (or on-chain protocol changes) to bind `tx_hash` to payer/member/amount claims.
+- Move the attestation oracle from a single signing key to threshold (M-of-N) signing, removing the single point of trust.

@@ -91,6 +91,49 @@ export function signSupabaseJwt(
   return `${signatureInput}.${base64url(signature)}`;
 }
 
+/**
+ * Verifies a session token this server minted and returns its claims.
+ *
+ * Returns null for anything that does not verify — bad signature, wrong
+ * algorithm, expired, or malformed — so callers can treat "no claims" as "not
+ * authenticated" without distinguishing failure modes to the client.
+ *
+ * The `alg` check matters: accepting the header's algorithm at face value is
+ * how JWT verifiers get talked into `none`, or into verifying an HMAC against
+ * a public key.
+ */
+export function verifyWalletSession(token: string): WalletSessionClaims | null {
+  const parts = token.split(".");
+  if (parts.length !== 3) return null;
+
+  const [encodedHeader, encodedPayload, encodedSignature] = parts;
+
+  let header: { alg?: string };
+  let payload: WalletSessionClaims & { exp?: number };
+  try {
+    header = JSON.parse(Buffer.from(encodedHeader, "base64url").toString("utf8"));
+    payload = JSON.parse(Buffer.from(encodedPayload, "base64url").toString("utf8"));
+  } catch {
+    return null;
+  }
+
+  if (header.alg !== "HS256") return null;
+
+  const expected = crypto
+    .createHmac("sha256", getJwtSecret())
+    .update(`${encodedHeader}.${encodedPayload}`)
+    .digest();
+  const provided = Buffer.from(encodedSignature, "base64url");
+
+  if (provided.length !== expected.length) return null;
+  if (!crypto.timingSafeEqual(provided, expected)) return null;
+
+  if (typeof payload.exp !== "number" || payload.exp * 1000 <= Date.now()) return null;
+  if (typeof payload.wallet_address !== "string" || !payload.wallet_address) return null;
+
+  return payload;
+}
+
 /** Mints the session token for a wallet whose signature has been verified. */
 export function signWalletSession(
   walletAddress: string,

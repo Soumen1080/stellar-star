@@ -11,7 +11,7 @@ const { act, renderHook, waitFor } = require("@testing-library/react");
 jest.mock("@/lib/stellar/buildTransaction");
 jest.mock("@/lib/stellar/submitTransaction");
 jest.mock("@/lib/stellar/contract");
-jest.mock("@/lib/stellar/verifyTransaction");
+jest.mock("@/lib/settlement/settleOnChain");
 jest.mock("@/lib/freighter");
 jest.mock("@/hooks/useWallet", () => ({
   useWallet: jest.fn(),
@@ -22,6 +22,25 @@ jest.mock("@/hooks/useExpense", () => ({
 jest.mock("@/components/ui/Toast", () => ({
   useToast: jest.fn(),
 }));
+
+/** Minimal attestation shape; the hooks only pass it through to the contract. */
+const STUB_ATTESTATION = {
+  claim: {
+    contractId: "CA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVSGZ",
+    tripId: "trip-1",
+    expenseId: "exp-1",
+    payer: "GPAYER",
+    member: "GMEMBER",
+    amountStroops: "10000000",
+    asset: "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+    txHash: "a".repeat(64),
+    nonce: "b".repeat(64),
+    expiresAt: 1900000000,
+  },
+  signature: "c".repeat(128),
+  oraclePublicKey: "GORACLE",
+};
+
 
 describe("usePayment integration flow", () => {
   const { usePayment } = require("@/hooks/usePayment") as typeof import("@/hooks/usePayment");
@@ -74,8 +93,19 @@ describe("usePayment integration flow", () => {
       requiredStroops: 15000000n,
       balanceStroops: 15000000n,
     });
-    const verifyTransactionModule = jest.requireMock("@/lib/stellar/verifyTransaction") as { verifyPaymentTransaction: jest.Mock };
-    verifyTransactionModule.verifyPaymentTransaction.mockResolvedValue({ valid: true });
+    const settleMod = jest.requireMock("@/lib/settlement/settleOnChain") as {
+      fetchAttestation: jest.Mock;
+      fetchAttestationsForDebts: jest.Mock;
+      xlmToStroopsString: jest.Mock;
+    };
+    // A stand-in oracle that always attests. The adversarial cases for the
+    // attestation itself live in __tests__/settlement and in the contract.
+    settleMod.fetchAttestation.mockResolvedValue({ ok: true, attestation: STUB_ATTESTATION });
+    settleMod.fetchAttestationsForDebts.mockResolvedValue({
+      ok: true,
+      attestations: [STUB_ATTESTATION, STUB_ATTESTATION, STUB_ATTESTATION],
+    });
+    settleMod.xlmToStroopsString.mockImplementation((xlm: string) => xlm);
     jest.mocked(recordPaymentOnChain).mockResolvedValue({ success: true, ledger: 322 });
     jest.mocked(getPoolBalanceStroops).mockResolvedValue(15000000n);
     jest.mocked(depositPoolBalance).mockResolvedValue({ success: true, ledger: 400 });

@@ -32,3 +32,26 @@ export const SOROBAN_RPC_URL =
 
 export const CONTRACT_ID =
   process.env.NEXT_PUBLIC_CONTRACT_ID ?? "";
+
+/**
+ * The attestation oracle's *public* key (G...), used client-side only to check
+ * that a returned attestation was signed by the key this deployment expects.
+ *
+ * The matching secret lives in the server-only `SETTLEMENT_ORACLE_SECRET` and
+ * must never be given a `NEXT_PUBLIC_` name — `lib/settlement/oracleKey.ts`
+ * refuses to sign if it finds one, since such a key is already published.
+ */
+export const ORACLE_PUBLIC_KEY =
+  process.env.NEXT_PUBLIC_SETTLEMENT_ORACLE_PUBLIC_KEY ?? "";
+
+/**
+ * Contract address of the single asset this deployment settles in.
+ *
+ * Single-asset by design for now: the pool holds one token and the contract
+ * compares the attested asset against this one for equality. Multi-asset pool
+ * routing is issue #43.
+ */
+export const SETTLEMENT_ASSET_ID =
+  process.env.NEXT_PUBLIC_SETTLEMENT_ASSET_ID ??
+  process.env.NEXT_PUBLIC_POOL_TOKEN_ID ??
+  "";

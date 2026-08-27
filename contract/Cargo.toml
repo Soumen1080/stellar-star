@@ -11,6 +11,9 @@ soroban-sdk = { version = "21.7.6" }
 
 [dev-dependencies]
 soroban-sdk = { version = "21.7.6", features = ["testutils"] }
+# Already in the lock file via soroban-sdk's testutils; used only by the
+# adversarial attestation tests to play the role of the oracle signer.
+ed25519-dalek = { version = "2.2.0", default-features = false }
 
 [profile.release]
 opt-level        = "z"
