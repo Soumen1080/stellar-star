@@ -42,6 +42,7 @@ export type ExpenseRow = {
   members: Json;
   shares: Json;
   settled: boolean;
+  version: number;
   created_by_wallet: string;
   /** Derived by the `sync_member_wallets` trigger — read-only from the client. */
   member_wallets: string[];
@@ -86,11 +87,12 @@ export type Database = {
       };
       expenses: {
         Row: ExpenseRow;
-        Insert: Omit<ExpenseRow, ServerManaged> & {
+        Insert: Omit<ExpenseRow, ServerManaged | "version"> & {
           id?: string;
           created_at?: string;
           currency?: string;
           settled?: boolean;
+          version?: number;
         };
         // `created_by_wallet` is absent by design: the database freezes it on
         // update, so an edit by one member cannot transfer ownership.
@@ -114,6 +116,22 @@ export type Database = {
       current_wallet: {
         Args: Record<string, never>;
         Returns: string;
+      };
+      update_expense_versioned: {
+        Args: {
+          p_id: string;
+          p_expected_version: number;
+          p_title?: string | null;
+          p_description?: string | null;
+          p_total_amount?: string | null;
+          p_currency?: string | null;
+          p_split_mode?: string | null;
+          p_paid_by_member_id?: string | null;
+          p_members?: Json | null;
+          p_shares?: Json | null;
+          p_settled?: boolean | null;
+        };
+        Returns: ExpenseRow;
       };
     };
     Enums: { [_ in never]: never };

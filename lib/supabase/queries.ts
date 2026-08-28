@@ -19,6 +19,13 @@ import type {
   UserRow,
 } from "@/types/supabase";
 import { requireAuthenticatedClient, requireSupabaseClient, type StellarStarClient } from "./client";
+import {
+  ExpenseConflictError,
+  mergeExpenseUpdates,
+  type ConflictDetails,
+} from "@/lib/expense/conflictResolver";
+
+export { ExpenseConflictError, type ConflictDetails };
 
 // ─── Domain shapes ────────────────────────────────────────────────────────────
 
@@ -136,6 +143,8 @@ export function rowToExpense(row: ExpenseRow): Expense {
     shares: (row.shares ?? []) as unknown as SplitShare[],
     createdAt: row.created_at,
     settled: row.settled,
+    version: row.version ?? 1,
+    updatedAt: row.updated_at,
   };
 }
 
@@ -172,6 +181,7 @@ export function expenseToInsert(expense: Expense, creatorWallet: string): Expens
     members: expense.members as unknown as ExpenseInsert["members"],
     shares: expense.shares as unknown as ExpenseInsert["shares"],
     settled: expense.settled,
+    version: expense.version ?? 1,
     created_by_wallet: creatorWallet,
     created_at: expense.createdAt,
   };
@@ -200,6 +210,7 @@ export function expenseToUpdate(updates: Partial<Expense>): ExpenseUpdate {
     patch.shares = updates.shares as unknown as ExpenseUpdate["shares"];
   }
   if (updates.settled !== undefined) patch.settled = updates.settled;
+  if (updates.version !== undefined) patch.version = updates.version;
   return patch;
 }
 
@@ -234,7 +245,7 @@ export function tripToUpdate(updates: Partial<Trip>): TripUpdate {
 
 const USER_COLUMNS = "id, wallet_address, display_name, created_at, updated_at, last_login_at";
 const EXPENSE_COLUMNS =
-  "id, title, description, total_amount, currency, split_mode, paid_by_member_id, members, shares, settled, created_by_wallet, member_wallets, created_at, updated_at";
+  "id, title, description, total_amount, currency, split_mode, paid_by_member_id, members, shares, settled, version, created_by_wallet, member_wallets, created_at, updated_at";
 const TRIP_COLUMNS =
   "id, name, description, members, expense_ids, settled, created_by_wallet, member_wallets, created_at, updated_at";
 
@@ -388,6 +399,7 @@ export async function insertExpense(
 export async function updateExpenseRow(
   id: string,
   updates: Partial<Expense>,
+  baseExpense?: Expense,
   client: StellarStarClient = requireAuthenticatedClient()
 ): Promise<Expense> {
   const patch = expenseToUpdate(updates);
@@ -395,6 +407,72 @@ export async function updateExpenseRow(
     const existing = await fetchExpenseById(id, client);
     if (!existing) throw new DatabaseError("That expense no longer exists.");
     return existing;
+  }
+
+  // If a baseExpense with version is provided, try optimistic concurrency control
+  if (baseExpense && baseExpense.version !== undefined) {
+    try {
+      const { data: rpcData, error: rpcError } = await client.rpc("update_expense_versioned", {
+        p_id: id,
+        p_expected_version: baseExpense.version,
+        p_title: updates.title ?? null,
+        p_description: updates.description !== undefined ? updates.description : null,
+        p_total_amount: updates.totalAmount ?? null,
+        p_currency: updates.currency ?? null,
+        p_split_mode: updates.splitMode ?? null,
+        p_paid_by_member_id: updates.paidByMemberId ?? null,
+        p_members: updates.members ? (updates.members as unknown as Json) : null,
+        p_shares: updates.shares ? (updates.shares as unknown as Json) : null,
+        p_settled: updates.settled !== undefined ? updates.settled : null,
+      });
+
+      if (!rpcError && rpcData) {
+        return rowToExpense(rpcData as ExpenseRow);
+      }
+
+      // Check if it was a version conflict
+      if (rpcError && (rpcError.code === "40001" || rpcError.message.includes("Version conflict"))) {
+        const serverExpense = await fetchExpenseById(id, client);
+        if (!serverExpense) throw new DatabaseError("That expense no longer exists.");
+
+        const mergeResult = mergeExpenseUpdates(baseExpense, serverExpense, updates);
+        if (!mergeResult.success) {
+          throw new ExpenseConflictError(mergeResult.conflict);
+        }
+
+        // Auto-merge succeeded! Write the merged expense using server version
+        return updateExpenseRow(id, mergeResult.merged, serverExpense, client);
+      }
+    } catch (err) {
+      if (err instanceof ExpenseConflictError) throw err;
+      // Fall through to optimistic update fallback
+    }
+
+    // Direct version check via update filter
+    const { data: directData, error: directError } = await client
+      .from("expenses")
+      .update({ ...patch, version: baseExpense.version + 1 })
+      .eq("id", id)
+      .eq("version", baseExpense.version)
+      .select(EXPENSE_COLUMNS)
+      .maybeSingle();
+
+    if (!directError && directData) {
+      return rowToExpense(directData as ExpenseRow);
+    }
+
+    // If direct update matched no rows, another client modified the version!
+    if (!directError && !directData) {
+      const serverExpense = await fetchExpenseById(id, client);
+      if (!serverExpense) throw new DatabaseError("That expense no longer exists.");
+
+      const mergeResult = mergeExpenseUpdates(baseExpense, serverExpense, updates);
+      if (!mergeResult.success) {
+        throw new ExpenseConflictError(mergeResult.conflict);
+      }
+
+      return updateExpenseRow(id, mergeResult.merged, serverExpense, client);
+    }
   }
 
   const result = await client

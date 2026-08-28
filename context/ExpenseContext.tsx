@@ -61,10 +61,11 @@ export function ExpenseProvider({ children }: { children: React.ReactNode }) {
 
   const updateExpense = useCallback(
     async (id: string, updates: Partial<Expense>) => {
-      const saved = await updateExpenseRow(id, updates);
+      const baseExpense = expenses.find((e) => e.id === id);
+      const saved = await updateExpenseRow(id, updates, baseExpense);
       mutate((previous) => previous.map((e) => (e.id === id ? saved : e)));
     },
-    [mutate]
+    [expenses, mutate]
   );
 
   const deleteExpense = useCallback(

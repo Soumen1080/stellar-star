@@ -559,3 +559,63 @@ create index if not exists sponsorship_invites_inviter_idx
 -- own.
 alter table public.sponsored_accounts enable row level security;
 alter table public.sponsorship_invites enable row level security;
+
+-- ─── Optimistic Concurrency Control for Expenses ─────────────────────────────
+-- Adds version tracking to prevent concurrent edits from silently destroying each other.
+
+alter table public.expenses add column if not exists version integer not null default 1;
+
+create or replace function public.update_expense_versioned(
+  p_id uuid,
+  p_expected_version integer,
+  p_title text default null,
+  p_description text default null,
+  p_total_amount text default null,
+  p_currency text default null,
+  p_split_mode text default null,
+  p_paid_by_member_id text default null,
+  p_members jsonb default null,
+  p_shares jsonb default null,
+  p_settled boolean default null
+)
+returns public.expenses
+language plpgsql
+security definer
+as $$
+declare
+  v_current public.expenses%rowtype;
+begin
+  -- Acquire exclusive row lock
+  select * into v_current
+    from public.expenses
+   where id = p_id
+     for update;
+
+  if not found then
+    raise exception 'Expense not found.' using errcode = 'P0002';
+  end if;
+
+  if p_expected_version is not null and v_current.version != p_expected_version then
+    raise exception 'Version conflict: expense was modified by another client (expected version %, current version %).',
+      p_expected_version, v_current.version using errcode = '40001';
+  end if;
+
+  update public.expenses
+     set title = coalesce(p_title, v_current.title),
+         description = case when p_description is not null then p_description else v_current.description end,
+         total_amount = coalesce(p_total_amount, v_current.total_amount),
+         currency = coalesce(p_currency, v_current.currency),
+         split_mode = coalesce(p_split_mode, v_current.split_mode),
+         paid_by_member_id = coalesce(p_paid_by_member_id, v_current.paid_by_member_id),
+         members = coalesce(p_members, v_current.members),
+         shares = coalesce(p_shares, v_current.shares),
+         settled = coalesce(p_settled, v_current.settled),
+         version = v_current.version + 1,
+         updated_at = now()
+   where id = p_id
+  returning * into v_current;
+
+  return v_current;
+end;
+$$;
+
