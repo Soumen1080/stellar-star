@@ -44,6 +44,7 @@ export type ExpenseRow = {
   members: Json;
   shares: Json;
   settled: boolean;
+  version: number;
   created_by_wallet: string;
   /** Derived by the `sync_member_wallets` trigger — read-only from the client. */
   member_wallets: string[];
@@ -102,11 +103,12 @@ export type Database = {
       };
       expenses: {
         Row: ExpenseRow;
-        Insert: Omit<ExpenseRow, ServerManaged> & {
+        Insert: Omit<ExpenseRow, ServerManaged | "version"> & {
           id?: string;
           created_at?: string;
           currency?: string;
           settled?: boolean;
+          version?: number;
         };
         // `created_by_wallet` and the amount/rate fields are absent by design:
         // the database freezes them on update.

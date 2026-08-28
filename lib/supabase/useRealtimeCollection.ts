@@ -191,10 +191,37 @@ export function useRealtimeCollection<T>({
 
       setItems((previous) => {
         const index = previous.findIndex((existing) => getId(existing) === id);
-        const next =
-          index === -1
-            ? [item, ...previous]
-            : previous.map((existing, i) => (i === index ? item : existing));
+        if (index === -1) {
+          const next = [item, ...previous];
+          writeCache(next);
+          return next;
+        }
+
+        const existing = previous[index] as any;
+        const incoming = item as any;
+
+        // 1. Version-based monotonicity check
+        if (typeof existing.version === "number" && typeof incoming.version === "number") {
+          // Stale out-of-order event: discard
+          if (incoming.version < existing.version) {
+            return previous;
+          }
+          // Self-echo or duplicate version: avoid unnecessary state churn
+          if (incoming.version === existing.version) {
+            return previous;
+          }
+        } else if (existing.updatedAt && incoming.updatedAt) {
+          // Timestamp-based monotonicity fallback
+          const existingTime = new Date(existing.updatedAt).getTime();
+          const incomingTime = new Date(incoming.updatedAt).getTime();
+          if (!isNaN(existingTime) && !isNaN(incomingTime)) {
+            if (incomingTime <= existingTime) {
+              return previous;
+            }
+          }
+        }
+
+        const next = previous.map((existingItem, i) => (i === index ? item : existingItem));
         writeCache(next);
         return next;
       });

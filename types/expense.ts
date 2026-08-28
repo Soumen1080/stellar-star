@@ -28,6 +28,8 @@ export interface Expense {
   shares: SplitShare[];
   createdAt: string;
   settled: boolean;
+  version?: number;
+  updatedAt?: string;
 }
 
 export type ExpenseFormData = {
