@@ -42,6 +42,11 @@ export function ExpenseCard({ expense, currentUserPublicKey, onDelete, tripId }:
     !!payer?.walletAddress &&
     payer.walletAddress === currentUserPublicKey;
 
+  const fiatAmount =
+    expense.currency !== "XLM" && expense.exchangeRate
+      ? (parseFloat(expense.totalAmount) / parseFloat(expense.exchangeRate)).toFixed(2)
+      : null;
+
   const handlePay = async (share: SplitShare) => {
     setPayingShareId(share.memberId);
     await payShare({
@@ -72,7 +77,7 @@ export function ExpenseCard({ expense, currentUserPublicKey, onDelete, tripId }:
           <div className="min-w-0">
             <p className="text-sm font-bold text-[#0F0F14] truncate">{expense.title}</p>
             <p className="text-xs text-[#AAA] leading-relaxed">
-              {total.toFixed(4)} XLM &middot; {expense.members.length} members &middot; {createdAt}
+              {total.toFixed(4)} XLM{fiatAmount ? ` (agreed as ${fiatAmount} ${expense.currency})` : ""} &middot; {expense.members.length} members &middot; {createdAt}
             </p>
           </div>
         </div>

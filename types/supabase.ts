@@ -37,6 +37,8 @@ export type ExpenseRow = {
   description: string | null;
   total_amount: string;
   currency: string;
+  exchange_rate: string | null;
+  exchange_rate_timestamp: string | null;
   split_mode: "equal" | "custom";
   paid_by_member_id: string;
   members: Json;
@@ -106,9 +108,9 @@ export type Database = {
           currency?: string;
           settled?: boolean;
         };
-        // `created_by_wallet` is absent by design: the database freezes it on
-        // update, so an edit by one member cannot transfer ownership.
-        Update: Partial<Omit<ExpenseRow, ServerManaged | "created_by_wallet">>;
+        // `created_by_wallet` and the amount/rate fields are absent by design:
+        // the database freezes them on update.
+        Update: Partial<Omit<ExpenseRow, ServerManaged | "created_by_wallet" | "total_amount" | "currency" | "exchange_rate" | "exchange_rate_timestamp">>;
         Relationships: [];
       };
       trips: {

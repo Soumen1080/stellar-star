@@ -20,6 +20,7 @@ describe("validateExpenseFormFields", () => {
     const errors = validateExpenseFormFields({
       title: "",
       totalAmount: "0",
+      currency: "XLM",
       members: [
         { id: "member-1", name: "", walletAddress: "" },
         { id: "member-2", name: "Ravi", walletAddress: "bad-address" },
@@ -37,6 +38,7 @@ describe("validateExpenseFormFields", () => {
     const errors = validateExpenseFormFields({
       title: "Dinner",
       totalAmount: "12.5",
+      currency: "XLM",
       members: validMembers,
     });
 
@@ -49,6 +51,7 @@ describe("validateExpenseFormFields", () => {
     const errors = validateExpenseFormFields({
       title: "Lunch",
       totalAmount: "5",
+      currency: "XLM",
       members: [
         { id: "m1", name: "Alice", walletAddress: ADDR_A },
         { id: "m2", name: "Bob",   walletAddress: ADDR_A },
@@ -64,6 +67,7 @@ describe("validateExpenseFormFields", () => {
     const errors = validateExpenseFormFields({
       title: "Taxi",
       totalAmount: "3",
+      currency: "XLM",
       members: [
         { id: "m1", name: "Alice", walletAddress: ADDR_A },
         { id: "m2", name: "Bob",   walletAddress: ADDR_A },
@@ -77,6 +81,7 @@ describe("validateExpenseFormFields", () => {
     const errors = validateExpenseFormFields({
       title: "Hotel",
       totalAmount: "50",
+      currency: "XLM",
       members: [
         { id: "m1", name: "Alice", walletAddress: `  ${ADDR_A}  ` },
         { id: "m2", name: "Bob",   walletAddress: ADDR_A },
@@ -90,6 +95,7 @@ describe("validateExpenseFormFields", () => {
     const errors = validateExpenseFormFields({
       title: "Groceries",
       totalAmount: "20",
+      currency: "XLM",
       members: [
         { id: "m1", name: "Alice", walletAddress: ADDR_A },
         { id: "m2", name: "Bob",   walletAddress: ADDR_A },
@@ -107,6 +113,7 @@ describe("validateExpenseFormFields", () => {
     const errors = validateExpenseFormFields({
       title: "Dinner",
       totalAmount: "30",
+      currency: "XLM",
       members: [
         { id: "m1", name: "Alice", walletAddress: ADDR_A },
         { id: "m2", name: "Bob",   walletAddress: ADDR_B },
@@ -124,6 +131,7 @@ describe("validateExpenseFormFields", () => {
     const errors = validateExpenseFormFields({
       title: "Dinner",
       totalAmount: "10",
+      currency: "XLM",
       members: [
         { id: "m1", name: "Alice", walletAddress: ADDR_A },
         { id: "m2", name: "Bob",   walletAddress: "G" + "A".repeat(55) },
