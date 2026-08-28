@@ -36,6 +36,7 @@ export function isSupabaseConfigured(): boolean {
  * travels with the request, not with the client instance.
  */
 let browserClient: StellarStarClient | null = null;
+const authenticatedClients = new Map<string, StellarStarClient>();
 
 function createBrowserClient(): StellarStarClient {
   return createClient<Database>(supabaseUrl, supabaseAnonKey, {
@@ -97,6 +98,7 @@ export function resetSupabaseClient(): void {
   if (browserClient) {
     void browserClient.removeAllChannels();
   }
+  authenticatedClients.clear();
   clearSession();
 }
 
@@ -107,8 +109,13 @@ export function resetSupabaseClient(): void {
 export const supabase: StellarStarClient | null = configured ? (getSupabaseClient() as StellarStarClient) : null;
 
 /** @deprecated Use `requireAuthenticatedClient()`. */
-export function createAuthenticatedClient(_walletAddress?: string): StellarStarClient {
-  return requireAuthenticatedClient();
+export function createAuthenticatedClient(walletAddress = "__active__"): StellarStarClient {
+  const client = requireAuthenticatedClient();
+  const cached = authenticatedClients.get(walletAddress);
+  if (cached) return cached;
+
+  authenticatedClients.set(walletAddress, client);
+  return client;
 }
 
 /** @deprecated Use `resetSupabaseClient()`. */
