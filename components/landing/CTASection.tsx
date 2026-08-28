@@ -6,6 +6,7 @@ import { motion } from "framer-motion";
 import { ArrowRight, Zap, Shield, Star } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { useAuth } from "@/context/AuthContext";
+import { NETWORK_LABEL } from "@/lib/utils/constants";
 
 const perks = [
   { icon: Zap, text: "No account required" },
@@ -54,7 +55,7 @@ export default function CTASection() {
             {/* Badge */}
             <div className="inline-flex items-center gap-2 px-4 py-1.5 bg-[#2DD4BF]/10 border border-[#2DD4BF]/20 rounded-full text-xs font-semibold text-[#2DD4BF] mb-8">
               <Zap size={11} className="fill-[#2DD4BF]" />
-              Ready when you are · Stellar Testnet
+              Ready when you are · Stellar {NETWORK_LABEL}
             </div>
 
             {/* Headline */}

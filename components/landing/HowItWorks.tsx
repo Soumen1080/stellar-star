@@ -10,6 +10,7 @@ import {
   ArrowRight,
   Zap,
 } from "lucide-react";
+import { NETWORK_LABEL } from "@/lib/utils/constants";
 import { Badge } from "@/components/ui/Badge";
 
 const steps = [
@@ -244,7 +245,7 @@ export default function HowItWorks() {
                 { label: "Avg TX Fee", value: "0.00001 XLM", sub: "~$0.000002" },
                 { label: "Settlement Time", value: "~5 seconds", sub: "Stellar Network" },
                 { label: "TX Precision", value: "7 decimals", sub: "Native XLM" },
-                { label: "Network", value: "Testnet", sub: "-> Mainnet ready" },
+                { label: "Network", value: NETWORK_LABEL, sub: "Mainnet ready" },
               ].map((stat) => (
                 <div
                   key={stat.label}

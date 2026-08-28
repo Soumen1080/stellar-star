@@ -418,6 +418,10 @@ Use `.env.local` (or copy from `.env.local.example`):
 ```env
 # ── Stellar Network ──────────────────────────────
 NEXT_PUBLIC_STELLAR_NETWORK=TESTNET
+# HORIZON_URL / SOROBAN_RPC_URL / STELLAR_EXPLORER are DERIVED from
+# STELLAR_NETWORK when unset. Only override them if you run custom
+# infrastructure, and only to endpoints on the SAME network — a mismatch
+# (e.g. PUBLIC network with a testnet URL) makes the app refuse to start.
 NEXT_PUBLIC_HORIZON_URL=https://horizon-testnet.stellar.org
 NEXT_PUBLIC_STELLAR_EXPLORER=https://stellar.expert/explorer/testnet
 
@@ -436,7 +440,17 @@ SUPABASE_JWT_SECRET=your-supabase-jwt-secret-here
 NEXT_PUBLIC_APP_NAME=Stellar-star
 NEXT_PUBLIC_APP_VERSION=1.0.0
 NEXT_PUBLIC_SITE_URL=http://localhost:3000
+
+# ── Observability (optional) ─────────────────────
+# Server-side webhook that receives structured money-path error reports
+# (see docs/MAINNET_READINESS.md, invariant 5). If unset, reports are still
+# logged to the server console via /api/error-report.
+ERROR_REPORTING_WEBHOOK=
 ```
+
+Transaction fees are **adaptive**: instead of a fixed 100-stroop minimum, the
+app reads Horizon's `/fee_stats` and pays the median accepted fee plus the
+ledger base fee, so payments survive mainnet surge pricing.
 
 ---
 

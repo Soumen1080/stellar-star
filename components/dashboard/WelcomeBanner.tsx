@@ -2,6 +2,7 @@
 
 import { motion } from "framer-motion";
 import { formatAddress } from "@/lib/utils";
+import { NETWORK_DISPLAY_NAME } from "@/lib/utils/constants";
 
 interface WelcomeBannerProps {
   displayName?: string | null;
@@ -28,7 +29,7 @@ export function WelcomeBanner({ displayName, publicKey }: WelcomeBannerProps) {
         <div>
           <div className="inline-flex items-center gap-2 px-3 py-1 bg-[#2DD4BF]/10 border border-[#2DD4BF]/20 rounded-full text-xs font-semibold text-[#2DD4BF] mb-3">
             <span className="w-1.5 h-1.5 rounded-full bg-[#2DD4BF] animate-pulse" />
-            Wallet Connected &middot; Stellar Testnet
+            Wallet Connected &middot; {NETWORK_DISPLAY_NAME}
           </div>
           <h2 className="text-xl sm:text-2xl font-black text-white mb-1">
             Welcome,{" "}

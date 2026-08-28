@@ -1,4 +1,5 @@
 import { buildPaymentTransaction, trimToMemoBytes } from "@/lib/stellar/buildTransaction";
+import { clearFeeCache } from "@/lib/stellar/fees";
 import { MEMO_MAX_BYTES, MEMO_PREFIX } from "@/lib/utils/constants";
 
 const sourcePublicKey = "GCUOC6KXBSOHRIMBWAHOOHLNJVHJGDPVMCMRXDKKUYQ4AUO5PNX2WYVF";
@@ -7,6 +8,7 @@ const destinationPublicKey = "GCGQLYHZDOSEWXKLKHYSZXYRUWTEPGLPDHWVIZQRL5XDE2BIEJ
 describe("buildPaymentTransaction", () => {
   beforeEach(() => {
     jest.resetAllMocks();
+    clearFeeCache();
   });
 
   it("builds xdr and prefixes memo", async () => {
@@ -26,7 +28,35 @@ describe("buildPaymentTransaction", () => {
     expect(typeof result.xdr).toBe("string");
     expect(result.xdr.length).toBeGreaterThan(20);
     expect(result.memo).toBe(`${MEMO_PREFIX}|Dinner`);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    // Account lookup + adaptive fee_stats fetch.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("consults Horizon fee_stats for an adaptive fee", async () => {
+    const accountMock = { ok: true, json: async () => ({ sequence: "12345" }) };
+    const feeMock = {
+      ok: true,
+      json: async () => ({
+        last_ledger_base_fee: "100",
+        fee_charged: { p50_accepted_fee: "300" },
+      }),
+    };
+    const fetchMock = jest.fn((input: unknown) => {
+      if (String(input).includes("/fee_stats")) return Promise.resolve(feeMock);
+      return Promise.resolve(accountMock);
+    }) as unknown as typeof fetch;
+    (global as unknown as { fetch: typeof fetch }).fetch = fetchMock;
+
+    await buildPaymentTransaction({
+      sourcePublicKey,
+      destinationPublicKey,
+      amount: "1",
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/fee_stats"),
+      expect.anything()
+    );
   });
 
   it("trims long memo text to byte limit", async () => {

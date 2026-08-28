@@ -1,4 +1,5 @@
 import { Shield, Zap } from "lucide-react";
+import { NETWORK_LABEL } from "@/lib/utils/constants";
 import type { LucideIcon } from "lucide-react";
 
 export const heroMockMembers = [
@@ -19,7 +20,7 @@ export const heroTrustLogos = [
   { name: "Stellar", abbr: "STL" },
   { name: "Freighter", abbr: "FRT" },
   { name: "Horizon", abbr: "HRZ" },
-  { name: "Testnet", abbr: "TST" },
+  { name: NETWORK_LABEL, abbr: NETWORK_LABEL === "Mainnet" ? "MN" : "TST" },
   { name: "XLM", abbr: "XLM" },
 ];
 
