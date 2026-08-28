@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { RealtimeChannel, RealtimePostgresChangesPayload } from "@supabase/supabase-js";
-import { getSupabaseClient, isSupabaseConfigured } from "./client";
+import { isSupabaseConfigured, requireAuthenticatedClient } from "./client";
 import { DatabaseError } from "./queries";
 import { useAccessToken, useSessionWallet } from "./useSession";
 
@@ -180,7 +180,13 @@ export function useRealtimeCollection<T>({
   useEffect(() => {
     if (!wallet || !token) return;
 
-    const client = getSupabaseClient();
+    const client = (() => {
+      try {
+        return requireAuthenticatedClient();
+      } catch {
+        return null;
+      }
+    })();
     if (!client) return;
 
     const applyUpsert = (payload: RealtimePostgresChangesPayload<any>) => {
@@ -254,10 +260,10 @@ export function useRealtimeCollection<T>({
     channelRef.current = channel;
 
     return () => {
-      channelRef.current = null;
+      if (channelRef.current === channel) channelRef.current = null;
       void client.removeChannel(channel);
     };
-  }, [table, wallet, token, fromRow, getId, writeCache]);
+  }, [table, connectedWallet, wallet, token, fromRow, getId, writeCache]);
 
   // Re-reads on tab focus, catching anything missed while the socket was idle.
   useEffect(() => {

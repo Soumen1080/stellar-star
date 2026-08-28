@@ -50,6 +50,21 @@ describe("Supabase browser client", () => {
     expect(() => client.requireSupabaseClient()).toThrow(/not configured/i);
   });
 
+  it("reuses one authenticated client across wallet-scoped requests", () => {
+    const { client, session } = loadClientModule();
+    session.setSession(mintToken("GBWALLET_A"));
+
+    const first = client.createAuthenticatedClient("GBWALLET_A");
+    const repeated = client.createAuthenticatedClient("GBWALLET_A");
+
+    session.setSession(mintToken("GBWALLET_B"));
+    const switched = client.createAuthenticatedClient("GBWALLET_B");
+
+    expect(repeated).toBe(first);
+    expect(switched).toBe(first);
+    expect(mockCreateClient).toHaveBeenCalledTimes(1);
+  });
+
   it("returns one shared client rather than one per wallet", () => {
     // Identity travels on the JWT, not on the client instance, so a second
     // wallet does not need (and must not silently get) a second socket.
