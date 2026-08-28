@@ -266,7 +266,7 @@ async function main() {
   // 3. Schema ────────────────────────────────────────────────────────────────
   section("3. Tables");
 
-  const tables = ["users", "expenses", "trips"];
+  const tables = ["users", "expenses", "trips", "schema_migrations"];
   let schemaMissing = false;
 
   for (const table of tables) {
@@ -274,8 +274,12 @@ async function main() {
     if (res.ok) {
       pass(`public.${table} exists and is reachable`);
     } else if (res.body?.code === "PGRST205") {
-      schemaMissing = true;
-      fail(`public.${table} does not exist`, SETUP_HINT);
+      if (table === "schema_migrations") {
+        warn(`public.${table} does not exist`, "Run supabase-setup.sql to initialize migration tracking.");
+      } else {
+        schemaMissing = true;
+        fail(`public.${table} does not exist`, SETUP_HINT);
+      }
     } else {
       fail(`public.${table} returned ${res.status}`, JSON.stringify(res.body));
     }
@@ -285,6 +289,32 @@ async function main() {
     console.log(`\n${RED}Schema is not installed — skipping the remaining checks.${RESET}`);
     console.log(`${DIM}${SETUP_HINT}${RESET}`);
     process.exit(1);
+  }
+
+  // 3b. Schema Migrations ───────────────────────────────────────────────────
+  section("3b. Schema Migrations");
+  const migrationsRes = await rest("schema_migrations?select=*&order=version.asc");
+  if (migrationsRes.ok && Array.isArray(migrationsRes.body)) {
+    const appliedVersions = new Set(migrationsRes.body.map((m) => m.version));
+    const migrationsDir = path.join(ROOT, "migrations");
+    let localFiles = [];
+    if (fs.existsSync(migrationsDir)) {
+      localFiles = fs.readdirSync(migrationsDir).filter((f) => f.endsWith(".sql"));
+    }
+    for (const file of localFiles) {
+      const match = /^(\d+)_/i.exec(file);
+      const v = match ? match[1] : file.replace(/\.sql$/, "");
+      if (appliedVersions.has(v)) {
+        pass(`Migration ${file} is applied`);
+      } else {
+        fail(`Migration ${file} is pending on remote database`, "Run scripts/migrate.mjs or execute supabase-setup.sql");
+      }
+    }
+    if (localFiles.length === 0) {
+      pass("schema_migrations table exists and is reachable");
+    }
+  } else {
+    warn("public.schema_migrations table not found", "Run supabase-setup.sql to create schema_migrations tracking table.");
   }
 
   // 4. RLS ───────────────────────────────────────────────────────────────────

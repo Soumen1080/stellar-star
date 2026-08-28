@@ -51,6 +51,13 @@ COMMENT ON FUNCTION public.current_wallet() IS
 -- 2. TABLES
 -- ============================================================================
 
+CREATE TABLE IF NOT EXISTS public.schema_migrations (
+  version     TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  applied_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  checksum    TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS public.users (
   id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   wallet_address TEXT        NOT NULL UNIQUE,
@@ -247,39 +254,49 @@ DROP TRIGGER IF EXISTS expenses_validate_shares     ON public.expenses;
 DROP TRIGGER IF EXISTS update_users_updated_at      ON public.users;
 DROP TRIGGER IF EXISTS update_expenses_updated_at   ON public.expenses;
 DROP TRIGGER IF EXISTS update_trips_updated_at      ON public.trips;
+DROP TRIGGER IF EXISTS trg_01_users_set_updated_at  ON public.users;
+DROP TRIGGER IF EXISTS trg_01_expenses_freeze_identity ON public.expenses;
+DROP TRIGGER IF EXISTS trg_02_expenses_sync_member_wallets ON public.expenses;
+DROP TRIGGER IF EXISTS trg_03_expenses_validate_shares ON public.expenses;
+DROP TRIGGER IF EXISTS trg_04_expenses_set_updated_at ON public.expenses;
+DROP TRIGGER IF EXISTS trg_01_trips_freeze_identity ON public.trips;
+DROP TRIGGER IF EXISTS trg_02_trips_sync_member_wallets ON public.trips;
+DROP TRIGGER IF EXISTS trg_03_trips_set_updated_at ON public.trips;
 
-CREATE TRIGGER users_set_updated_at
+-- Users
+CREATE TRIGGER trg_01_users_set_updated_at
   BEFORE UPDATE ON public.users
   FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
 
--- Trigger order within a timing class is alphabetical, so `freeze` runs before
--- `sync` (which needs the frozen created_by_wallet) and `sync` before
--- `set_updated_at`.
-CREATE TRIGGER expenses_freeze_identity
+-- Expenses Pipeline:
+-- 1. Freeze identity -> 2. Sync member wallets -> 3. Validate shares -> 4. Set updated_at
+CREATE TRIGGER trg_01_expenses_freeze_identity
   BEFORE UPDATE ON public.expenses
   FOR EACH ROW EXECUTE FUNCTION public.freeze_row_identity();
 
-CREATE TRIGGER expenses_sync_member_wallets
+CREATE TRIGGER trg_02_expenses_sync_member_wallets
   BEFORE INSERT OR UPDATE ON public.expenses
   FOR EACH ROW EXECUTE FUNCTION public.sync_member_wallets();
 
-CREATE TRIGGER expenses_validate_shares
+CREATE TRIGGER trg_03_expenses_validate_shares
   BEFORE INSERT OR UPDATE ON public.expenses
   FOR EACH ROW EXECUTE FUNCTION public.validate_expense_shares();
 
-CREATE TRIGGER expenses_set_updated_at
+CREATE TRIGGER trg_04_expenses_set_updated_at
   BEFORE UPDATE ON public.expenses
   FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
 
-CREATE TRIGGER trips_freeze_identity
+-- Trips Pipeline:
+-- 1. Freeze identity -> 2. Sync member wallets -> 3. Set updated_at
+CREATE TRIGGER trg_01_trips_freeze_identity
   BEFORE UPDATE ON public.trips
   FOR EACH ROW EXECUTE FUNCTION public.freeze_row_identity();
 
-CREATE TRIGGER trips_sync_member_wallets
+CREATE TRIGGER trg_02_trips_sync_member_wallets
   BEFORE INSERT OR UPDATE ON public.trips
   FOR EACH ROW EXECUTE FUNCTION public.sync_member_wallets();
 
-CREATE TRIGGER trips_set_updated_at
+CREATE TRIGGER trg_03_trips_set_updated_at
   BEFORE UPDATE ON public.trips
   FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
 
@@ -559,3 +576,12 @@ create index if not exists sponsorship_invites_inviter_idx
 -- own.
 alter table public.sponsored_accounts enable row level security;
 alter table public.sponsorship_invites enable row level security;
+
+-- ─── RECORD APPLIED MIGRATIONS ───────────────────────────────────────────────
+
+INSERT INTO public.schema_migrations (version, name, checksum)
+VALUES
+  ('0001', '0001_baseline', 'baseline_initial_checksum'),
+  ('0002', '0002_explicit_trigger_pipeline', 'trigger_pipeline_checksum')
+ON CONFLICT (version) DO NOTHING;
+
