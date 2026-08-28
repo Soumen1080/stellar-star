@@ -15,7 +15,7 @@ import {
   MEMO_PREFIX,
   HORIZON_URL,
 } from "@/lib/utils/constants";
-import { toSdkAsset, parseAssetKey } from "@/lib/stellar/assets";
+import { toSdkAsset, parseAssetKey, type AssetRef } from "@/lib/stellar/assets";
 import { isQuoteFresh, type PricedPath } from "@/lib/stellar/pathPayment";
 import { getSuggestedBaseFee } from "@/lib/stellar/fees";
 
@@ -23,7 +23,7 @@ export interface BuildTxParams {
   sourcePublicKey: string;
   destinationPublicKey: string;
   amount: string;
-  asset?: string;
+  asset?: string | AssetRef;
   memoText?: string;
 }
 
@@ -78,6 +78,8 @@ export async function buildPaymentTransaction({
   const rawMemo = memoText ? `${MEMO_PREFIX}|${memoText}` : MEMO_PREFIX;
   const safeMemo = trimToMemoBytes(rawMemo);
 
+  const targetAsset = typeof asset === "string" ? parseAssetKey(asset) : asset;
+
   const tx = new TransactionBuilder(account, {
     fee,
     networkPassphrase: NETWORK_PASSPHRASE,
@@ -85,7 +87,7 @@ export async function buildPaymentTransaction({
     .addOperation(
       Operation.payment({
         destination: destinationPublicKey,
-        asset: toSdkAsset(parseAssetKey(asset)),
+        asset: toSdkAsset(targetAsset),
         amount,
       })
     )
