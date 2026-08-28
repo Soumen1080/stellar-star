@@ -114,6 +114,17 @@ BEGIN
     ALTER TABLE public.users ALTER COLUMN display_name SET NOT NULL;
   END IF;
 
+  -- expenses exchange rate columns -----------------------------------------
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                 WHERE table_schema = 'public' AND table_name = 'expenses' AND column_name = 'exchange_rate') THEN
+    ALTER TABLE public.expenses ADD COLUMN exchange_rate TEXT;
+  END IF;
+
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                 WHERE table_schema = 'public' AND table_name = 'expenses' AND column_name = 'exchange_rate_timestamp') THEN
+    ALTER TABLE public.expenses ADD COLUMN exchange_rate_timestamp TIMESTAMPTZ;
+  END IF;
+
   -- expenses / trips wallet columns ----------------------------------------
   IF NOT EXISTS (SELECT 1 FROM information_schema.columns
                  WHERE table_schema = 'public' AND table_name = 'expenses' AND column_name = 'created_by_wallet') THEN
@@ -198,11 +209,27 @@ CREATE OR REPLACE FUNCTION public.freeze_row_identity()
 RETURNS TRIGGER
 LANGUAGE plpgsql
 AS $fn$
+DECLARE
+  old_json JSONB;
+  new_json JSONB;
 BEGIN
-  NEW.id                := OLD.id;
-  NEW.created_at        := OLD.created_at;
-  NEW.created_by_wallet := OLD.created_by_wallet;
-  RETURN NEW;
+  old_json := to_jsonb(OLD);
+  new_json := to_jsonb(NEW);
+
+  new_json := new_json
+    || jsonb_build_object('id', old_json -> 'id')
+    || jsonb_build_object('created_at', old_json -> 'created_at')
+    || jsonb_build_object('created_by_wallet', old_json -> 'created_by_wallet');
+
+  IF old_json ? 'exchange_rate' AND (old_json ->> 'exchange_rate') IS NOT NULL THEN
+    new_json := new_json
+      || jsonb_build_object('exchange_rate', old_json -> 'exchange_rate')
+      || jsonb_build_object('exchange_rate_timestamp', old_json -> 'exchange_rate_timestamp')
+      || jsonb_build_object('total_amount', old_json -> 'total_amount')
+      || jsonb_build_object('currency', old_json -> 'currency');
+  END IF;
+
+  RETURN jsonb_populate_record(NEW, new_json);
 END;
 $fn$;
 

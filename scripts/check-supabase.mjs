@@ -432,8 +432,70 @@ async function main() {
     fail(`Creating a trip failed with ${insertTrip.status}`, JSON.stringify(insertTrip.body));
   }
 
-  // 7. Realtime ──────────────────────────────────────────────────────────────
-  section("7. Realtime");
+  // 7. Expense rate freezing ─────────────────────────────────────────────────
+  section("7. Expense rate freezing");
+
+  const createdExpenses = [];
+  const insertExpense = await rest("expenses", {
+    method: "POST",
+    token: tokenA,
+    prefer: "return=representation",
+    body: {
+      title: "Rate Freeze Check",
+      total_amount: "1200",
+      currency: "INR",
+      exchange_rate: "0.01",
+      exchange_rate_timestamp: new Date().toISOString(),
+      split_mode: "equal",
+      paid_by_member_id: "m1",
+      members: [
+        { id: "m1", name: "A", walletAddress: walletA },
+        { id: "m2", name: "B", walletAddress: walletB },
+      ],
+      created_by_wallet: walletA,
+    },
+  });
+
+  if (insertExpense.ok && Array.isArray(insertExpense.body) && insertExpense.body[0]) {
+    const expense = insertExpense.body[0];
+    createdExpenses.push(expense.id);
+    pass("A wallet JWT can create an expense with a rate", `id ${expense.id}`);
+
+    // Member B attempts to alter the rate
+    const hack = await rest(`expenses?id=eq.${expense.id}`, {
+      method: "PATCH",
+      token: tokenB,
+      prefer: "return=representation",
+      body: {
+        total_amount: "9999",
+        currency: "USD",
+        exchange_rate: "9.99",
+      },
+    });
+
+    if (hack.ok && Array.isArray(hack.body) && hack.body[0]) {
+      const row = hack.body[0];
+      if (
+        row.total_amount === "1200" &&
+        row.currency === "INR" &&
+        row.exchange_rate === "0.01"
+      ) {
+        pass("The freeze_row_identity trigger protects rate fields", "A member's UPDATE was accepted but rate edits were silently discarded.");
+      } else {
+        fail(
+          "A member rewrote the frozen exchange rate",
+          `Got ${row.total_amount} ${row.currency} @ ${row.exchange_rate}. The freeze_row_identity trigger is missing JSONB rules.`
+        );
+      }
+    } else {
+      warn(`A member could not update the expense (${hack.status})`, JSON.stringify(hack.body));
+    }
+  } else {
+    fail(`Creating an expense failed with ${insertExpense.status}`, JSON.stringify(insertExpense.body));
+  }
+
+  // 8. Realtime ──────────────────────────────────────────────────────────────
+  section("8. Realtime");
 
   // `fetch` cannot perform a WebSocket upgrade, so this opens a real socket and
   // joins a channel with a wallet token — the same thing the browser does.
@@ -449,8 +511,14 @@ async function main() {
       );
   }
 
-  // 8. Cleanup ───────────────────────────────────────────────────────────────
-  section("8. Cleanup");
+  // 9. Cleanup ───────────────────────────────────────────────────────────────
+  section("9. Cleanup");
+
+  for (const id of createdExpenses) {
+    const res = await rest(`expenses?id=eq.${id}`, { method: "DELETE", token: tokenA });
+    if (res.ok) pass(`Removed test expense ${id}`);
+    else warn(`Could not remove test expense ${id}`, JSON.stringify(res.body));
+  }
 
   for (const id of createdTrips) {
     const res = await rest(`trips?id=eq.${id}`, { method: "DELETE", token: tokenA });
