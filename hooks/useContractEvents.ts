@@ -3,7 +3,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { buildPaymentEventKey, fetchContractEvents } from "@/lib/stellar/events";
 import type { ContractPaymentEvent } from "@/types/contract";
+import type { Expense } from "@/types/expense";
 import { CONTRACT_ID } from "@/lib/utils/constants";
+import { reconcileTripWithChainState } from "@/lib/settlement/reconcile";
 
 const POLL_INTERVAL_MS = 10_000;
 
@@ -15,7 +17,10 @@ interface UseContractEventsResult {
   refresh: () => Promise<void>;
 }
 
-export function useContractEvents(tripId: string | undefined): UseContractEventsResult {
+export function useContractEvents(
+  tripId: string | undefined,
+  expenses?: Expense[],
+): UseContractEventsResult {
   const [events, setEvents]             = useState<ContractPaymentEvent[]>([]);
   const [latestLedger, setLatestLedger] = useState(0);
   const [isLoading, setIsLoading]       = useState(false);
@@ -37,6 +42,13 @@ export function useContractEvents(tripId: string | undefined): UseContractEvents
           const newEvts = result.events.filter((e) => !known.has(buildPaymentEventKey(e)));
           return newEvts.length > 0 ? [...prev, ...newEvts] : prev;
         });
+
+        // Trigger background reconciliation to converge Supabase app state with on-chain truth
+        if (expenses && expenses.length > 0) {
+          reconcileTripWithChainState(tripId, expenses, result.events).catch((err) => {
+            console.warn("[useContractEvents] Auto-reconciliation warning:", err);
+          });
+        }
       }
 
       if (result.latestLedger > ledgerRef.current) {

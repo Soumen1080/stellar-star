@@ -47,7 +47,7 @@ export default function TripDetailPage() {
   const myShares = tripExpenses.flatMap((expense) =>
     expense.shares.filter((share) => share.walletAddress === publicKey)
   );
-  const { events: onChainEvents } = useContractEvents(trip?.id);
+  const { events: onChainEvents } = useContractEvents(trip?.id, tripExpenses);
 
   useTripAutoSettlement(trip, expenses, settleTrip);
 

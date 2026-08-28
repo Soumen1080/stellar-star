@@ -29,6 +29,14 @@ import {
   clearPendingNetSettlement,
   type PendingNetSettlementRecord,
 } from "@/lib/utils/pendingOnChain";
+import {
+  acquireSettlementIntent,
+  markIntentSubmitted,
+  markIntentRecorded,
+  markIntentFailed,
+  type SettlementIntent,
+} from "@/lib/settlement/intent";
+import { reconcilePendingIntentsForWallet } from "@/lib/settlement/reconcile";
 
 type OnChainStep = "simulating" | "signing" | "sending" | "confirming";
 
@@ -131,6 +139,11 @@ export function useNetPayment({ tripId }: UseNetPaymentOpts) {
       });
     }
   }, [publicKey, tripId]);
+
+  useEffect(() => {
+    if (!publicKey) return;
+    reconcilePendingIntentsForWallet(publicKey).catch(() => {});
+  }, [publicKey]);
 
   const loadPoolBalance = useCallback(async () => {
     if (!publicKey) {
@@ -294,6 +307,30 @@ export function useNetPayment({ tripId }: UseNetPaymentOpts) {
         return;
       }
 
+      // Pre-flight: Acquire durable settlement intents for all debts
+      const acquiredIntents: SettlementIntent[] = [];
+      for (const debt of debts) {
+        try {
+          const res = await acquireSettlementIntent({
+            tripId,
+            expenseId: debt.expenseId,
+            memberId: debt.fromId,
+            payerWallet: payerWalletAddress,
+            memberWallet: publicKey,
+            amount: debt.amount.toString(),
+          });
+          if (res.ok) {
+            acquiredIntents.push(res.intent);
+          } else if (res.code === "IN_PROGRESS") {
+            setPaymentState({ status: "blocked", message: res.message });
+            toastError("Settlement in progress", res.message);
+            return;
+          }
+        } catch {
+          // non-fatal
+        }
+      }
+
       try {
         // Pool check only applies to XLM settlements since the pool only stores XLM.
         if (CONTRACT_ID && tripId && asset === "native") {
@@ -304,6 +341,9 @@ export function useNetPayment({ tripId }: UseNetPaymentOpts) {
             setPaymentState({ status: "blocked", message: msg });
             toastError("Pool credit required", msg);
             await loadPoolBalance();
+            for (const intent of acquiredIntents) {
+              markIntentFailed(intent.id, msg).catch(() => {});
+            }
             return;
           }
         }
@@ -324,6 +364,10 @@ export function useNetPayment({ tripId }: UseNetPaymentOpts) {
 
         setPaymentState({ status: "submitting" });
         const result = await submitSignedTransaction(signedXDR);
+
+        for (const intent of acquiredIntents) {
+          markIntentSubmitted(intent.id, result.hash, result.ledger).catch(() => {});
+        }
 
         let onChain = false;
         let onChainError: string | null = null;
@@ -381,6 +425,10 @@ export function useNetPayment({ tripId }: UseNetPaymentOpts) {
           } catch {
             // non-fatal
           }
+        }
+
+        for (const intent of acquiredIntents) {
+          markIntentRecorded(intent.id, result.ledger, onChain).catch(() => {});
         }
 
         if (onChainError) {

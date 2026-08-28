@@ -30,6 +30,17 @@ import {
   clearPendingOnChain,
   type PendingOnChainRecord,
 } from "@/lib/utils/pendingOnChain";
+import {
+  acquireSettlementIntent,
+  markIntentSubmitted,
+  markIntentRecorded,
+  markIntentFailed,
+  type SettlementIntent,
+} from "@/lib/settlement/intent";
+import {
+  reconcileSettlementIntent,
+  reconcilePendingIntentsForWallet,
+} from "@/lib/settlement/reconcile";
 import type { SplitShare } from "@/types/expense";
 
 // ---------------------------------------------------------------------------
@@ -126,11 +137,16 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
   );
 
   // ---------------------------------------------------------------------------
-  // On mount — restore any persisted pending retry from localStorage
+  // On mount — restore any persisted pending retry from localStorage & reconcile
   // ---------------------------------------------------------------------------
 
   useEffect(() => {
     if (!publicKey) return;
+
+    // 1. Device-agnostic reconciliation: check Supabase settlement intents
+    reconcilePendingIntentsForWallet(publicKey).catch(() => {});
+
+    // 2. Restore local retry state if present
     const restored = loadPendingOnChain(publicKey, expenseId);
     if (restored) {
       setPendingOnChainState(restored);
@@ -323,7 +339,7 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
         return;
       }
 
-      // Pre-flight: check if already settled on-chain before building the TX
+      // Pre-flight 1: check if already settled on-chain before building the TX
       if (CONTRACT_ID && share.walletAddress) {
         const alreadyPaid = await checkIsPaid(publicKey, expenseId, share.walletAddress);
         if (alreadyPaid.paid) {
@@ -335,6 +351,50 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
         }
       }
 
+      // Pre-flight 2: Acquire durable settlement intent (Invariant 3 — prevent double payment)
+      let intent: SettlementIntent | null = null;
+      try {
+        const intentResult = await acquireSettlementIntent({
+          tripId: tripId ?? "none",
+          expenseId,
+          memberId: share.memberId,
+          payerWallet: payerWalletAddress,
+          memberWallet: publicKey,
+          amount: share.amount,
+        });
+
+        if (!intentResult.ok) {
+          if (intentResult.code === "ALREADY_RECORDED") {
+            toastError("Already settled on-chain", intentResult.message);
+            return;
+          }
+          if (intentResult.code === "SUBMITTED_NEEDS_RECONCILIATION") {
+            toastInfo("Reconciling settlement...", "Previous payment detected on Stellar.");
+            setPaymentState({ status: "recording", step: "simulating" });
+            const recon = await reconcileSettlementIntent(intentResult.intent);
+            if (recon.reconciled) {
+              setPaymentState({
+                status: "success",
+                hash: intentResult.intent.txHash!,
+                ledger: intentResult.intent.ledger ?? 0,
+                onChain: recon.onChain,
+              });
+              toastSuccess("Settlement reconciled", "Share marked paid from on-chain proof.");
+              return;
+            }
+          }
+          if (intentResult.code === "IN_PROGRESS") {
+            setPaymentState({ status: "blocked", message: intentResult.message });
+            toastError("Settlement in progress", intentResult.message);
+            return;
+          }
+        } else {
+          intent = intentResult.intent;
+        }
+      } catch (err) {
+        console.warn("[usePayment] Durable intent acquire warning:", err);
+      }
+
       try {
         if (CONTRACT_ID && tripId) {
           const poolCheck = await precheckPoolBalance(publicKey, publicKey, share.amount);
@@ -344,6 +404,7 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
             setPaymentState({ status: "blocked", message: msg });
             toastError("Pool credit required", msg);
             await loadPoolBalance();
+            if (intent) markIntentFailed(intent.id, msg).catch(() => {});
             return;
           }
         }
@@ -363,6 +424,15 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
 
         setPaymentState({ status: "submitting" });
         const result = await submitSignedTransaction(signedXDR);
+
+        // Update durable intent immediately upon successful Horizon submission (Money has moved!)
+        if (intent) {
+          try {
+            await markIntentSubmitted(intent.id, result.hash, result.ledger);
+          } catch (err) {
+            console.warn("[usePayment] Failed to update intent status to submitted:", err);
+          }
+        }
 
         let onChain = false;
         let onChainError: string | null = null;
@@ -408,6 +478,12 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
 
         // Always sync local state after successful XLM transfer so UI reflects financial reality.
         await markSharePaid(expenseId, share.memberId, result.hash);
+
+        if (intent) {
+          try {
+            await markIntentRecorded(intent.id, result.ledger, onChain);
+          } catch {}
+        }
 
         if (onChainError) {
           setPaymentState({
