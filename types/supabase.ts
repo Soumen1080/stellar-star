@@ -63,6 +63,20 @@ export type TripRow = {
   updated_at: string;
 };
 
+export type AuthChallengeRow = {
+  nonce: string;
+  address: string;
+  expiration: number;
+  created_at: string;
+};
+
+export type AuthRateLimitRow = {
+  key: string;
+  count: number;
+  window_start: number;
+  updated_at: string;
+};
+
 export type Database = {
   public: {
     Tables: {
@@ -108,12 +122,61 @@ export type Database = {
         Update: Partial<Omit<TripRow, ServerManaged | "created_by_wallet">>;
         Relationships: [];
       };
+      auth_challenges: {
+        Row: AuthChallengeRow;
+        Insert: {
+          nonce: string;
+          address: string;
+          expiration: number;
+          created_at?: string;
+        };
+        Update: Partial<AuthChallengeRow>;
+        Relationships: [];
+      };
+      auth_rate_limits: {
+        Row: AuthRateLimitRow;
+        Insert: {
+          key: string;
+          count?: number;
+          window_start: number;
+          updated_at?: string;
+        };
+        Update: Partial<AuthRateLimitRow>;
+        Relationships: [];
+      };
     };
     Views: { [_ in never]: never };
     Functions: {
       current_wallet: {
         Args: Record<string, never>;
         Returns: string;
+      };
+      consume_auth_challenge: {
+        Args: {
+          p_address: string;
+          p_nonce: string;
+          p_expiration: number;
+          p_now: number;
+        };
+        Returns: boolean;
+      };
+      record_auth_challenge: {
+        Args: {
+          p_address: string;
+          p_nonce: string;
+          p_expiration: number;
+          p_max_pending?: number;
+        };
+        Returns: boolean;
+      };
+      check_auth_rate_limit: {
+        Args: {
+          p_key: string;
+          p_limit: number;
+          p_window_ms: number;
+          p_now: number;
+        };
+        Returns: Json;
       };
     };
     Enums: { [_ in never]: never };
@@ -127,3 +190,5 @@ export type TripInsert = Database["public"]["Tables"]["trips"]["Insert"];
 export type TripUpdate = Database["public"]["Tables"]["trips"]["Update"];
 export type UserInsert = Database["public"]["Tables"]["users"]["Insert"];
 export type UserUpdate = Database["public"]["Tables"]["users"]["Update"];
+export type AuthChallengeInsert = Database["public"]["Tables"]["auth_challenges"]["Insert"];
+

@@ -13,7 +13,8 @@ import {
   isServerSupabaseConfigured,
   type ServerClient,
 } from "@/lib/supabase/server";
-import { consumeChallenge } from "@/lib/auth/challengeStore";
+import { consumeChallenge, AuthStoreError } from "@/lib/auth/challengeStore";
+import { checkRateLimit, getClientIp } from "@/lib/auth/rateLimiter";
 import type { UserUpdate } from "@/types/supabase";
 
 export const runtime = "nodejs";
@@ -103,6 +104,21 @@ async function provisionProfile(
 
 export async function POST(request: NextRequest) {
   try {
+    const clientIp = getClientIp(request);
+    const ipLimit = await checkRateLimit(`verify:ip:${clientIp}`, 20, 60_000);
+    if (!ipLimit.allowed) {
+      return NextResponse.json(
+        { error: "Too many verification attempts. Please try again later." },
+        {
+          status: 429,
+          headers: {
+            "Retry-After": String(Math.ceil(ipLimit.resetMs / 1000)),
+            "Cache-Control": "no-store",
+          },
+        },
+      );
+    }
+
     const body = await request.json();
     const { address, signedXdr, nonce, expiration, signature, displayName } = body ?? {};
 
@@ -118,6 +134,20 @@ export async function POST(request: NextRequest) {
       !signature
     ) {
       return jsonError("Missing required parameters", 400);
+    }
+
+    const addrLimit = await checkRateLimit(`verify:addr:${address}`, 10, 60_000);
+    if (!addrLimit.allowed) {
+      return NextResponse.json(
+        { error: "Too many verification attempts for this wallet. Please wait a minute." },
+        {
+          status: 429,
+          headers: {
+            "Retry-After": String(Math.ceil(addrLimit.resetMs / 1000)),
+            "Cache-Control": "no-store",
+          },
+        },
+      );
     }
 
     if (displayName !== undefined && displayName !== null && typeof displayName !== "string") {
@@ -182,9 +212,9 @@ export async function POST(request: NextRequest) {
       return jsonError("Signature verification failed", 401);
     }
 
-    // 5. Burn the challenge. Done after signature validation so a failed attempt
-    //    does not consume a challenge the legitimate owner could still use.
-    if (!consumeChallenge(address, nonce, expiration)) {
+    // 5. Burn the challenge atomically (single-use guarantee across instances).
+    const consumed = await consumeChallenge(address, nonce, expiration);
+    if (!consumed) {
       return jsonError("Challenge is invalid or has already been used", 400);
     }
 
@@ -256,6 +286,13 @@ export async function POST(request: NextRequest) {
       { headers: { "Cache-Control": "no-store" } }
     );
   } catch (error: any) {
+    if (error instanceof AuthStoreError || error?.code === "STORE_UNAVAILABLE") {
+      return jsonError(
+        "Authentication service is temporarily unavailable.",
+        503,
+        "STORE_UNAVAILABLE"
+      );
+    }
     console.error("[auth/verify] Verification error:", error);
     return jsonError(error?.message || "Failed to verify challenge", 500);
   }

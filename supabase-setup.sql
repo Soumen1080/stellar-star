@@ -559,3 +559,156 @@ create index if not exists sponsorship_invites_inviter_idx
 -- own.
 alter table public.sponsored_accounts enable row level security;
 alter table public.sponsorship_invites enable row level security;
+
+-- ─── Multi-Instance Distributed Auth Challenges ──────────────────────────────
+-- Issue #158: Replaces single-process in-memory challenge map with an atomic,
+-- multi-instance-safe store and rate-limiting infrastructure.
+
+create table if not exists public.auth_challenges (
+  nonce       text        primary key,
+  address     text        not null,
+  expiration  bigint      not null,
+  created_at  timestamptz not null default now()
+);
+
+create index if not exists auth_challenges_address_idx on public.auth_challenges (address);
+create index if not exists auth_challenges_expiration_idx on public.auth_challenges (expiration);
+
+-- Atomic challenge consume: only ONE concurrent consumer can delete and verify
+create or replace function public.consume_auth_challenge(
+  p_address text,
+  p_nonce text,
+  p_expiration bigint,
+  p_now bigint
+)
+returns boolean
+language plpgsql
+security definer
+as $$
+declare
+  v_deleted integer;
+begin
+  -- Atomic delete matching nonce, address, expiration and within validity window
+  delete from public.auth_challenges
+   where nonce = p_nonce
+     and address = p_address
+     and expiration = p_expiration
+     and expiration > p_now;
+
+  get diagnostics v_deleted = row_count;
+  return v_deleted > 0;
+end;
+$$;
+
+-- Atomic challenge record with per-address pending cap (prevents weaponized eviction)
+create or replace function public.record_auth_challenge(
+  p_address text,
+  p_nonce text,
+  p_expiration bigint,
+  p_max_pending integer default 5
+)
+returns boolean
+language plpgsql
+security definer
+as $$
+declare
+  v_pending integer;
+begin
+  -- Clean expired challenges for this address
+  delete from public.auth_challenges
+   where address = p_address
+     and expiration <= (extract(epoch from now()) * 1000)::bigint;
+
+  -- Count active pending challenges for this specific address
+  select count(*) into v_pending
+    from public.auth_challenges
+   where address = p_address;
+
+  if v_pending >= p_max_pending then
+    -- Remove the oldest pending challenge for this address to bound memory per address
+    delete from public.auth_challenges
+     where nonce in (
+       select nonce from public.auth_challenges
+        where address = p_address
+        order by created_at asc
+        limit 1
+     );
+  end if;
+
+  insert into public.auth_challenges (nonce, address, expiration)
+  values (p_nonce, p_address, p_expiration);
+
+  return true;
+end;
+$$;
+
+-- Distributed rate limiting table
+create table if not exists public.auth_rate_limits (
+  key           text        primary key,
+  count         integer     not null default 1,
+  window_start  bigint      not null,
+  updated_at    timestamptz not null default now()
+);
+
+create index if not exists auth_rate_limits_window_idx on public.auth_rate_limits (window_start);
+
+create or replace function public.check_auth_rate_limit(
+  p_key text,
+  p_limit integer,
+  p_window_ms bigint,
+  p_now bigint
+)
+returns jsonb
+language plpgsql
+security definer
+as $$
+declare
+  v_record public.auth_rate_limits%rowtype;
+  v_allowed boolean;
+  v_remaining integer;
+  v_reset_ms bigint;
+begin
+  select * into v_record
+    from public.auth_rate_limits
+   where key = p_key
+     for update;
+
+  if not found or (p_now - v_record.window_start) >= p_window_ms then
+    insert into public.auth_rate_limits (key, count, window_start, updated_at)
+    values (p_key, 1, p_now, now())
+    on conflict (key) do update
+      set count = 1,
+          window_start = p_now,
+          updated_at = now();
+
+    v_allowed := true;
+    v_remaining := p_limit - 1;
+    v_reset_ms := p_window_ms;
+  else
+    if v_record.count < p_limit then
+      update public.auth_rate_limits
+         set count = v_record.count + 1,
+             updated_at = now()
+       where key = p_key;
+
+      v_allowed := true;
+      v_remaining := p_limit - (v_record.count + 1);
+      v_reset_ms := p_window_ms - (p_now - v_record.window_start);
+    else
+      v_allowed := false;
+      v_remaining := 0;
+      v_reset_ms := p_window_ms - (p_now - v_record.window_start);
+    end if;
+  end if;
+
+  return jsonb_build_object(
+    'allowed', v_allowed,
+    'remaining', v_remaining,
+    'reset_ms', v_reset_ms
+  );
+end;
+$$;
+
+alter table public.auth_challenges enable row level security;
+alter table public.auth_rate_limits enable row level security;
+
