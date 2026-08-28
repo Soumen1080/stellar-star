@@ -106,11 +106,17 @@ export function decodePoolError(raw: string): string {
   }
 }
 
-async function loadAccount(publicKey: string): Promise<Account> {
+async function loadAccount(
+  publicKey: string,
+  fallbackSequence?: string,
+): Promise<Account> {
   const res = await fetch(
     `${HORIZON_URL}/accounts/${publicKey}?_ts=${Date.now()}`,
     { cache: "no-store", headers: { "Cache-Control": "no-cache" } }
   );
+  if (res.status === 404 && fallbackSequence !== undefined) {
+    return new Account(publicKey, fallbackSequence);
+  }
   if (!res.ok) {
     throw new Error(
       `Failed to load Stellar account (${res.status}). Verify your address is funded on testnet.`
@@ -125,20 +131,7 @@ async function loadAccount(publicKey: string): Promise<Account> {
  * Unfunded accounts are not on Horizon (404); use sequence "0" so status queries still work.
  */
 async function accountForReadOnlySimulation(publicKey: string): Promise<Account> {
-  const res = await fetch(
-    `${HORIZON_URL}/accounts/${publicKey}?_ts=${Date.now()}`,
-    { cache: "no-store", headers: { "Cache-Control": "no-cache" } }
-  );
-  if (res.status === 404) {
-    return new Account(publicKey, "0");
-  }
-  if (!res.ok) {
-    throw new Error(
-      `Failed to load Stellar account (${res.status}). Verify your address is funded on testnet.`
-    );
-  }
-  const data = (await res.json()) as { sequence: string };
-  return new Account(publicKey, data.sequence);
+  return loadAccount(publicKey, "0");
 }
 
 function sleep(ms: number): Promise<void> {
