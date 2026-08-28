@@ -69,8 +69,11 @@ export default defineConfig({
       NEXT_PUBLIC_SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL ?? "https://example.supabase.co",
       NEXT_PUBLIC_SUPABASE_ANON_KEY: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "ci-placeholder-key",
       SUPABASE_JWT_SECRET: process.env.SUPABASE_JWT_SECRET ?? "e2e-test-only-jwt-secret-not-used-in-production",
-      // Enables the injected-wallet bypass in lib/stellar/walletsKit.ts so
-      // authenticated flows can be tested without a real wallet extension.
+      // Build-time flag that activates the E2E wallet seam in
+      // lib/stellar/e2eWallet.ts. The server started here (by Playwright) is
+      // built/served with this flag, so authenticated-flow tests can drive the
+      // UI without a real wallet extension. A NORMAL production build omits
+      // this flag, which removes the seam from the bundle entirely.
       NEXT_PUBLIC_E2E_TEST_MODE: "true",
     },
   },

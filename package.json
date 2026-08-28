@@ -17,7 +17,8 @@
     "db:check": "node scripts/check-supabase.mjs",
     "test:e2e": "npx playwright test",
     "test:e2e:ui": "npx playwright test --ui",
-    "test:e2e:report": "npx playwright show-report"
+    "test:e2e:report": "npx playwright show-report",
+    "test:security-build": "node scripts/verify-no-e2e-bypass.mjs"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.1",

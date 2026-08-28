@@ -10,6 +10,7 @@ import React, {
 } from "react";
 import { getFreighterNetwork, isFreighterInstalled } from "@/lib/freighter";
 import { getWalletsKit, FREIGHTER_ID, StellarWalletsKit, type WalletId } from "@/lib/stellar/walletsKit";
+import { getE2eTestWallet } from "@/lib/stellar/e2eWallet";
 import { getXLMBalance } from "@/lib/stellar/getBalance";
 import { LS_PUBLIC_KEY } from "@/lib/utils/constants";
 import type { WalletContextType } from "@/types/wallet";
@@ -121,16 +122,15 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     setError(null);
 
     try {
-      // ── E2E bypass: skip the wallet-selection modal when a test wallet is
-      //    injected by Playwright's mockWallet() helper.  This avoids race
-      //    conditions in the async modal click-handler chain.
-      const e2eWallet = typeof window !== "undefined"
-        ? (window as unknown as { __E2E_WALLET__?: { address: string } }).__E2E_WALLET__
-        : undefined;
+      // ── E2E test seam ──────────────────────────────────────────────────────
+      // Only active when the app was built with NEXT_PUBLIC_E2E_TEST_MODE=true
+      // (see lib/stellar/e2eWallet.ts). In a normal production build this
+      // branch is unreachable and is removed by the minifier, so no UI-state
+      // impersonation primitive ships to users.
+      const e2eWallet = getE2eTestWallet();
 
       if (e2eWallet) {
-        const kit = getWalletsKit();
-        kit.setWallet(FREIGHTER_ID);
+        getWalletsKit().setWallet(FREIGHTER_ID);
 
         setPublicKey(e2eWallet.address);
         setNetwork("TESTNET");
