@@ -28,13 +28,19 @@ function mockFetch(body: unknown, status = 200) {
 
 describe("reserve arithmetic", () => {
   it("requires two base reserves for a bare account", () => {
-    expect(minimumBalanceStroops(0)).toBe(10_000_000n); // 1 XLM
+    expect(minimumBalanceStroops(0, 0, 0, 5_000_000n)).toBe(10_000_000n); // 1 XLM
   });
 
   it("adds half a lumen per subentry", () => {
     // The number that makes an empty wallet unable to receive USDC.
-    expect(minimumBalanceStroops(1)).toBe(15_000_000n); // 1.5 XLM
-    expect(trustlineReserveStroops()).toBe(5_000_000n);
+    expect(minimumBalanceStroops(1, 0, 0, 5_000_000n)).toBe(15_000_000n); // 1.5 XLM
+    expect(trustlineReserveStroops(5_000_000n)).toBe(5_000_000n);
+  });
+
+  it("reduces the reserve requirement when sponsored", () => {
+    // 1 subentry, but 2 entries are sponsored (the 2 base reserves).
+    // Effective = 2 + 1 + 0 - 2 = 1. Min balance = 0.5 XLM.
+    expect(minimumBalanceStroops(1, 0, 2, 5_000_000n)).toBe(5_000_000n);
   });
 });
 
@@ -95,8 +101,8 @@ describe("partially funded accounts", () => {
     const state = await getAccountState(ACCOUNT, "https://horizon", mockFetch(RESERVE_LOCKED));
     const need = describeOnboardingNeed(state, USDC);
 
-    expect(need.kind).toBe("trustline");
-    if (need.kind === "trustline") {
+    expect(need.kind).toBe("trustline_missing");
+    if (need.kind === "trustline_missing") {
       expect(need.affordable).toBe(false);
     }
   });
@@ -112,8 +118,8 @@ describe("partially funded accounts", () => {
     );
     const need = describeOnboardingNeed(state, USDC);
 
-    expect(need.kind).toBe("trustline");
-    if (need.kind === "trustline") {
+    expect(need.kind).toBe("trustline_missing");
+    if (need.kind === "trustline_missing") {
       expect(need.affordable).toBe(true);
     }
   });
@@ -203,5 +209,72 @@ describe("funded accounts", () => {
 
     expect(state.sponsored).toBe(true);
     expect(state.sponsorId).toBe("GSPONSOR");
+    // With 2 sponsored subentries, effective reserve = 2 + 1 - 2 = 1 (0.5 XLM).
+    expect(state.reserveStroops).toBe(5_000_000n);
+    expect(state.spendableStroops).toBe(10_000_000n); // 1.5 - 0.5 = 1 XLM
+  });
+
+  it("detects unauthorized trustlines", async () => {
+    const state = await getAccountState(
+      ACCOUNT,
+      "https://horizon",
+      mockFetch({
+        balances: [
+          { asset_type: "native", balance: "100.0000000" },
+          {
+            asset_type: "credit_alphanum4",
+            asset_code: "USDC",
+            asset_issuer: CIRCLE_USDC_ISSUER_TESTNET,
+            balance: "0",
+            is_authorized: false,
+          },
+        ],
+        subentry_count: 1,
+      }),
+    );
+
+    const need = describeOnboardingNeed(state, USDC);
+    expect(need.kind).toBe("trustline_unauthorized");
+  });
+
+  it("detects when trustline is at limit", async () => {
+    const state = await getAccountState(
+      ACCOUNT,
+      "https://horizon",
+      mockFetch({
+        balances: [
+          { asset_type: "native", balance: "100.0000000" },
+          {
+            asset_type: "credit_alphanum4",
+            asset_code: "USDC",
+            asset_issuer: CIRCLE_USDC_ISSUER_TESTNET,
+            balance: "100.0000000",
+            limit: "100.0000000",
+            is_authorized: true,
+          },
+        ],
+        subentry_count: 1,
+      }),
+    );
+
+    const need = describeOnboardingNeed(state, USDC);
+    expect(need.kind).toBe("trustline_at_limit");
+  });
+
+  it("subtracts native liabilities from spendable balance", async () => {
+    const state = await getAccountState(
+      ACCOUNT,
+      "https://horizon",
+      mockFetch({
+        balances: [
+          { asset_type: "native", balance: "3.0000000", selling_liabilities: "1.0000000" },
+        ],
+        subentry_count: 0,
+      }),
+    );
+
+    expect(state.reserveStroops).toBe(10_000_000n); // 1 XLM
+    // 3 - 1 (reserve) - 1 (liability) = 1 XLM spendable
+    expect(state.spendableStroops).toBe(10_000_000n);
   });
 });

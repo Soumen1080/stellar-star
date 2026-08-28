@@ -11,7 +11,8 @@ import { NETWORK_PASSPHRASE } from "@/lib/utils/constants";
  * exercised for real rather than stubbed out.
  *
  * Only takes effect when the app is served with NEXT_PUBLIC_E2E_TEST_MODE=true
- * (see playwright.config.ts) - see lib/stellar/walletsKit.ts's e2eTestWallet().
+ * (see playwright.config.ts) - see lib/stellar/e2eWallet.ts's getE2eTestWallet(),
+ * which ignores the injected object unless that build flag is set.
  */
 export async function mockWallet(page: Page, keypair: Keypair = Keypair.random()) {
   await page.exposeFunction("__e2eSignXDR__", async (xdr: string) => {

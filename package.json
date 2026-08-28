@@ -15,9 +15,12 @@
     "test:coverage": "jest --coverage",
     "proof:links": "node scripts/proof-link-check.js",
     "db:check": "node scripts/check-supabase.mjs",
+    "db:migrate": "node scripts/migrate.mjs",
+    "db:status": "node scripts/migrate.mjs --status",
     "test:e2e": "npx playwright test",
     "test:e2e:ui": "npx playwright test --ui",
-    "test:e2e:report": "npx playwright show-report"
+    "test:e2e:report": "npx playwright show-report",
+    "test:security-build": "node scripts/verify-no-e2e-bypass.mjs"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.1",

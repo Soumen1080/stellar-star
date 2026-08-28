@@ -171,16 +171,20 @@ export default function TripsPage() {
                   const tripExpenses = expenses.filter((e) =>
                     trip.expenseIds.includes(e.id)
                   );
-                  const totalXLM = tripExpenses.reduce(
-                    (sum, e) => sum + parseFloat(e.totalAmount),
-                    0
+                  const totalsByAsset = tripExpenses.reduce(
+                    (acc, e) => {
+                      const asset = e.currency || "XLM";
+                      acc[asset] = (acc[asset] || 0) + parseFloat(e.totalAmount);
+                      return acc;
+                    },
+                    {} as Record<string, number>
                   );
                   return (
                     <TripCard
                       key={trip.id}
                       trip={trip}
                       expenseCount={tripExpenses.length}
-                      totalXLM={totalXLM}
+                      totalsByAsset={totalsByAsset}
                       onDelete={handleDeleteTrip}
                       index={i}
                       connectedWalletAddress={publicKey}

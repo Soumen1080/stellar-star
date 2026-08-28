@@ -22,8 +22,6 @@ export interface Expense {
   description?: string;
   totalAmount: string;
   currency: string;
-  exchangeRate?: string;
-  exchangeRateTimestamp?: string;
   splitMode: SplitMode;
   paidByMemberId: string;
   members: Member[];

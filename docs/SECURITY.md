@@ -116,3 +116,30 @@ database and application together, not incrementally:
   warm Vercel function instance, but a high-assurance multi-instance deployment
   should replace it with an atomic shared store (for example Redis or a
   server-only Supabase table) keyed by nonce.
+
+## The hostile client and the E2E wallet seam (build boundary B4)
+
+Stellar Star is non-custodial, so the **client is treated as hostile** (see
+[`THREAT_MODEL.md`](./THREAT_MODEL.md)). A prior revision short-circuited the
+wallet layer whenever `window.__E2E_WALLET__` was present, with no build guard —
+meaning any script in the page (XSS, a malicious extension, a compromised
+dependency) could impersonate a connected wallet in the UI. That bypass has been
+removed (issue #162).
+
+The replacement is a test-only seam in `lib/stellar/e2eWallet.ts`, gated solely
+on the build-time flag `NEXT_PUBLIC_E2E_TEST_MODE`:
+
+- In a normal production build the flag is unset, the guard folds to
+  `return null`, and the `window.__E2E_WALLET__` read is dead-code-eliminated
+  from the bundle. This is enforced by `scripts/verify-no-e2e-bypass.mjs`, which
+  builds a clean production bundle and fails if the marker is present. The test
+  (`__tests__/security/no-e2e-bypass.test.ts`) runs it.
+- A deliberately built test bundle (`NEXT_PUBLIC_E2E_TEST_MODE=true next build`)
+  keeps the seam so Playwright can drive the UI with a real keypair; such a
+  bundle is a test artifact and must never be deployed. The deploy pipeline
+  builds without the flag.
+
+The server-side signature check in `POST /api/auth/verify` was never bypassed by
+the old seam: it still requires a real signature over the server challenge, so
+the seam could only impersonate *UI state*, not authenticate. That impersonation
+primitive is what is now absent from production.

@@ -178,12 +178,12 @@ export function AccountSetupPrompt({
         <Wallet size={18} className="mt-0.5 shrink-0 text-[#2DD4BF]" />
         <div className="space-y-1">
           <p className="text-sm font-semibold text-white">
-            {state.need?.kind === "trustline"
+            {state.need?.kind === "trustline_missing"
               ? `Allow ${formatAssetLabel(asset)} on your account`
               : "Activate your Stellar account"}
           </p>
           <p className="text-sm text-white/60">
-            {state.need?.kind === "trustline"
+            {state.need?.kind === "trustline_missing"
               ? `Your account exists but cannot hold ${formatAssetLabel(asset)} yet. Adding it ` +
                 `requires ${stroopsToXlm(state.need.reserveStroops)} XLM held in reserve.`
               : "Stellar accounts need a small reserve before they exist on the network. " +
