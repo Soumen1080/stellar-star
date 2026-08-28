@@ -17,14 +17,13 @@ import {
   type SettlementClaim,
 } from "@/lib/settlement/attestationMessage";
 
-const ORACLE_SECRET = "SBQWY3DNPFWGSZTFNV4WQZLBOM4L7QG5ZXGXXGXCB2S2SVKKMRQTB6TE";
-const ORACLE = Keypair.fromSecret(ORACLE_SECRET);
+const ORACLE = Keypair.random();
 
 // A second key standing in for an attacker who signs their own attestations.
 const ATTACKER = Keypair.random();
 
-const CONTRACT_ID = "CA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVSGZ";
-const ASSET_ID = "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC";
+const CONTRACT_ID = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4";
+const ASSET_ID = "CBQWCYLBMFQWCYLBMFQWCYLBMFQWCYLBMFQWCYLBMFQWCYLBMFQWCV5G";
 
 const MEMBER = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
 const PAYER = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";
@@ -84,7 +83,7 @@ describe("field tampering", () => {
     ["tx hash", { txHash: "c".repeat(64) }],
     ["nonce", { nonce: "d".repeat(64) }],
     ["expiry", { expiresAt: 1_999_999_999 }],
-    ["contract", { contractId: "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC" }],
+    ["contract", { contractId: "CBQWCYLBMFQWCYLBMFQWCYLBMFQWCYLBMFQWCYLBMFQWCYLBMFQWCV5G" }],
   ];
 
   it.each(tampering)("invalidates the signature when the %s changes", (_label, patch) => {

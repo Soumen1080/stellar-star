@@ -11,9 +11,23 @@ interface TripDetailHeaderProps {
 }
 
 export function TripDetailHeader({ trip, expenses }: TripDetailHeaderProps) {
-  const totalXLM = expenses.reduce((sum, expense) => sum + parseFloat(expense.totalAmount), 0);
+  const totalsByAsset = expenses.reduce((acc, expense) => {
+    const asset = expense.currency || "XLM";
+    acc[asset] = (acc[asset] || 0) + parseFloat(expense.totalAmount);
+    return acc;
+  }, {} as Record<string, number>);
+
   const shares = expenses.flatMap((expense) => expense.shares);
   const paidShares = shares.filter((share) => share.paid).length;
+
+  const assetEntries = Object.entries(totalsByAsset);
+  let displayTotal = null;
+  if (assetEntries.length === 1) {
+    const asset = assetEntries[0][0] === "native" ? "XLM" : assetEntries[0][0].split(":")[0];
+    displayTotal = `${assetEntries[0][1].toFixed(4)} ${asset} total`;
+  } else if (assetEntries.length > 1) {
+    displayTotal = "Mixed Assets total";
+  }
 
   return (
     <div className="bg-white rounded-2xl border border-[#E5E5E5] p-5 mb-6">
@@ -38,8 +52,8 @@ export function TripDetailHeader({ trip, expenses }: TripDetailHeaderProps) {
               <ReceiptText size={11} />
               {expenses.length} expense{expenses.length !== 1 ? "s" : ""}
             </span>
-            {totalXLM > 0 && (
-              <span className="font-semibold text-[#555]">{totalXLM.toFixed(4)} XLM total</span>
+            {displayTotal && (
+              <span className="font-semibold text-[#555]">{displayTotal}</span>
             )}
             {shares.length > 0 && (
               <span className="text-[#134E4A]">

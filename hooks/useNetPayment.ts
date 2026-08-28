@@ -53,7 +53,8 @@ export interface RawDebt {
 
 interface PayNetParams {
   debts: RawDebt[];
-  totalAmountXlm: string;
+  totalAmount: string;
+  asset: string;
   payerWalletAddress: string;
   tripName: string;
 }
@@ -259,7 +260,7 @@ export function useNetPayment({ tripId }: UseNetPaymentOpts) {
   }, [pendingNetSettlement, toastError, toastSuccess, loadPoolBalance, clearPersistedPending]);
 
   const payNetSettlement = useCallback(
-    async ({ debts, totalAmountXlm, payerWalletAddress, tripName }: PayNetParams) => {
+    async ({ debts, totalAmount, asset, payerWalletAddress, tripName }: PayNetParams) => {
       if (!publicKey) {
         toastError("Wallet not connected", "Please connect your Freighter wallet first.");
         return;
@@ -270,8 +271,9 @@ export function useNetPayment({ tripId }: UseNetPaymentOpts) {
       }
 
       try {
-        if (CONTRACT_ID && tripId) {
-          const poolCheck = await precheckPoolBalance(publicKey, publicKey, totalAmountXlm);
+        // Pool check only applies to XLM settlements since the pool only stores XLM.
+        if (CONTRACT_ID && tripId && asset === "native") {
+          const poolCheck = await precheckPoolBalance(publicKey, publicKey, totalAmount);
           if (!poolCheck.ok) {
             const msg =
               poolCheck.error ?? "Add enough pool credit before sending this settlement.";
@@ -287,7 +289,8 @@ export function useNetPayment({ tripId }: UseNetPaymentOpts) {
         const { xdr } = await buildPaymentTransaction({
           sourcePublicKey:      publicKey,
           destinationPublicKey: payerWalletAddress,
-          amount:               totalAmountXlm,
+          amount:               totalAmount,
+          asset:                asset,
           memoText,
         });
 
@@ -303,7 +306,9 @@ export function useNetPayment({ tripId }: UseNetPaymentOpts) {
         
         const mappedDebts = debts.map(d => ({ expenseId: d.expenseId, amountXlm: d.amount.toString() }));
 
-        if (CONTRACT_ID && tripId) {
+        // We only attempt to record on-chain if the asset is native (XLM)
+        // because the contract currently uses SETTLEMENT_ASSET_ID which is XLM.
+        if (CONTRACT_ID && tripId && asset === "native") {
           setPaymentState({ status: "recording", step: "simulating" });
 
           // One attestation per debt: the contract records each expense
@@ -321,7 +326,7 @@ export function useNetPayment({ tripId }: UseNetPaymentOpts) {
 
           if (!attested.ok) {
             onChainError = attested.message;
-            buildAndPersistPending(result.hash, result.ledger, payerWalletAddress, totalAmountXlm, mappedDebts, memoText);
+            buildAndPersistPending(result.hash, result.ledger, payerWalletAddress, totalAmount, mappedDebts, memoText);
           } else {
             const contractResult = await recordNetSettlementOnChain({
               memberPublicKey: publicKey,
@@ -340,7 +345,7 @@ export function useNetPayment({ tripId }: UseNetPaymentOpts) {
               loadPoolBalance();
             } else {
               onChainError = contractResult.error ?? "On-chain recording failed.";
-              buildAndPersistPending(result.hash, result.ledger, payerWalletAddress, totalAmountXlm, mappedDebts, memoText);
+              buildAndPersistPending(result.hash, result.ledger, payerWalletAddress, totalAmount, mappedDebts, memoText);
             }
           }
         }
@@ -372,11 +377,12 @@ export function useNetPayment({ tripId }: UseNetPaymentOpts) {
         }
 
         setPaymentState({ status: "success", hash: result.hash, ledger: result.ledger, onChain });
+        const displayAsset = asset === "native" ? "XLM" : asset.split(":")[0];
         toastSuccess(
           `Settlement sent!`,
           onChain
-            ? `Paid ${parseFloat(totalAmountXlm).toFixed(4)} XLM. TX: ${result.hash.slice(0, 12)}... · Recorded on-chain`
-            : `Paid ${parseFloat(totalAmountXlm).toFixed(4)} XLM. TX: ${result.hash.slice(0, 12)}...`,
+            ? `Paid ${parseFloat(totalAmount).toFixed(4)} ${displayAsset}. TX: ${result.hash.slice(0, 12)}... · Recorded on-chain`
+            : `Paid ${parseFloat(totalAmount).toFixed(4)} ${displayAsset}. TX: ${result.hash.slice(0, 12)}...`,
         );
 
         setTimeout(() => refreshBalance(), 3000);

@@ -5,6 +5,7 @@ export interface RawDebt {
   from: string;
   to: string;
   amount: number;
+  asset: string;
   fromWallet?: string;
   toWallet?: string;
 }
@@ -13,6 +14,7 @@ export interface NetPayment {
   from: string;
   to: string;
   amount: string;
+  asset: string;
   fromWallet?: string;
   toWallet?: string;
   settledDebts: RawDebt[];
@@ -22,7 +24,7 @@ export function computeNetPayments(debts: RawDebt[]): NetPayment[] {
   const grouped = new Map<string, RawDebt[]>();
 
   for (const debt of debts) {
-    const key = `${debt.fromId}_${debt.toId}`;
+    const key = `${debt.fromId}_${debt.toId}_${debt.asset}`;
     const group = grouped.get(key) ?? [];
     group.push(debt);
     grouped.set(key, group);
@@ -42,6 +44,7 @@ export function computeNetPayments(debts: RawDebt[]): NetPayment[] {
         from: first.from,
         to: first.to,
         amount: rounded.toFixed(7),
+        asset: first.asset,
         fromWallet: first.fromWallet,
         toWallet: first.toWallet,
         settledDebts: debtsInGroup,

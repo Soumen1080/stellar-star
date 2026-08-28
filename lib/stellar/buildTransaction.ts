@@ -16,13 +16,14 @@ import {
   MEMO_PREFIX,
   HORIZON_URL,
 } from "@/lib/utils/constants";
-import { toSdkAsset } from "@/lib/stellar/assets";
+import { toSdkAsset, parseAssetKey } from "@/lib/stellar/assets";
 import { isQuoteFresh, type PricedPath } from "@/lib/stellar/pathPayment";
 
 export interface BuildTxParams {
   sourcePublicKey: string;
   destinationPublicKey: string;
   amount: string;
+  asset?: string;
   memoText?: string;
 }
 
@@ -55,6 +56,7 @@ export async function buildPaymentTransaction({
   sourcePublicKey,
   destinationPublicKey,
   amount,
+  asset = "native",
   memoText,
 }: BuildTxParams): Promise<BuildTxResult> {
   const acctRes = await fetch(
@@ -79,7 +81,7 @@ export async function buildPaymentTransaction({
     .addOperation(
       Operation.payment({
         destination: destinationPublicKey,
-        asset: Asset.native(),
+        asset: toSdkAsset(parseAssetKey(asset)),
         amount,
       })
     )
