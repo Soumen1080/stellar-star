@@ -51,6 +51,13 @@ COMMENT ON FUNCTION public.current_wallet() IS
 -- 2. TABLES
 -- ============================================================================
 
+CREATE TABLE IF NOT EXISTS public.schema_migrations (
+  version     TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  applied_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  checksum    TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS public.users (
   id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   wallet_address TEXT        NOT NULL UNIQUE,
@@ -112,6 +119,17 @@ BEGIN
              WHERE table_schema = 'public' AND table_name = 'users'
                AND column_name = 'display_name' AND is_nullable = 'YES') THEN
     ALTER TABLE public.users ALTER COLUMN display_name SET NOT NULL;
+  END IF;
+
+  -- expenses exchange rate columns -----------------------------------------
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                 WHERE table_schema = 'public' AND table_name = 'expenses' AND column_name = 'exchange_rate') THEN
+    ALTER TABLE public.expenses ADD COLUMN exchange_rate TEXT;
+  END IF;
+
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                 WHERE table_schema = 'public' AND table_name = 'expenses' AND column_name = 'exchange_rate_timestamp') THEN
+    ALTER TABLE public.expenses ADD COLUMN exchange_rate_timestamp TIMESTAMPTZ;
   END IF;
 
   -- expenses / trips wallet columns ----------------------------------------
@@ -198,11 +216,27 @@ CREATE OR REPLACE FUNCTION public.freeze_row_identity()
 RETURNS TRIGGER
 LANGUAGE plpgsql
 AS $fn$
+DECLARE
+  old_json JSONB;
+  new_json JSONB;
 BEGIN
-  NEW.id                := OLD.id;
-  NEW.created_at        := OLD.created_at;
-  NEW.created_by_wallet := OLD.created_by_wallet;
-  RETURN NEW;
+  old_json := to_jsonb(OLD);
+  new_json := to_jsonb(NEW);
+
+  new_json := new_json
+    || jsonb_build_object('id', old_json -> 'id')
+    || jsonb_build_object('created_at', old_json -> 'created_at')
+    || jsonb_build_object('created_by_wallet', old_json -> 'created_by_wallet');
+
+  IF old_json ? 'exchange_rate' AND (old_json ->> 'exchange_rate') IS NOT NULL THEN
+    new_json := new_json
+      || jsonb_build_object('exchange_rate', old_json -> 'exchange_rate')
+      || jsonb_build_object('exchange_rate_timestamp', old_json -> 'exchange_rate_timestamp')
+      || jsonb_build_object('total_amount', old_json -> 'total_amount')
+      || jsonb_build_object('currency', old_json -> 'currency');
+  END IF;
+
+  RETURN jsonb_populate_record(NEW, new_json);
 END;
 $fn$;
 
@@ -247,39 +281,49 @@ DROP TRIGGER IF EXISTS expenses_validate_shares     ON public.expenses;
 DROP TRIGGER IF EXISTS update_users_updated_at      ON public.users;
 DROP TRIGGER IF EXISTS update_expenses_updated_at   ON public.expenses;
 DROP TRIGGER IF EXISTS update_trips_updated_at      ON public.trips;
+DROP TRIGGER IF EXISTS trg_01_users_set_updated_at  ON public.users;
+DROP TRIGGER IF EXISTS trg_01_expenses_freeze_identity ON public.expenses;
+DROP TRIGGER IF EXISTS trg_02_expenses_sync_member_wallets ON public.expenses;
+DROP TRIGGER IF EXISTS trg_03_expenses_validate_shares ON public.expenses;
+DROP TRIGGER IF EXISTS trg_04_expenses_set_updated_at ON public.expenses;
+DROP TRIGGER IF EXISTS trg_01_trips_freeze_identity ON public.trips;
+DROP TRIGGER IF EXISTS trg_02_trips_sync_member_wallets ON public.trips;
+DROP TRIGGER IF EXISTS trg_03_trips_set_updated_at ON public.trips;
 
-CREATE TRIGGER users_set_updated_at
+-- Users
+CREATE TRIGGER trg_01_users_set_updated_at
   BEFORE UPDATE ON public.users
   FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
 
--- Trigger order within a timing class is alphabetical, so `freeze` runs before
--- `sync` (which needs the frozen created_by_wallet) and `sync` before
--- `set_updated_at`.
-CREATE TRIGGER expenses_freeze_identity
+-- Expenses Pipeline:
+-- 1. Freeze identity -> 2. Sync member wallets -> 3. Validate shares -> 4. Set updated_at
+CREATE TRIGGER trg_01_expenses_freeze_identity
   BEFORE UPDATE ON public.expenses
   FOR EACH ROW EXECUTE FUNCTION public.freeze_row_identity();
 
-CREATE TRIGGER expenses_sync_member_wallets
+CREATE TRIGGER trg_02_expenses_sync_member_wallets
   BEFORE INSERT OR UPDATE ON public.expenses
   FOR EACH ROW EXECUTE FUNCTION public.sync_member_wallets();
 
-CREATE TRIGGER expenses_validate_shares
+CREATE TRIGGER trg_03_expenses_validate_shares
   BEFORE INSERT OR UPDATE ON public.expenses
   FOR EACH ROW EXECUTE FUNCTION public.validate_expense_shares();
 
-CREATE TRIGGER expenses_set_updated_at
+CREATE TRIGGER trg_04_expenses_set_updated_at
   BEFORE UPDATE ON public.expenses
   FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
 
-CREATE TRIGGER trips_freeze_identity
+-- Trips Pipeline:
+-- 1. Freeze identity -> 2. Sync member wallets -> 3. Set updated_at
+CREATE TRIGGER trg_01_trips_freeze_identity
   BEFORE UPDATE ON public.trips
   FOR EACH ROW EXECUTE FUNCTION public.freeze_row_identity();
 
-CREATE TRIGGER trips_sync_member_wallets
+CREATE TRIGGER trg_02_trips_sync_member_wallets
   BEFORE INSERT OR UPDATE ON public.trips
   FOR EACH ROW EXECUTE FUNCTION public.sync_member_wallets();
 
-CREATE TRIGGER trips_set_updated_at
+CREATE TRIGGER trg_03_trips_set_updated_at
   BEFORE UPDATE ON public.trips
   FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
 
@@ -560,62 +604,11 @@ create index if not exists sponsorship_invites_inviter_idx
 alter table public.sponsored_accounts enable row level security;
 alter table public.sponsorship_invites enable row level security;
 
--- ─── Optimistic Concurrency Control for Expenses ─────────────────────────────
--- Adds version tracking to prevent concurrent edits from silently destroying each other.
+-- ─── RECORD APPLIED MIGRATIONS ───────────────────────────────────────────────
 
-alter table public.expenses add column if not exists version integer not null default 1;
-
-create or replace function public.update_expense_versioned(
-  p_id uuid,
-  p_expected_version integer,
-  p_title text default null,
-  p_description text default null,
-  p_total_amount text default null,
-  p_currency text default null,
-  p_split_mode text default null,
-  p_paid_by_member_id text default null,
-  p_members jsonb default null,
-  p_shares jsonb default null,
-  p_settled boolean default null
-)
-returns public.expenses
-language plpgsql
-security definer
-as $$
-declare
-  v_current public.expenses%rowtype;
-begin
-  -- Acquire exclusive row lock
-  select * into v_current
-    from public.expenses
-   where id = p_id
-     for update;
-
-  if not found then
-    raise exception 'Expense not found.' using errcode = 'P0002';
-  end if;
-
-  if p_expected_version is not null and v_current.version != p_expected_version then
-    raise exception 'Version conflict: expense was modified by another client (expected version %, current version %).',
-      p_expected_version, v_current.version using errcode = '40001';
-  end if;
-
-  update public.expenses
-     set title = coalesce(p_title, v_current.title),
-         description = case when p_description is not null then p_description else v_current.description end,
-         total_amount = coalesce(p_total_amount, v_current.total_amount),
-         currency = coalesce(p_currency, v_current.currency),
-         split_mode = coalesce(p_split_mode, v_current.split_mode),
-         paid_by_member_id = coalesce(p_paid_by_member_id, v_current.paid_by_member_id),
-         members = coalesce(p_members, v_current.members),
-         shares = coalesce(p_shares, v_current.shares),
-         settled = coalesce(p_settled, v_current.settled),
-         version = v_current.version + 1,
-         updated_at = now()
-   where id = p_id
-  returning * into v_current;
-
-  return v_current;
-end;
-$$;
+INSERT INTO public.schema_migrations (version, name, checksum)
+VALUES
+  ('0001', '0001_baseline', 'baseline_initial_checksum'),
+  ('0002', '0002_explicit_trigger_pipeline', 'trigger_pipeline_checksum')
+ON CONFLICT (version) DO NOTHING;
 

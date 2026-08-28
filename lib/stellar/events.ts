@@ -21,7 +21,7 @@ type EventsPage = {
 };
 
 export function buildPaymentEventKey(event: ContractPaymentEvent): string {
-  return `${event.tripId}:${event.expenseId}:${event.member.toLowerCase()}:${event.amountStroops}`;
+  return `${event.tripId}:${event.expenseId}:${event.member.toLowerCase()}:${event.amountStroops}:native`;
 }
 
 export function parsePaymentEvent(raw: RawEventLike): ContractPaymentEvent | null {

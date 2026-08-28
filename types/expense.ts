@@ -21,7 +21,7 @@ export interface Expense {
   title: string;
   description?: string;
   totalAmount: string;
-  currency: "XLM";
+  currency: string;
   splitMode: SplitMode;
   paidByMemberId: string;
   members: Member[];

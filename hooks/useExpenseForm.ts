@@ -21,6 +21,7 @@ export interface UseExpenseFormOptions {
 interface ExpenseFormValidationInput {
   title: string;
   totalAmount: string;
+  currency: string;
   members: Member[];
 }
 
@@ -31,12 +32,15 @@ export function blankExpenseMember(): Member {
 export function validateExpenseFormFields({
   title,
   totalAmount,
+  currency,
   members,
 }: ExpenseFormValidationInput): Record<string, string> {
   const errors: Record<string, string> = {};
 
   if (!title.trim()) errors.title = "Title is required.";
-  if (!totalAmount || !isValidXLMAmount(totalAmount)) {
+  if (!totalAmount || Number.isNaN(parseFloat(totalAmount)) || parseFloat(totalAmount) <= 0) {
+    errors.totalAmount = `Enter a valid ${currency} amount.`;
+  } else if (currency === "XLM" && !isValidXLMAmount(totalAmount)) {
     errors.totalAmount = "Enter a valid XLM amount (max 7 decimal places, e.g. 10.5).";
   }
 
@@ -83,6 +87,7 @@ export function useExpenseForm({
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [totalAmount, setTotalAmount] = useState("");
+  const [currency, setCurrency] = useState("XLM");
   const [splitMode, setSplitMode] = useState<SplitMode>("equal");
   const [members, setMembers] = useState<Member[]>(initialMembersRef.current!);
   const [paidByMemberId, setPaidByMemberId] = useState(initialMembersRef.current![0]?.id ?? "");
@@ -117,10 +122,10 @@ export function useExpenseForm({
   };
 
   const validate = useCallback(() => {
-    const nextErrors = validateExpenseFormFields({ title, totalAmount, members });
+    const nextErrors = validateExpenseFormFields({ title, totalAmount, currency, members });
     setErrors(nextErrors);
     return Object.keys(nextErrors).length === 0;
-  }, [title, totalAmount, members]);
+  }, [title, totalAmount, currency, members]);
 
   const handleSubmit = useCallback(
     async (event: FormEvent) => {
@@ -133,8 +138,23 @@ export function useExpenseForm({
           ...member,
           walletAddress: member.walletAddress?.trim(),
         }));
+        let finalXlmAmount = parseFloat(totalAmount);
+        let exchangeRate: string | undefined = undefined;
+        let exchangeRateTimestamp: string | undefined = undefined;
+
+        if (currency !== "XLM") {
+          const res = await fetch(`/api/fx/rate?from=${currency}&to=XLM`);
+          if (!res.ok) throw new Error("Failed to fetch exchange rate");
+          const data = await res.json();
+          if (data.error) throw new Error(data.error);
+          
+          exchangeRate = data.rate;
+          exchangeRateTimestamp = data.timestamp;
+          finalXlmAmount = finalXlmAmount * parseFloat(exchangeRate!);
+        }
+
         const calculatedShares = calculateSplit(
-          parseFloat(totalAmount),
+          finalXlmAmount,
           cleanMembers,
           paidByMemberId,
           splitMode,
@@ -143,8 +163,10 @@ export function useExpenseForm({
           id: crypto.randomUUID(),
           title: title.trim(),
           description: description.trim() || undefined,
-          totalAmount: parseFloat(totalAmount).toFixed(7),
-          currency: "XLM",
+          totalAmount: finalXlmAmount.toFixed(7),
+          currency,
+          exchangeRate,
+          exchangeRateTimestamp,
           splitMode,
           paidByMemberId,
           members: cleanMembers,
@@ -191,6 +213,8 @@ export function useExpenseForm({
     setDescription,
     totalAmount,
     setTotalAmount,
+    currency,
+    setCurrency,
     splitMode,
     setSplitMode,
     members,

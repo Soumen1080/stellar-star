@@ -11,7 +11,7 @@ import { Modal, ModalFooter } from "@/components/ui/Modal";
 interface TripCardProps {
   trip: Trip;
   expenseCount?: number;
-  totalXLM?: number;
+  totalsByAsset?: Record<string, number>;
   onDelete: (id: string) => void;
   index?: number;
   connectedWalletAddress?: string | null;
@@ -20,7 +20,7 @@ interface TripCardProps {
 export function TripCard({
   trip,
   expenseCount = 0,
-  totalXLM = 0,
+  totalsByAsset = {},
   onDelete,
   index = 0,
   connectedWalletAddress,
@@ -38,6 +38,15 @@ export function TripCard({
     trip.createdByWallet === connectedWalletAddress;
   const canDelete = !!onDelete && isOwner;
   const canShowDeleteHint = !!onDelete && !isOwner;
+
+  const assetEntries = Object.entries(totalsByAsset);
+  let displayTotal = null;
+  if (assetEntries.length === 1) {
+    const asset = assetEntries[0][0] === "native" ? "XLM" : assetEntries[0][0].split(":")[0];
+    displayTotal = `${assetEntries[0][1].toFixed(4)} ${asset}`;
+  } else if (assetEntries.length > 1) {
+    displayTotal = "Mixed Assets";
+  }
 
   return (
     <motion.div
@@ -80,9 +89,9 @@ export function TripCard({
                   <ReceiptText size={10} />
                   {expenseCount} expense{expenseCount !== 1 ? "s" : ""}
                 </span>
-                {totalXLM > 0 && (
+                {displayTotal && (
                   <span className="font-semibold text-[#555]">
-                    {totalXLM.toFixed(4)} XLM
+                    {displayTotal}
                   </span>
                 )}
               </div>

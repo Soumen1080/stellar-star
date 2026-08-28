@@ -37,6 +37,8 @@ export type ExpenseRow = {
   description: string | null;
   total_amount: string;
   currency: string;
+  exchange_rate: string | null;
+  exchange_rate_timestamp: string | null;
   split_mode: "equal" | "custom";
   paid_by_member_id: string;
   members: Json;
@@ -61,6 +63,20 @@ export type TripRow = {
   /** Derived by the `sync_member_wallets` trigger — read-only from the client. */
   member_wallets: string[];
   created_at: string;
+  updated_at: string;
+};
+
+export type AuthChallengeRow = {
+  nonce: string;
+  address: string;
+  expiration: number;
+  created_at: string;
+};
+
+export type AuthRateLimitRow = {
+  key: string;
+  count: number;
+  window_start: number;
   updated_at: string;
 };
 
@@ -94,9 +110,9 @@ export type Database = {
           settled?: boolean;
           version?: number;
         };
-        // `created_by_wallet` is absent by design: the database freezes it on
-        // update, so an edit by one member cannot transfer ownership.
-        Update: Partial<Omit<ExpenseRow, ServerManaged | "created_by_wallet">>;
+        // `created_by_wallet` and the amount/rate fields are absent by design:
+        // the database freezes them on update.
+        Update: Partial<Omit<ExpenseRow, ServerManaged | "created_by_wallet" | "total_amount" | "currency" | "exchange_rate" | "exchange_rate_timestamp">>;
         Relationships: [];
       };
       trips: {
@@ -110,6 +126,28 @@ export type Database = {
         Update: Partial<Omit<TripRow, ServerManaged | "created_by_wallet">>;
         Relationships: [];
       };
+      auth_challenges: {
+        Row: AuthChallengeRow;
+        Insert: {
+          nonce: string;
+          address: string;
+          expiration: number;
+          created_at?: string;
+        };
+        Update: Partial<AuthChallengeRow>;
+        Relationships: [];
+      };
+      auth_rate_limits: {
+        Row: AuthRateLimitRow;
+        Insert: {
+          key: string;
+          count?: number;
+          window_start: number;
+          updated_at?: string;
+        };
+        Update: Partial<AuthRateLimitRow>;
+        Relationships: [];
+      };
     };
     Views: { [_ in never]: never };
     Functions: {
@@ -117,21 +155,32 @@ export type Database = {
         Args: Record<string, never>;
         Returns: string;
       };
-      update_expense_versioned: {
+      consume_auth_challenge: {
         Args: {
-          p_id: string;
-          p_expected_version: number;
-          p_title?: string | null;
-          p_description?: string | null;
-          p_total_amount?: string | null;
-          p_currency?: string | null;
-          p_split_mode?: string | null;
-          p_paid_by_member_id?: string | null;
-          p_members?: Json | null;
-          p_shares?: Json | null;
-          p_settled?: boolean | null;
+          p_address: string;
+          p_nonce: string;
+          p_expiration: number;
+          p_now: number;
         };
-        Returns: ExpenseRow;
+        Returns: boolean;
+      };
+      record_auth_challenge: {
+        Args: {
+          p_address: string;
+          p_nonce: string;
+          p_expiration: number;
+          p_max_pending?: number;
+        };
+        Returns: boolean;
+      };
+      check_auth_rate_limit: {
+        Args: {
+          p_key: string;
+          p_limit: number;
+          p_window_ms: number;
+          p_now: number;
+        };
+        Returns: Json;
       };
     };
     Enums: { [_ in never]: never };
@@ -145,3 +194,5 @@ export type TripInsert = Database["public"]["Tables"]["trips"]["Insert"];
 export type TripUpdate = Database["public"]["Tables"]["trips"]["Update"];
 export type UserInsert = Database["public"]["Tables"]["users"]["Insert"];
 export type UserUpdate = Database["public"]["Tables"]["users"]["Update"];
+export type AuthChallengeInsert = Database["public"]["Tables"]["auth_challenges"]["Insert"];
+

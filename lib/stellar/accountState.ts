@@ -22,8 +22,38 @@
 import { HORIZON_URL } from "@/lib/utils/constants";
 import { assetKey, fromHorizonFields, isNative, type AssetRef } from "@/lib/stellar/assets";
 
-/** Stellar's base reserve, in stroops. 0.5 XLM at protocol 19+. */
+/** Stellar's base reserve, in stroops. 0.5 XLM at protocol 19+. Now fetched dynamically. */
 export const BASE_RESERVE_STROOPS = 5_000_000n;
+
+let cachedBaseReserveStroops = BASE_RESERVE_STROOPS;
+let lastBaseReserveFetch = 0;
+
+/** Fetches the live base reserve from the network, with a 60s cache. */
+export async function getNetworkBaseReserve(
+  horizonUrl: string = HORIZON_URL,
+  fetchImpl: typeof fetch = fetch,
+): Promise<bigint> {
+  const now = Date.now();
+  if (now - lastBaseReserveFetch < 60_000) return cachedBaseReserveStroops;
+
+  try {
+    const res = await fetchImpl(`${horizonUrl}/ledgers?order=desc&limit=1`, {
+      cache: "no-store",
+      headers: { "Cache-Control": "no-cache" },
+    });
+    if (res.ok) {
+      const data = await res.json();
+      const val = data._embedded?.records?.[0]?.base_reserve_in_stroops;
+      if (val) {
+        cachedBaseReserveStroops = BigInt(val);
+        lastBaseReserveFetch = now;
+      }
+    }
+  } catch (e) {
+    // Silently fallback to cache
+  }
+  return cachedBaseReserveStroops;
+}
 
 /** Every account carries two base reserves before any subentries. */
 export const BASE_ACCOUNT_SUBENTRIES = 2n;
@@ -45,21 +75,43 @@ export interface AccountState {
   balanceStroops: bigint;
   /** Minimum balance this account must retain, in stroops. */
   reserveStroops: bigint;
-  /** Balance above the reserve — what can actually be spent. */
+  /** The live network base reserve used for this calculation. */
+  baseReserveStroops: bigint;
+  /** Balance above the reserve and liabilities — what can actually be spent. */
   spendableStroops: bigint;
   /** Number of subentries (trustlines, offers, signers). */
   subentryCount: number;
+  /** Number of subentries sponsored by someone else. */
+  numSponsored: number;
+  /** Number of subentries this account is sponsoring. */
+  numSponsoring: number;
   /** Assets this account can receive, beyond native. */
-  trustlines: AssetRef[];
+  trustlines: TrustlineState[];
   /** True when the account's reserves are paid by a sponsor. */
   sponsored: boolean;
   /** The sponsor's address, when sponsored. */
   sponsorId: string | null;
 }
 
-/** Minimum balance for an account with `subentries` subentries, in stroops. */
-export function minimumBalanceStroops(subentries: number): bigint {
-  return (BASE_ACCOUNT_SUBENTRIES + BigInt(subentries)) * BASE_RESERVE_STROOPS;
+export interface TrustlineState extends AssetRef {
+  balanceStroops: bigint;
+  limitStroops: bigint;
+  buyingLiabilitiesStroops: bigint;
+  sellingLiabilitiesStroops: bigint;
+  isAuthorized: boolean;
+  isAuthorizedToMaintainLiabilities: boolean;
+  sponsor?: string;
+}
+
+/** Minimum balance for an account, accounting for sponsored reserves. */
+export function minimumBalanceStroops(
+  subentries: number,
+  numSponsoring: number,
+  numSponsored: number,
+  baseReserveStroops: bigint
+): bigint {
+  const effectiveEntries = BASE_ACCOUNT_SUBENTRIES + BigInt(subentries) + BigInt(numSponsoring) - BigInt(numSponsored);
+  return (effectiveEntries > 0n ? effectiveEntries : 0n) * baseReserveStroops;
 }
 
 /**
@@ -69,8 +121,8 @@ export function minimumBalanceStroops(subentries: number): bigint {
  * enough to have an account, you need half a lumen more for each asset you
  * want to hold.
  */
-export function trustlineReserveStroops(): bigint {
-  return BASE_RESERVE_STROOPS;
+export function trustlineReserveStroops(baseReserveStroops: bigint): bigint {
+  return baseReserveStroops;
 }
 
 export function stroopsToXlm(stroops: bigint): string {
@@ -84,6 +136,12 @@ interface HorizonBalance {
   asset_code?: string | null;
   asset_issuer?: string | null;
   balance?: string;
+  limit?: string;
+  buying_liabilities?: string;
+  selling_liabilities?: string;
+  is_authorized?: boolean;
+  is_authorized_to_maintain_liabilities?: boolean;
+  sponsor?: string;
 }
 
 interface HorizonAccount {
@@ -117,14 +175,19 @@ export async function getAccountState(
     headers: { "Cache-Control": "no-cache" },
   });
 
+  const baseReserveStroops = await getNetworkBaseReserve(horizonUrl, fetchImpl);
+
   if (response.status === 404) {
     return {
       publicKey,
       status: "unfunded",
       balanceStroops: 0n,
-      reserveStroops: minimumBalanceStroops(0),
+      baseReserveStroops,
+      reserveStroops: minimumBalanceStroops(0, 0, 0, baseReserveStroops),
       spendableStroops: 0n,
       subentryCount: 0,
+      numSponsored: 0,
+      numSponsoring: 0,
       trustlines: [],
       sponsored: false,
       sponsorId: null,
@@ -143,25 +206,41 @@ export async function getAccountState(
 
   const native = balances.find((b) => b.asset_type === "native");
   const balanceStroops = native?.balance ? parseXlm(native.balance) : 0n;
+  const nativeSellingLiabilities = native?.selling_liabilities ? parseXlm(native.selling_liabilities) : 0n;
 
   const subentryCount = account.subentry_count ?? 0;
-  const reserveStroops = minimumBalanceStroops(subentryCount);
-  const spendableStroops =
-    balanceStroops > reserveStroops ? balanceStroops - reserveStroops : 0n;
+  const numSponsoring = account.num_sponsoring ?? 0;
+  const numSponsored = account.num_sponsored ?? 0;
+  const reserveStroops = minimumBalanceStroops(subentryCount, numSponsoring, numSponsored, baseReserveStroops);
+  
+  const totalLocked = reserveStroops + nativeSellingLiabilities;
+  const spendableStroops = balanceStroops > totalLocked ? balanceStroops - totalLocked : 0n;
 
-  const trustlines = balances
+  const trustlines: TrustlineState[] = balances
     .filter((b) => b.asset_type && b.asset_type !== "native")
-    .map((b) => fromHorizonFields(b.asset_type, b.asset_code, b.asset_issuer));
+    .map((b) => ({
+      ...fromHorizonFields(b.asset_type, b.asset_code, b.asset_issuer),
+      balanceStroops: parseXlm(b.balance ?? "0"),
+      limitStroops: parseXlm(b.limit ?? "0"),
+      buyingLiabilitiesStroops: parseXlm(b.buying_liabilities ?? "0"),
+      sellingLiabilitiesStroops: parseXlm(b.selling_liabilities ?? "0"),
+      isAuthorized: b.is_authorized ?? false,
+      isAuthorizedToMaintainLiabilities: b.is_authorized_to_maintain_liabilities ?? false,
+      sponsor: b.sponsor,
+    }));
 
   return {
     publicKey,
     status: spendableStroops > 0n ? "funded" : "reserve_locked",
     balanceStroops,
+    baseReserveStroops,
     reserveStroops,
     spendableStroops,
     subentryCount,
+    numSponsored,
+    numSponsoring,
     trustlines,
-    sponsored: Boolean(account.sponsor) || (account.num_sponsored ?? 0) > 0,
+    sponsored: Boolean(account.sponsor) || numSponsored > 0,
     sponsorId: account.sponsor ?? null,
   };
 }
@@ -173,13 +252,18 @@ export function canReceive(state: AccountState, asset: AssetRef): boolean {
   return state.trustlines.some((line) => assetKey(line) === assetKey(asset));
 }
 
-/** What stands between this account and receiving `asset`. */
 export type OnboardingNeed =
   | { kind: "none" }
   /** The account does not exist and must be created. */
   | { kind: "account_creation"; reserveStroops: bigint }
-  /** The account exists but needs a trustline it cannot afford. */
-  | { kind: "trustline"; asset: AssetRef; reserveStroops: bigint; affordable: boolean };
+  /** The account exists but needs a trustline. */
+  | { kind: "trustline_missing"; asset: AssetRef; reserveStroops: bigint; affordable: boolean }
+  /** The trustline exists, but the user is completely unauthorized by the issuer. */
+  | { kind: "trustline_unauthorized"; asset: AssetRef; state: TrustlineState }
+  /** The trustline exists, but the user is only authorized to maintain liabilities (cannot receive). */
+  | { kind: "trustline_auth_maintain"; asset: AssetRef; state: TrustlineState }
+  /** The trustline exists, but has insufficient limit capacity to receive more. */
+  | { kind: "trustline_at_limit"; asset: AssetRef; state: TrustlineState };
 
 export function describeOnboardingNeed(
   state: AccountState,
@@ -189,20 +273,39 @@ export function describeOnboardingNeed(
     // A bare account plus one trustline, so the created account can actually
     // hold the asset rather than needing a second top-up immediately.
     const needed = isNative(asset)
-      ? minimumBalanceStroops(0)
-      : minimumBalanceStroops(1);
+      ? minimumBalanceStroops(0, 0, 0, state.baseReserveStroops)
+      : minimumBalanceStroops(1, 0, 0, state.baseReserveStroops);
     return { kind: "account_creation", reserveStroops: needed };
   }
 
-  if (isNative(asset) || canReceive(state, asset)) {
+  if (isNative(asset)) {
     return { kind: "none" };
   }
 
-  const needed = trustlineReserveStroops();
-  return {
-    kind: "trustline",
-    asset,
-    reserveStroops: needed,
-    affordable: state.spendableStroops >= needed,
-  };
+  const existing = state.trustlines.find((line) => assetKey(line) === assetKey(asset));
+
+  if (!existing) {
+    const needed = trustlineReserveStroops(state.baseReserveStroops);
+    return {
+      kind: "trustline_missing",
+      asset,
+      reserveStroops: needed,
+      affordable: state.spendableStroops >= needed,
+    };
+  }
+
+  if (!existing.isAuthorized) {
+    if (existing.isAuthorizedToMaintainLiabilities) {
+      return { kind: "trustline_auth_maintain", asset, state: existing };
+    }
+    return { kind: "trustline_unauthorized", asset, state: existing };
+  }
+
+  // A very crude heuristic for "at limit". If available capacity is near zero.
+  // We compare balance + buying_liabilities to limit. If it's equal, we are at limit.
+  if (existing.balanceStroops + existing.buyingLiabilitiesStroops >= existing.limitStroops) {
+    return { kind: "trustline_at_limit", asset, state: existing };
+  }
+
+  return { kind: "none" };
 }

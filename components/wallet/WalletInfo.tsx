@@ -5,7 +5,7 @@ import { Copy, Check, RefreshCw, ExternalLink, LogOut } from "lucide-react";
 import { useWallet } from "@/hooks/useWallet";
 import { Spinner } from "@/components/ui/Spinner";
 import { formatAddress, formatXLM } from "@/lib/utils";
-import { STELLAR_EXPLORER } from "@/lib/utils/constants";
+import { STELLAR_EXPLORER, networkLabel } from "@/lib/utils/constants";
 import { cn } from "@/lib/utils";
 
 /**
@@ -57,7 +57,7 @@ export function WalletInfo({ className }: { className?: string }) {
             isMainnet ? "bg-blue-600" : "bg-[#134E4A] animate-pulse"
           )}
         />
-        {isMainnet ? "Stellar Mainnet" : "Stellar Testnet"}
+        {networkLabel(network)}
       </div>
 
       <div className="p-4 sm:p-5">

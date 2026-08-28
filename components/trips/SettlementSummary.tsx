@@ -14,6 +14,7 @@ import { signXDR } from "@/lib/freighter";
 import { useWallet } from "@/hooks/useWallet";
 import { useExpense } from "@/hooks/useExpense";
 import { useToast } from "@/components/ui/Toast";
+import { parseAssetKey, assetKey } from "@/lib/stellar/assets";
 import { NETWORK_PASSPHRASE } from "@/lib/utils/constants";
 import { PayButton } from "@/components/payment/PayButton";
 import { TransactionHash } from "@/components/payment/TransactionHash";
@@ -46,6 +47,7 @@ function deriveRawDebts(expenses: Expense[]): RawDebt[] {
         from:       share.name,
         to:         payer.name,
         amount:     parseFloat(share.amount),
+        asset:      expense.currency || "XLM",
         fromWallet: share.walletAddress,
         toWallet:   payer.walletAddress,
       });
@@ -67,7 +69,8 @@ function xlmToStroops(amount: string | number): string {
 function buildDebtKey(tripId: string, debt: RawDebt) {
   if (!debt.fromWallet) return null;
   const amountStroops = xlmToStroops(debt.amount);
-  return `${tripId}:${debt.expenseId}:${debt.fromWallet.toLowerCase()}:${amountStroops}`;
+  const canonicalAsset = assetKey(parseAssetKey(debt.asset));
+  return `${tripId}:${debt.expenseId}:${debt.fromWallet.toLowerCase()}:${amountStroops}:${canonicalAsset}`;
 }
 
 function NetPaymentRow({
@@ -115,7 +118,8 @@ function NetPaymentRow({
     if (!payment.toWallet) return;
     await payNetSettlement({
       debts: payment.settledDebts,
-      totalAmountXlm: payment.amount,
+      totalAmount: payment.amount,
+      asset: payment.asset,
       payerWalletAddress: payment.toWallet,
       tripName,
     });
@@ -144,13 +148,13 @@ function NetPaymentRow({
         <div className="flex items-center justify-between sm:justify-end gap-2">
           <span className="text-sm font-bold">
             {parseFloat(payment.amount).toFixed(4)}{" "}
-            <span className="text-[10px] font-normal text-[#888]">XLM</span>
+            <span className="text-[10px] font-normal text-[#888]">{payment.asset}</span>
           </span>
 
           {hasPendingRetry && paymentState.status === "partial_success" ? (
             <div className="flex flex-col gap-1 items-end">
               <span className="text-[10px] text-orange-600 font-medium">
-                XLM sent. Pool record failed.
+                {payment.asset} sent. Pool record failed.
               </span>
               <button
                 onClick={retryOnChainRecord}
