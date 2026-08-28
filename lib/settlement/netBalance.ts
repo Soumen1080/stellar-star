@@ -1,10 +1,12 @@
+import { Money } from "@/lib/money";
+
 export interface RawDebt {
   expenseId: string;
   fromId: string;
   toId: string;
   from: string;
   to: string;
-  amount: number;
+  amount: number | string | Money;
   asset: string;
   fromWallet?: string;
   toWallet?: string;
@@ -32,18 +34,17 @@ export function computeNetPayments(debts: RawDebt[]): NetPayment[] {
 
   const result: NetPayment[] = [];
   grouped.forEach((debtsInGroup) => {
-    let total = 0;
+    let totalMoney = Money.zero();
     for (const d of debtsInGroup) {
-      total += d.amount;
+      totalMoney = totalMoney.plus(d.amount);
     }
-    const rounded = Math.round(total * 1e7) / 1e7;
-    
-    if (rounded > 0.0000001) {
+
+    if (totalMoney.isPositive()) {
       const first = debtsInGroup[0];
       result.push({
         from: first.from,
         to: first.to,
-        amount: rounded.toFixed(7),
+        amount: totalMoney.format(7),
         asset: first.asset,
         fromWallet: first.fromWallet,
         toWallet: first.toWallet,
