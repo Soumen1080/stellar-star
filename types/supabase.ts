@@ -37,6 +37,8 @@ export type ExpenseRow = {
   description: string | null;
   total_amount: string;
   currency: string;
+  exchange_rate: string | null;
+  exchange_rate_timestamp: string | null;
   split_mode: "equal" | "custom";
   paid_by_member_id: string;
   members: Json;
@@ -63,25 +65,18 @@ export type TripRow = {
   updated_at: string;
 };
 
-export type SettlementIntentRow = {
-  id: string;
-  idempotency_key: string;
-  trip_id: string;
-  expense_id: string;
-  member_id: string;
-  payer_wallet: string;
-  member_wallet: string;
-  amount: string;
-  currency: string;
-  status: "pending" | "submitting" | "submitted" | "recorded" | "failed" | "cancelled";
-  tx_hash: string | null;
-  ledger: number | null;
-  on_chain: boolean;
-  error_message: string | null;
-  created_by_wallet: string;
+export type AuthChallengeRow = {
+  nonce: string;
+  address: string;
+  expiration: number;
   created_at: string;
+};
+
+export type AuthRateLimitRow = {
+  key: string;
+  count: number;
+  window_start: number;
   updated_at: string;
-  expires_at: string;
 };
 
 export type Database = {
@@ -113,9 +108,9 @@ export type Database = {
           currency?: string;
           settled?: boolean;
         };
-        // `created_by_wallet` is absent by design: the database freezes it on
-        // update, so an edit by one member cannot transfer ownership.
-        Update: Partial<Omit<ExpenseRow, ServerManaged | "created_by_wallet">>;
+        // `created_by_wallet` and the amount/rate fields are absent by design:
+        // the database freezes them on update.
+        Update: Partial<Omit<ExpenseRow, ServerManaged | "created_by_wallet" | "total_amount" | "currency" | "exchange_rate" | "exchange_rate_timestamp">>;
         Relationships: [];
       };
       trips: {
@@ -129,21 +124,26 @@ export type Database = {
         Update: Partial<Omit<TripRow, ServerManaged | "created_by_wallet">>;
         Relationships: [];
       };
-      settlement_intents: {
-        Row: SettlementIntentRow;
-        Insert: Omit<SettlementIntentRow, "id" | "created_at" | "updated_at"> & {
-          id?: string;
+      auth_challenges: {
+        Row: AuthChallengeRow;
+        Insert: {
+          nonce: string;
+          address: string;
+          expiration: number;
           created_at?: string;
-          updated_at?: string;
-          expires_at?: string;
-          currency?: string;
-          status?: SettlementIntentRow["status"];
-          on_chain?: boolean;
-          tx_hash?: string | null;
-          ledger?: number | null;
-          error_message?: string | null;
         };
-        Update: Partial<Omit<SettlementIntentRow, "id" | "created_at" | "updated_at">>;
+        Update: Partial<AuthChallengeRow>;
+        Relationships: [];
+      };
+      auth_rate_limits: {
+        Row: AuthRateLimitRow;
+        Insert: {
+          key: string;
+          count?: number;
+          window_start: number;
+          updated_at?: string;
+        };
+        Update: Partial<AuthRateLimitRow>;
         Relationships: [];
       };
     };
@@ -153,21 +153,32 @@ export type Database = {
         Args: Record<string, never>;
         Returns: string;
       };
-      mark_share_paid: {
+      consume_auth_challenge: {
         Args: {
-          p_expense_id: string;
-          p_member_id: string;
-          p_tx_hash: string;
-          p_on_chain?: boolean;
+          p_address: string;
+          p_nonce: string;
+          p_expiration: number;
+          p_now: number;
         };
-        Returns: ExpenseRow;
+        Returns: boolean;
       };
-      mark_shares_paid_batch: {
+      record_auth_challenge: {
         Args: {
-          p_updates: Json;
-          p_tx_hash: string;
+          p_address: string;
+          p_nonce: string;
+          p_expiration: number;
+          p_max_pending?: number;
         };
-        Returns: ExpenseRow[];
+        Returns: boolean;
+      };
+      check_auth_rate_limit: {
+        Args: {
+          p_key: string;
+          p_limit: number;
+          p_window_ms: number;
+          p_now: number;
+        };
+        Returns: Json;
       };
     };
     Enums: { [_ in never]: never };
@@ -181,6 +192,5 @@ export type TripInsert = Database["public"]["Tables"]["trips"]["Insert"];
 export type TripUpdate = Database["public"]["Tables"]["trips"]["Update"];
 export type UserInsert = Database["public"]["Tables"]["users"]["Insert"];
 export type UserUpdate = Database["public"]["Tables"]["users"]["Update"];
-export type SettlementIntentInsert = Database["public"]["Tables"]["settlement_intents"]["Insert"];
-export type SettlementIntentUpdate = Database["public"]["Tables"]["settlement_intents"]["Update"];
+export type AuthChallengeInsert = Database["public"]["Tables"]["auth_challenges"]["Insert"];
 

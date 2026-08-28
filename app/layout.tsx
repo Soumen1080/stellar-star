@@ -6,6 +6,8 @@ import { AuthProvider } from "@/context/AuthContext";
 import { ToastProvider } from "@/components/ui/Toast";
 import { ExpenseProvider } from "@/context/ExpenseContext";
 import { TripProvider } from "@/context/TripContext";
+import { ConfigProvider } from "@/components/system/ConfigProvider";
+import { NetworkMismatchBanner } from "@/components/system/NetworkMismatchBanner";
 
 
 const poppins = Poppins({
@@ -97,7 +99,10 @@ export default function RootLayout({
             <AuthProvider>
               <ExpenseProvider>
                 <TripProvider>
-                  {children}
+                  <ConfigProvider>
+                    <NetworkMismatchBanner />
+                    {children}
+                  </ConfigProvider>
                 </TripProvider>
               </ExpenseProvider>
             </AuthProvider>

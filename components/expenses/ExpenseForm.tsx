@@ -56,7 +56,19 @@ export function ExpenseForm({
           value={form.totalAmount}
           onChange={(event) => form.setTotalAmount(event.target.value)}
           error={form.errors.totalAmount}
-          trailing={<span className="text-xs font-semibold">XLM</span>}
+          trailing={
+            <select
+              value={form.currency}
+              onChange={(e) => form.setCurrency(e.target.value)}
+              className="bg-transparent text-xs font-semibold text-[#0F0F14] outline-none cursor-pointer"
+            >
+              <option value="XLM">XLM</option>
+              <option value="USD">USD</option>
+              <option value="EUR">EUR</option>
+              <option value="GBP">GBP</option>
+              <option value="INR">INR</option>
+            </select>
+          }
         />
         <ExpenseSplitModeControl value={form.splitMode} onChange={form.setSplitMode} />
       </div>

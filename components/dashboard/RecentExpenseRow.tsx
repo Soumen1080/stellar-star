@@ -12,6 +12,10 @@ export function RecentExpenseRow({ expense }: { expense: Expense }) {
     month: "short",
     day: "numeric",
   });
+  const fiatAmount =
+    expense.currency !== "XLM" && expense.exchangeRate
+      ? (parseFloat(expense.totalAmount) / parseFloat(expense.exchangeRate)).toFixed(2)
+      : null;
 
   return (
     <Link
@@ -28,7 +32,7 @@ export function RecentExpenseRow({ expense }: { expense: Expense }) {
       <div className="flex-1 min-w-0">
         <p className="text-sm font-semibold text-[#0F0F14] truncate">{expense.title}</p>
         <p className="text-[11px] text-[#AAA]">
-          {total.toFixed(4)} XLM &middot; {expense.members.length} members &middot; {date}
+          {total.toFixed(4)} XLM{fiatAmount ? ` (~${fiatAmount} ${expense.currency})` : ""} &middot; {expense.members.length} members &middot; {date}
         </p>
       </div>
       <div className="shrink-0 flex items-center gap-2">

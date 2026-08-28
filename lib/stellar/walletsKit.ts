@@ -7,6 +7,7 @@ import {
   getNetwork,
 } from "@stellar/freighter-api";
 import { STELLAR_NETWORK } from "@/lib/utils/constants";
+import { getE2eTestWallet } from "./e2eWallet";
 
 // ─── Wallet IDs ───────────────────────────────────────────────────────────────
 
@@ -36,17 +37,7 @@ export interface SupportedWallet {
   isInstalled: () => Promise<boolean>;
 }
 
-/**
- * Test-only wallet bypass for Playwright e2e runs. Active whenever a test has
- * injected window.__E2E_WALLET__ via the mockWallet() helper in e2e/helpers.ts.
- * The presence of the injected object is the sole gating signal – this avoids
- * reliance on NEXT_PUBLIC_E2E_TEST_MODE being baked into the bundle (which
- * fails when Playwright reuses an already-running dev server).
- */
-function e2eTestWallet(): { address: string } | null {
-  if (typeof window === "undefined") return null;
-  return (window as unknown as { __E2E_WALLET__?: { address: string } }).__E2E_WALLET__ ?? null;
-}
+// ─── Wallet descriptor ────────────────────────────────────────────────────────
 
 const SUPPORTED_WALLETS: SupportedWallet[] = [
   {
@@ -55,7 +46,7 @@ const SUPPORTED_WALLETS: SupportedWallet[] = [
     logoUrl:    "/wallets/freighter.svg",
     installUrl: "https://www.freighter.app/",
     isInstalled: async () => {
-      if (e2eTestWallet()) return true;
+      if (getE2eTestWallet()) return true;
       if (typeof window === "undefined") return false;
       const win = window as unknown as { freighter?: unknown; freighterApi?: unknown };
       if (win.freighter || win.freighterApi) return true;
@@ -341,7 +332,7 @@ export class StellarWalletsKit {
   }
 
   private async freighterGetAddress(): Promise<GetAddressResult> {
-    const testWallet = e2eTestWallet();
+    const testWallet = getE2eTestWallet();
     if (testWallet) return { address: testWallet.address };
 
     try {
@@ -404,11 +395,9 @@ export class StellarWalletsKit {
   }
 
   private async freighterSign(xdr: string, opts: SignTransactionOptions): Promise<SignTransactionResult> {
-    const testWallet = e2eTestWallet();
+    const testWallet = getE2eTestWallet();
     if (testWallet) {
-      const signedTxXdr = await (window as unknown as {
-        __E2E_WALLET__: { signXDR: (xdr: string) => Promise<string> };
-      }).__E2E_WALLET__.signXDR(xdr);
+      const signedTxXdr = await testWallet.signXDR(xdr);
       return { signedTxXdr };
     }
 

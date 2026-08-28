@@ -10,8 +10,15 @@ import React, {
 } from "react";
 import { getFreighterNetwork, isFreighterInstalled } from "@/lib/freighter";
 import { getWalletsKit, FREIGHTER_ID, StellarWalletsKit, type WalletId } from "@/lib/stellar/walletsKit";
+import { getE2eTestWallet } from "@/lib/stellar/e2eWallet";
 import { getXLMBalance } from "@/lib/stellar/getBalance";
-import { LS_PUBLIC_KEY } from "@/lib/utils/constants";
+import {
+  LS_PUBLIC_KEY,
+  STELLAR_NETWORK,
+  NETWORK_LABEL,
+  networkLabel,
+} from "@/lib/utils/constants";
+import { reportError } from "@/lib/observability/reportError";
 import type { WalletContextType } from "@/types/wallet";
 import { useToast } from "@/components/ui/Toast";
 import { resetSupabaseClient } from "@/lib/supabase/client";
@@ -34,6 +41,56 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
   const isConnected = !!publicKey;
   const didMount    = useRef(false);
   const { error: toastError, success: toastSuccess, info: toastInfo } = useToast();
+
+  // The network this deployment is configured for. A connected wallet whose
+  // `network` differs from this is on the wrong network and must be blocked
+  // from signing (see the payment hooks and NetworkMismatchBanner).
+  const appNetwork = STELLAR_NETWORK;
+
+  /**
+   * Live re-check of the wallet's network while connected.
+   *
+   * Freighter lets the user switch networks without reconnecting, which would
+   * leave `network` stale and a mismatch undetected. We re-read it on an
+   * interval so a mid-session switch is caught before the next signing.
+   */
+  useEffect(() => {
+    if (typeof window === "undefined" || !isConnected) return;
+    let active = true;
+    const check = async () => {
+      try {
+        const net = await getFreighterNetwork().catch(() => "TESTNET");
+        if (active) setNetwork(net);
+      } catch {
+        /* keep last known network */
+      }
+    };
+    check();
+    const id = setInterval(check, 10_000);
+    return () => {
+      active = false;
+      clearInterval(id);
+    };
+  }, [isConnected]);
+
+  // Surface a wallet/app network mismatch exactly once, when it first appears.
+  const prevMismatch = useRef(false);
+  const networkMismatch =
+    isConnected && network != null && network !== appNetwork;
+
+  useEffect(() => {
+    if (networkMismatch && !prevMismatch.current && network) {
+      const msg =
+        `Your wallet is on ${networkLabel(network)}, but this app is configured for ` +
+        `${NETWORK_LABEL}. Switch your wallet to ${NETWORK_LABEL} and reconnect before paying.`;
+      toastError("Network mismatch", msg);
+      reportError("wallet.network-mismatch", new Error(msg), {
+        walletNetwork: network,
+        appNetwork,
+      });
+    }
+    prevMismatch.current = networkMismatch;
+  }, [networkMismatch, network, appNetwork, toastError]);
 
   const fetchBalance = useCallback(async (pk: string, silent = false) => {
     if (!silent) setLoadingBal(true);
@@ -121,16 +178,15 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     setError(null);
 
     try {
-      // ── E2E bypass: skip the wallet-selection modal when a test wallet is
-      //    injected by Playwright's mockWallet() helper.  This avoids race
-      //    conditions in the async modal click-handler chain.
-      const e2eWallet = typeof window !== "undefined"
-        ? (window as unknown as { __E2E_WALLET__?: { address: string } }).__E2E_WALLET__
-        : undefined;
+      // ── E2E test seam ──────────────────────────────────────────────────────
+      // Only active when the app was built with NEXT_PUBLIC_E2E_TEST_MODE=true
+      // (see lib/stellar/e2eWallet.ts). In a normal production build this
+      // branch is unreachable and is removed by the minifier, so no UI-state
+      // impersonation primitive ships to users.
+      const e2eWallet = getE2eTestWallet();
 
       if (e2eWallet) {
-        const kit = getWalletsKit();
-        kit.setWallet(FREIGHTER_ID);
+        getWalletsKit().setWallet(FREIGHTER_ID);
 
         setPublicKey(e2eWallet.address);
         setNetwork("TESTNET");
@@ -172,7 +228,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       localStorage.setItem("StellarStar:walletId", selectedId);
       toastSuccess(
         "Wallet connected",
-        `${resolvedAddress.slice(0, 6)}...${resolvedAddress.slice(-4)} on ${net === "PUBLIC" ? "Mainnet" : "Testnet"}`
+          `${resolvedAddress.slice(0, 6)}...${resolvedAddress.slice(-4)} on ${networkLabel(net)}`
       );
 
       fetchBalance(resolvedAddress);
@@ -217,6 +273,8 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     publicKey,
     balance,
     network,
+    appNetwork,
+    networkMismatch,
     isConnected,
     isConnecting,
     isHydrated,

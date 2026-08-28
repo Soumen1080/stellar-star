@@ -15,7 +15,14 @@ import { signXDR } from "@/lib/freighter";
 import { useWallet } from "@/hooks/useWallet";
 import { useExpense } from "@/hooks/useExpense";
 import { useToast } from "@/components/ui/Toast";
-import { NETWORK_PASSPHRASE, STELLAR_EXPLORER, CONTRACT_ID } from "@/lib/utils/constants";
+import {
+  NETWORK_PASSPHRASE,
+  STELLAR_EXPLORER,
+  CONTRACT_ID,
+  STELLAR_NETWORK,
+} from "@/lib/utils/constants";
+import { reportError } from "@/lib/observability/reportError";
+import { networkMismatchMessage } from "@/lib/stellar/networkMismatch";
 import {
   savePendingNetSettlement,
   loadPendingNetSettlement,
@@ -61,13 +68,14 @@ export interface RawDebt {
 
 interface PayNetParams {
   debts: RawDebt[];
-  totalAmountXlm: string;
+  totalAmount: string;
+  asset: string;
   payerWalletAddress: string;
   tripName: string;
 }
 
 export function useNetPayment({ tripId }: UseNetPaymentOpts) {
-  const { publicKey, refreshBalance } = useWallet();
+  const { publicKey, refreshBalance, network } = useWallet();
   const { markSharePaid } = useExpense();
   const { success: toastSuccess, error: toastError, info: toastInfo } = useToast();
 
@@ -272,11 +280,28 @@ export function useNetPayment({ tripId }: UseNetPaymentOpts) {
   }, [pendingNetSettlement, toastError, toastSuccess, loadPoolBalance, clearPersistedPending]);
 
   const payNetSettlement = useCallback(
-    async ({ debts, totalAmountXlm, payerWalletAddress, tripName }: PayNetParams) => {
+    async ({ debts, totalAmount, asset, payerWalletAddress, tripName }: PayNetParams) => {
       if (!publicKey) {
         toastError("Wallet not connected", "Please connect your Freighter wallet first.");
         return;
       }
+
+      // Invariant 2: block signing when the wallet is on a different network
+      // than the app (the wallet's network can change mid-session).
+      const mismatchMsg = networkMismatchMessage(network);
+      if (mismatchMsg) {
+        setPaymentState({ status: "blocked", message: mismatchMsg });
+        toastError("Network mismatch", mismatchMsg);
+        reportError("payment.blocked-network-mismatch", new Error(mismatchMsg), {
+          stage: "payNetSettlement",
+          totalAmountXlm,
+          tripId,
+          walletNetwork: network,
+          appNetwork: STELLAR_NETWORK,
+        });
+        return;
+      }
+
       if (!payerWalletAddress) {
         toastError("No wallet address", "The recipient doesn't have a Stellar address.");
         return;
@@ -307,8 +332,9 @@ export function useNetPayment({ tripId }: UseNetPaymentOpts) {
       }
 
       try {
-        if (CONTRACT_ID && tripId) {
-          const poolCheck = await precheckPoolBalance(publicKey, publicKey, totalAmountXlm);
+        // Pool check only applies to XLM settlements since the pool only stores XLM.
+        if (CONTRACT_ID && tripId && asset === "native") {
+          const poolCheck = await precheckPoolBalance(publicKey, publicKey, totalAmount);
           if (!poolCheck.ok) {
             const msg =
               poolCheck.error ?? "Add enough pool credit before sending this settlement.";
@@ -327,7 +353,8 @@ export function useNetPayment({ tripId }: UseNetPaymentOpts) {
         const { xdr } = await buildPaymentTransaction({
           sourcePublicKey:      publicKey,
           destinationPublicKey: payerWalletAddress,
-          amount:               totalAmountXlm,
+          amount:               totalAmount,
+          asset:                asset,
           memoText,
         });
 
@@ -347,7 +374,9 @@ export function useNetPayment({ tripId }: UseNetPaymentOpts) {
         
         const mappedDebts = debts.map(d => ({ expenseId: d.expenseId, amountXlm: d.amount.toString() }));
 
-        if (CONTRACT_ID && tripId) {
+        // We only attempt to record on-chain if the asset is native (XLM)
+        // because the contract currently uses SETTLEMENT_ASSET_ID which is XLM.
+        if (CONTRACT_ID && tripId && asset === "native") {
           setPaymentState({ status: "recording", step: "simulating" });
 
           // One attestation per debt: the contract records each expense
@@ -365,7 +394,7 @@ export function useNetPayment({ tripId }: UseNetPaymentOpts) {
 
           if (!attested.ok) {
             onChainError = attested.message;
-            buildAndPersistPending(result.hash, result.ledger, payerWalletAddress, totalAmountXlm, mappedDebts, memoText);
+            buildAndPersistPending(result.hash, result.ledger, payerWalletAddress, totalAmount, mappedDebts, memoText);
           } else {
             const contractResult = await recordNetSettlementOnChain({
               memberPublicKey: publicKey,
@@ -384,7 +413,7 @@ export function useNetPayment({ tripId }: UseNetPaymentOpts) {
               loadPoolBalance();
             } else {
               onChainError = contractResult.error ?? "On-chain recording failed.";
-              buildAndPersistPending(result.hash, result.ledger, payerWalletAddress, totalAmountXlm, mappedDebts, memoText);
+              buildAndPersistPending(result.hash, result.ledger, payerWalletAddress, totalAmount, mappedDebts, memoText);
             }
           }
         }
@@ -410,6 +439,13 @@ export function useNetPayment({ tripId }: UseNetPaymentOpts) {
             onChain: false,
             message: onChainError,
           });
+          reportError("payment.onchain-proof-failed", new Error(onChainError), {
+            stage: "payNetSettlement",
+            hash: result.hash,
+            ledger: result.ledger,
+            totalAmountXlm,
+            tripId,
+          });
           toastInfo(
             "Payment sent — recorded off-chain only",
             "The XLM transfer succeeded, but this settlement has no on-chain proof yet. Use retry to add it.",
@@ -420,11 +456,12 @@ export function useNetPayment({ tripId }: UseNetPaymentOpts) {
         }
 
         setPaymentState({ status: "success", hash: result.hash, ledger: result.ledger, onChain });
+        const displayAsset = asset === "native" ? "XLM" : asset.split(":")[0];
         toastSuccess(
           `Settlement sent!`,
           onChain
-            ? `Paid ${parseFloat(totalAmountXlm).toFixed(4)} XLM. TX: ${result.hash.slice(0, 12)}... · Recorded on-chain`
-            : `Paid ${parseFloat(totalAmountXlm).toFixed(4)} XLM. TX: ${result.hash.slice(0, 12)}...`,
+            ? `Paid ${parseFloat(totalAmount).toFixed(4)} ${displayAsset}. TX: ${result.hash.slice(0, 12)}... · Recorded on-chain`
+            : `Paid ${parseFloat(totalAmount).toFixed(4)} ${displayAsset}. TX: ${result.hash.slice(0, 12)}...`,
         );
 
         setTimeout(() => refreshBalance(), 3000);
@@ -434,13 +471,14 @@ export function useNetPayment({ tripId }: UseNetPaymentOpts) {
         const isRejected = /reject|denied|cancel/i.test(message.toLowerCase());
         const display    = isRejected ? "Transaction cancelled in wallet." : message;
 
-        for (const intent of acquiredIntents) {
-          markIntentFailed(intent.id, display).catch(() => {});
-        }
-
-        setPaymentState({ status: "error", message: display });
-        toastError("Payment failed", display);
-      }
+      setPaymentState({ status: "error", message: display });
+      reportError("payment.failed", err, {
+        stage: "payNetSettlement",
+        totalAmountXlm,
+        tripId,
+      });
+      toastError("Payment failed", display);
+    }
     },
     [
       publicKey,
@@ -452,6 +490,7 @@ export function useNetPayment({ tripId }: UseNetPaymentOpts) {
       toastInfo,
       loadPoolBalance,
       buildAndPersistPending,
+      network,
     ],
   );
 

@@ -132,7 +132,9 @@ export function rowToExpense(row: ExpenseRow): Expense {
     title: row.title,
     description: row.description ?? undefined,
     totalAmount: row.total_amount,
-    currency: (row.currency as Expense["currency"]) ?? "XLM",
+    currency: row.currency,
+    exchangeRate: row.exchange_rate ?? undefined,
+    exchangeRateTimestamp: row.exchange_rate_timestamp ?? undefined,
     splitMode: row.split_mode,
     paidByMemberId: row.paid_by_member_id,
     members: (row.members ?? []) as unknown as Member[],
@@ -214,6 +216,8 @@ export function expenseToInsert(expense: Expense, creatorWallet: string): Expens
     description: expense.description ?? null,
     total_amount: expense.totalAmount,
     currency: expense.currency ?? "XLM",
+    exchange_rate: expense.exchangeRate ?? null,
+    exchange_rate_timestamp: expense.exchangeRateTimestamp ?? null,
     split_mode: expense.splitMode,
     paid_by_member_id: expense.paidByMemberId,
     members: expense.members as unknown as ExpenseInsert["members"],
@@ -236,8 +240,9 @@ export function expenseToUpdate(updates: Partial<Expense>): ExpenseUpdate {
   const patch: ExpenseUpdate = {};
   if (updates.title !== undefined) patch.title = updates.title;
   if (updates.description !== undefined) patch.description = updates.description ?? null;
-  if (updates.totalAmount !== undefined) patch.total_amount = updates.totalAmount;
-  if (updates.currency !== undefined) patch.currency = updates.currency;
+  // totalAmount, currency, exchangeRate, and exchangeRateTimestamp are omitted here
+  // because the database freeze_row_identity trigger intercepts them and preserves
+  // the snapshot taken at creation.
   if (updates.splitMode !== undefined) patch.split_mode = updates.splitMode;
   if (updates.paidByMemberId !== undefined) patch.paid_by_member_id = updates.paidByMemberId;
   if (updates.members !== undefined) {
@@ -281,7 +286,7 @@ export function tripToUpdate(updates: Partial<Trip>): TripUpdate {
 
 const USER_COLUMNS = "id, wallet_address, display_name, created_at, updated_at, last_login_at";
 const EXPENSE_COLUMNS =
-  "id, title, description, total_amount, currency, split_mode, paid_by_member_id, members, shares, settled, created_by_wallet, member_wallets, created_at, updated_at";
+  "id, title, description, total_amount, currency, exchange_rate, exchange_rate_timestamp, split_mode, paid_by_member_id, members, shares, settled, created_by_wallet, member_wallets, created_at, updated_at";
 const TRIP_COLUMNS =
   "id, name, description, members, expense_ids, settled, created_by_wallet, member_wallets, created_at, updated_at";
 const SETTLEMENT_INTENT_COLUMNS =
