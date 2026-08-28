@@ -63,6 +63,27 @@ export type TripRow = {
   updated_at: string;
 };
 
+export type SettlementIntentRow = {
+  id: string;
+  idempotency_key: string;
+  trip_id: string;
+  expense_id: string;
+  member_id: string;
+  payer_wallet: string;
+  member_wallet: string;
+  amount: string;
+  currency: string;
+  status: "pending" | "submitting" | "submitted" | "recorded" | "failed" | "cancelled";
+  tx_hash: string | null;
+  ledger: number | null;
+  on_chain: boolean;
+  error_message: string | null;
+  created_by_wallet: string;
+  created_at: string;
+  updated_at: string;
+  expires_at: string;
+};
+
 export type Database = {
   public: {
     Tables: {
@@ -108,12 +129,45 @@ export type Database = {
         Update: Partial<Omit<TripRow, ServerManaged | "created_by_wallet">>;
         Relationships: [];
       };
+      settlement_intents: {
+        Row: SettlementIntentRow;
+        Insert: Omit<SettlementIntentRow, "id" | "created_at" | "updated_at"> & {
+          id?: string;
+          created_at?: string;
+          updated_at?: string;
+          expires_at?: string;
+          currency?: string;
+          status?: SettlementIntentRow["status"];
+          on_chain?: boolean;
+          tx_hash?: string | null;
+          ledger?: number | null;
+          error_message?: string | null;
+        };
+        Update: Partial<Omit<SettlementIntentRow, "id" | "created_at" | "updated_at">>;
+        Relationships: [];
+      };
     };
     Views: { [_ in never]: never };
     Functions: {
       current_wallet: {
         Args: Record<string, never>;
         Returns: string;
+      };
+      mark_share_paid: {
+        Args: {
+          p_expense_id: string;
+          p_member_id: string;
+          p_tx_hash: string;
+          p_on_chain?: boolean;
+        };
+        Returns: ExpenseRow;
+      };
+      mark_shares_paid_batch: {
+        Args: {
+          p_updates: Json;
+          p_tx_hash: string;
+        };
+        Returns: ExpenseRow[];
       };
     };
     Enums: { [_ in never]: never };
@@ -127,3 +181,6 @@ export type TripInsert = Database["public"]["Tables"]["trips"]["Insert"];
 export type TripUpdate = Database["public"]["Tables"]["trips"]["Update"];
 export type UserInsert = Database["public"]["Tables"]["users"]["Insert"];
 export type UserUpdate = Database["public"]["Tables"]["users"]["Update"];
+export type SettlementIntentInsert = Database["public"]["Tables"]["settlement_intents"]["Insert"];
+export type SettlementIntentUpdate = Database["public"]["Tables"]["settlement_intents"]["Update"];
+

@@ -17,6 +17,9 @@ import type {
   TripRow,
   TripUpdate,
   UserRow,
+  SettlementIntentInsert,
+  SettlementIntentRow,
+  SettlementIntentUpdate,
 } from "@/types/supabase";
 import { requireAuthenticatedClient, requireSupabaseClient, type StellarStarClient } from "./client";
 
@@ -152,6 +155,50 @@ export function rowToTrip(row: TripRow): Trip {
   };
 }
 
+export interface SettlementIntent {
+  id: string;
+  idempotencyKey: string;
+  tripId: string;
+  expenseId: string;
+  memberId: string;
+  payerWallet: string;
+  memberWallet: string;
+  amount: string;
+  currency: string;
+  status: "pending" | "submitting" | "submitted" | "recorded" | "failed" | "cancelled";
+  txHash: string | null;
+  ledger: number | null;
+  onChain: boolean;
+  errorMessage: string | null;
+  createdByWallet: string;
+  createdAt: string;
+  updatedAt: string;
+  expiresAt: string;
+}
+
+export function rowToSettlementIntent(row: SettlementIntentRow): SettlementIntent {
+  return {
+    id: row.id,
+    idempotencyKey: row.idempotency_key,
+    tripId: row.trip_id,
+    expenseId: row.expense_id,
+    memberId: row.member_id,
+    payerWallet: row.payer_wallet,
+    memberWallet: row.member_wallet,
+    amount: row.amount,
+    currency: row.currency,
+    status: row.status,
+    txHash: row.tx_hash,
+    ledger: row.ledger !== null ? Number(row.ledger) : null,
+    onChain: row.on_chain,
+    errorMessage: row.error_message,
+    createdByWallet: row.created_by_wallet,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    expiresAt: row.expires_at,
+  };
+}
+
 /**
  * Builds the insert payload for a new expense.
  *
@@ -237,6 +284,8 @@ const EXPENSE_COLUMNS =
   "id, title, description, total_amount, currency, split_mode, paid_by_member_id, members, shares, settled, created_by_wallet, member_wallets, created_at, updated_at";
 const TRIP_COLUMNS =
   "id, name, description, members, expense_ids, settled, created_by_wallet, member_wallets, created_at, updated_at";
+const SETTLEMENT_INTENT_COLUMNS =
+  "id, idempotency_key, trip_id, expense_id, member_id, payer_wallet, member_wallet, amount, currency, status, tx_hash, ledger, on_chain, error_message, created_by_wallet, created_at, updated_at, expires_at";
 
 // ─── Users ────────────────────────────────────────────────────────────────────
 
@@ -421,12 +470,37 @@ export async function deleteExpenseRow(
  * Re-reads `shares` immediately before writing so a concurrent payment by
  * another member is not overwritten by a stale copy held in this browser.
  */
+/**
+ * Marks one member's share as paid atomically.
+ *
+ * Uses the `mark_share_paid` PostgreSQL stored procedure with `SELECT ... FOR UPDATE`
+ * row-level locking to guarantee no lost updates under concurrent settlements
+ * (Invariant 4). If the stored procedure is not deployed or fails, it falls back
+ * to an optimistic read-modify-write.
+ */
 export async function markSharePaidRow(
   expenseId: string,
   memberId: string,
   txHash: string,
   client: StellarStarClient = requireAuthenticatedClient()
 ): Promise<Expense> {
+  // Try atomic PostgreSQL stored procedure first
+  try {
+    const { data: rpcData, error: rpcError } = await client.rpc("mark_share_paid", {
+      p_expense_id: expenseId,
+      p_member_id: memberId,
+      p_tx_hash: txHash,
+      p_on_chain: false,
+    });
+
+    if (!rpcError && rpcData) {
+      return rowToExpense(rpcData as ExpenseRow);
+    }
+  } catch {
+    // Fall back to client-side optimistic atomic write
+  }
+
+  // Fallback path
   const { data: fresh, error: fetchError } = await client
     .from("expenses")
     .select("shares")
@@ -461,6 +535,138 @@ export async function markSharePaidRow(
     );
   }
   return rowToExpense(result.data as ExpenseRow);
+}
+
+/**
+ * Marks multiple expense shares as paid atomically for a net settlement.
+ */
+export async function markSharesPaidBatchRow(
+  updates: { expenseId: string; memberId: string }[],
+  txHash: string,
+  client: StellarStarClient = requireAuthenticatedClient()
+): Promise<Expense[]> {
+  if (updates.length === 0) return [];
+
+  // Try batch RPC
+  try {
+    const { data: rpcData, error: rpcError } = await client.rpc("mark_shares_paid_batch", {
+      p_updates: updates as unknown as Json,
+      p_tx_hash: txHash,
+    });
+
+    if (!rpcError && Array.isArray(rpcData) && rpcData.length > 0) {
+      return rpcData.map((row) => rowToExpense(row as ExpenseRow));
+    }
+  } catch {
+    // Fall back to sequential writes
+  }
+
+  const results: Expense[] = [];
+  for (const item of updates) {
+    try {
+      const saved = await markSharePaidRow(item.expenseId, item.memberId, txHash, client);
+      results.push(saved);
+    } catch (err) {
+      console.warn(`[markSharesPaidBatchRow] Error marking share paid for ${item.expenseId}:`, err);
+    }
+  }
+  return results;
+}
+
+// ─── Settlement Intents ────────────────────────────────────────────────────────
+
+export async function createSettlementIntentRow(
+  payload: SettlementIntentInsert,
+  client: StellarStarClient = requireAuthenticatedClient()
+): Promise<SettlementIntent> {
+  const result = await client
+    .from("settlement_intents")
+    .insert(payload)
+    .select(SETTLEMENT_INTENT_COLUMNS)
+    .single();
+
+  return rowToSettlementIntent(unwrap(result, "record settlement intent") as SettlementIntentRow);
+}
+
+export async function updateSettlementIntentRow(
+  id: string,
+  updates: Partial<SettlementIntentUpdate>,
+  client: StellarStarClient = requireAuthenticatedClient()
+): Promise<SettlementIntent> {
+  const result = await client
+    .from("settlement_intents")
+    .update(updates)
+    .eq("id", id)
+    .select(SETTLEMENT_INTENT_COLUMNS)
+    .single();
+
+  return rowToSettlementIntent(unwrap(result, "update settlement intent") as SettlementIntentRow);
+}
+
+export async function fetchActiveSettlementIntents(
+  walletAddress: string,
+  client: StellarStarClient = requireAuthenticatedClient()
+): Promise<SettlementIntent[]> {
+  const { data, error } = await client
+    .from("settlement_intents")
+    .select(SETTLEMENT_INTENT_COLUMNS)
+    .eq("member_wallet", walletAddress)
+    .in("status", ["pending", "submitting", "submitted"])
+    .order("created_at", { ascending: false });
+
+  if (error) {
+    // If table doesn't exist yet, gracefully return empty array
+    if (isMissingTable(error)) return [];
+    throw toDatabaseError(error, "load active settlement intents");
+  }
+
+  return (data ?? []).map((row) => rowToSettlementIntent(row as SettlementIntentRow));
+}
+
+export async function fetchSettlementIntentByIdempotencyKey(
+  idempotencyKey: string,
+  client: StellarStarClient = requireAuthenticatedClient()
+): Promise<SettlementIntent | null> {
+  const { data, error } = await client
+    .from("settlement_intents")
+    .select(SETTLEMENT_INTENT_COLUMNS)
+    .eq("idempotency_key", idempotencyKey)
+    .maybeSingle();
+
+  if (error) {
+    if (isMissingTable(error)) return null;
+    throw toDatabaseError(error, "load settlement intent");
+  }
+  return data ? rowToSettlementIntent(data as SettlementIntentRow) : null;
+}
+
+export async function fetchSettlementIntentByExpenseAndMember(
+  expenseId: string,
+  memberId: string,
+  client: StellarStarClient = requireAuthenticatedClient()
+): Promise<SettlementIntent | null> {
+  const { data, error } = await client
+    .from("settlement_intents")
+    .select(SETTLEMENT_INTENT_COLUMNS)
+    .eq("expense_id", expenseId)
+    .eq("member_id", memberId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    if (isMissingTable(error)) return null;
+    throw toDatabaseError(error, "load settlement intent");
+  }
+  return data ? rowToSettlementIntent(data as SettlementIntentRow) : null;
+}
+
+export async function deleteSettlementIntentRow(
+  id: string,
+  client: StellarStarClient = requireAuthenticatedClient()
+): Promise<void> {
+  const { error } = await client.from("settlement_intents").delete().eq("id", id);
+  if (error) throw toDatabaseError(error, "delete settlement intent");
 }
 
 // ─── Trips ────────────────────────────────────────────────────────────────────

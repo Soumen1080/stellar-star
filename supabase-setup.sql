@@ -559,3 +559,224 @@ create index if not exists sponsorship_invites_inviter_idx
 -- own.
 alter table public.sponsored_accounts enable row level security;
 alter table public.sponsorship_invites enable row level security;
+
+-- ============================================================================
+-- Exactly-Once Settlement Recording & Concurrency  (issue #156 / epic #50)
+-- ============================================================================
+-- Durable intent store and atomic concurrency control on expense shares.
+--
+-- Settlement spans Horizon, Soroban, Supabase, and client state. This table
+-- records the durable intent *before* submitting to Horizon, so any partial
+-- failure is detectable and recoverable by any client on any device.
+
+CREATE TABLE IF NOT EXISTS public.settlement_intents (
+  id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  idempotency_key   TEXT NOT NULL UNIQUE,
+  trip_id           TEXT NOT NULL,
+  expense_id        TEXT NOT NULL,
+  member_id         TEXT NOT NULL,
+  payer_wallet      TEXT NOT NULL,
+  member_wallet     TEXT NOT NULL,
+  amount            TEXT NOT NULL,
+  currency          TEXT NOT NULL DEFAULT 'XLM',
+  status            TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending', 'submitting', 'submitted', 'recorded', 'failed', 'cancelled')),
+  tx_hash           TEXT,
+  ledger            BIGINT,
+  on_chain          BOOLEAN NOT NULL DEFAULT FALSE,
+  error_message     TEXT,
+  created_by_wallet TEXT NOT NULL,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  expires_at        TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '15 minutes')
+);
+
+CREATE INDEX IF NOT EXISTS idx_settlement_intents_member_wallet
+  ON public.settlement_intents (member_wallet);
+CREATE INDEX IF NOT EXISTS idx_settlement_intents_expense_member
+  ON public.settlement_intents (expense_id, member_id);
+CREATE INDEX IF NOT EXISTS idx_settlement_intents_trip
+  ON public.settlement_intents (trip_id);
+CREATE INDEX IF NOT EXISTS idx_settlement_intents_status
+  ON public.settlement_intents (status);
+CREATE INDEX IF NOT EXISTS idx_settlement_intents_tx_hash
+  ON public.settlement_intents (tx_hash);
+
+ALTER TABLE public.settlement_intents ENABLE ROW LEVEL SECURITY;
+
+DO $drop_intent_policies$
+DECLARE
+  p RECORD;
+BEGIN
+  FOR p IN
+    SELECT policyname, tablename
+      FROM pg_policies
+     WHERE schemaname = 'public'
+       AND tablename = 'settlement_intents'
+  LOOP
+    EXECUTE format('DROP POLICY %I ON public.%I', p.policyname, p.tablename);
+  END LOOP;
+END
+$drop_intent_policies$;
+
+-- Members in the trip/expense can view intents
+CREATE POLICY "settlement_intents_select" ON public.settlement_intents
+  FOR SELECT USING (
+    member_wallet = public.current_wallet() OR
+    payer_wallet = public.current_wallet() OR
+    created_by_wallet = public.current_wallet()
+  );
+
+-- Only the debtor / creator can insert their intent
+CREATE POLICY "settlement_intents_insert" ON public.settlement_intents
+  FOR INSERT WITH CHECK (
+    created_by_wallet = public.current_wallet() OR
+    member_wallet = public.current_wallet()
+  );
+
+-- Only the debtor / creator can update their intent
+CREATE POLICY "settlement_intents_update" ON public.settlement_intents
+  FOR UPDATE USING (
+    created_by_wallet = public.current_wallet() OR
+    member_wallet = public.current_wallet()
+  )
+  WITH CHECK (
+    created_by_wallet = public.current_wallet() OR
+    member_wallet = public.current_wallet()
+  );
+
+-- Only the creator / debtor can delete an unsubmitted intent
+CREATE POLICY "settlement_intents_delete" ON public.settlement_intents
+  FOR DELETE USING (
+    (created_by_wallet = public.current_wallet() OR member_wallet = public.current_wallet())
+    AND status IN ('pending', 'failed', 'cancelled')
+  );
+
+DROP TRIGGER IF EXISTS settlement_intents_set_updated_at ON public.settlement_intents;
+CREATE TRIGGER settlement_intents_set_updated_at
+  BEFORE UPDATE ON public.settlement_intents
+  FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.settlement_intents TO anon, authenticated;
+
+-- Add realtime publication for settlement_intents
+DO $realtime_intents$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_publication_tables
+                 WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = 'settlement_intents') THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.settlement_intents;
+  END IF;
+END
+$realtime_intents$;
+
+ALTER TABLE public.settlement_intents REPLICA IDENTITY FULL;
+
+-- ----------------------------------------------------------------------------
+-- Atomic Concurrency Control: mark_share_paid
+-- ----------------------------------------------------------------------------
+-- Replaces read-then-write on JSONB shares with a row-level locked atomic update.
+-- SELECT ... FOR UPDATE guarantees serialized updates under concurrent payments.
+
+CREATE OR REPLACE FUNCTION public.mark_share_paid(
+  p_expense_id UUID,
+  p_member_id TEXT,
+  p_tx_hash TEXT,
+  p_on_chain BOOLEAN DEFAULT FALSE
+)
+RETURNS public.expenses
+LANGUAGE plpgsql
+AS $fn$
+DECLARE
+  v_row public.expenses;
+  v_updated_shares JSONB;
+  v_all_paid BOOLEAN;
+BEGIN
+  -- Row-level locking for concurrency serialization
+  SELECT * INTO v_row
+    FROM public.expenses
+   WHERE id = p_expense_id
+     FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Expense % not found', p_expense_id;
+  END IF;
+
+  -- Atomically transform shares array in PL/pgSQL
+  SELECT jsonb_agg(
+    CASE
+      WHEN (elem ->> 'memberId') = p_member_id THEN
+        jsonb_set(
+          jsonb_set(elem, '{paid}', 'true'::jsonb),
+          '{txHash}',
+          to_jsonb(p_tx_hash)
+        )
+      ELSE elem
+    END
+  )
+  INTO v_updated_shares
+  FROM jsonb_array_elements(COALESCE(v_row.shares, '[]'::jsonb)) AS elem;
+
+  IF v_updated_shares IS NULL THEN
+    v_updated_shares := '[]'::jsonb;
+  END IF;
+
+  -- Verify all shares status
+  SELECT COALESCE(bool_and((elem ->> 'paid')::boolean), false)
+    INTO v_all_paid
+    FROM jsonb_array_elements(v_updated_shares) AS elem;
+
+  UPDATE public.expenses
+     SET shares = v_updated_shares,
+         settled = COALESCE(v_all_paid, false),
+         updated_at = NOW()
+   WHERE id = p_expense_id
+  RETURNING * INTO v_row;
+
+  RETURN v_row;
+END;
+$fn$;
+
+GRANT EXECUTE ON FUNCTION public.mark_share_paid(UUID, TEXT, TEXT, BOOLEAN) TO anon, authenticated;
+
+-- ----------------------------------------------------------------------------
+-- Atomic Concurrency Control: mark_shares_paid_batch
+-- ----------------------------------------------------------------------------
+-- Used for net settlements where one transaction covers multiple debts across
+-- multiple expenses. Locks rows in consistent order to prevent deadlocks.
+
+CREATE OR REPLACE FUNCTION public.mark_shares_paid_batch(
+  p_updates JSONB,
+  p_tx_hash TEXT
+)
+RETURNS SETOF public.expenses
+LANGUAGE plpgsql
+AS $fn$
+DECLARE
+  v_item JSONB;
+  v_exp_id UUID;
+  v_mem_id TEXT;
+  v_exp_ids UUID[];
+BEGIN
+  -- Extract and sort unique expense IDs to avoid deadlocks across concurrent batches
+  SELECT array_agg(DISTINCT (item ->> 'expenseId')::UUID ORDER BY (item ->> 'expenseId')::UUID)
+    INTO v_exp_ids
+    FROM jsonb_array_elements(p_updates) AS item;
+
+  IF v_exp_ids IS NOT NULL THEN
+    -- Lock all affected expense rows in sorted order
+    PERFORM 1 FROM public.expenses WHERE id = ANY(v_exp_ids) ORDER BY id FOR UPDATE;
+
+    FOR v_item IN SELECT * FROM jsonb_array_elements(p_updates)
+    LOOP
+      v_exp_id := (v_item ->> 'expenseId')::UUID;
+      v_mem_id := (v_item ->> 'memberId')::TEXT;
+      PERFORM public.mark_share_paid(v_exp_id, v_mem_id, p_tx_hash, false);
+    END LOOP;
+  END IF;
+
+  RETURN QUERY SELECT * FROM public.expenses WHERE id = ANY(v_exp_ids);
+END;
+$fn$;
+
+GRANT EXECUTE ON FUNCTION public.mark_shares_paid_batch(JSONB, TEXT) TO anon, authenticated;
+
