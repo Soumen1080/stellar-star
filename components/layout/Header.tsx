@@ -11,6 +11,7 @@ import { StellarStarLogo } from "@/components/ui/Logo";
 import { useToast } from "@/components/ui/Toast";
 
 const navLinks = [
+  // Anchor links must target the home page when the header is rendered on a subpage.
   { label: "Features", href: "/#features" },
   { label: "How It Works", href: "/#how-it-works" },
   { label: "Pricing", href: "/#pricing" },
