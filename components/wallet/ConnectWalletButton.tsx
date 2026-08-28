@@ -15,7 +15,7 @@ import {
 import { useWallet } from "@/hooks/useWallet";
 import { Spinner } from "@/components/ui/Spinner";
 import { formatAddress, formatXLM } from "@/lib/utils";
-import { STELLAR_EXPLORER } from "@/lib/utils/constants";
+import { STELLAR_EXPLORER, networkLabel } from "@/lib/utils/constants";
 import { cn } from "@/lib/utils";
 
 // ─── Network badge colour ─────────────────────────────────────────────────────
@@ -37,7 +37,7 @@ function NetworkBadge({ network }: { network: string | null }) {
           isMainnet ? "bg-blue-600" : "bg-[#134E4A] animate-pulse"
         )}
       />
-      {isMainnet ? "Mainnet" : "Testnet"}
+      {networkLabel(network)}
     </span>
   );
 }

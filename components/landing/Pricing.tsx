@@ -6,13 +6,14 @@ import { motion } from "framer-motion";
 import { CheckCircle2, Zap, ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
+import { STELLAR_NETWORK, NETWORK_LABEL } from "@/lib/utils/constants";
 
 const plans = [
   {
     name: "Free",
     price: "0",
     period: "forever",
-    description: "Everything you need to split bills with your group on Stellar Testnet.",
+    description: "Everything you need to split bills with your group.",
     features: [
       "Unlimited expenses",
       "Up to 20 members per group",
@@ -35,7 +36,7 @@ const plans = [
     description: "Same app, real XLM. Settle real expenses with real payments on Stellar Mainnet.",
     features: [
       "Everything in Free",
-      "Stellar Mainnet support",
+      "Mainnet support",
       "Real XLM payments",
       "~0.00001 XLM network fee",
       "No Stellar-star platform fees",
@@ -51,6 +52,11 @@ const plans = [
 ];
 
 export default function Pricing() {
+  // The "Mainnet" plan is only live when this deployment is actually configured
+  // for mainnet. Advertising it as available otherwise would be a lie that costs
+  // users real money.
+  const isMainnetLive = STELLAR_NETWORK === "PUBLIC";
+
   return (
     <section id="pricing" className="section-padding bg-white border-y border-[#EEEEEE] relative overflow-hidden">
       <div className="absolute inset-0 bg-grid opacity-30 pointer-events-none" />
@@ -123,7 +129,11 @@ export default function Pricing() {
                 {/* Badge */}
                 <div className={`inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest mb-4 ${plan.accent ? "text-[#2DD4BF]" : "text-[#AAA]"}`}>
                   <div className={`w-1.5 h-1.5 rounded-full ${plan.accent ? "bg-[#2DD4BF] animate-pulse" : "bg-[#CCC]"}`} />
-                  {plan.badge}
+                  {plan.accent
+                    ? isMainnetLive
+                      ? "Mainnet Live"
+                      : "Mainnet Soon"
+                    : plan.badge}
                 </div>
 
                 {/* Name + price */}
@@ -147,9 +157,18 @@ export default function Pricing() {
 
                 {/* CTA */}
                 {plan.accent ? (
-                  <div className="w-full py-3 rounded-2xl bg-white/5 border border-white/10 text-[#555] text-sm font-semibold text-center mb-6">
-                    Coming Soon
-                  </div>
+                  isMainnetLive ? (
+                    <Button variant="primary" size="md" className="w-full mb-6" asChild>
+                      <Link href={plan.href}>
+                        {isMainnetLive ? "Get Started" : plan.cta}
+                        <ArrowRight size={16} />
+                      </Link>
+                    </Button>
+                  ) : (
+                    <div className="w-full py-3 rounded-2xl bg-white/5 border border-white/10 text-[#555] text-sm font-semibold text-center mb-6">
+                      Coming Soon
+                    </div>
+                  )
                 ) : (
                   <Button variant="primary" size="md" className="w-full mb-6" asChild>
                     <Link href={plan.href}>
@@ -189,8 +208,9 @@ export default function Pricing() {
           transition={{ duration: 0.5, delay: 0.3 }}
           className="text-center text-sm text-[#AAA] mt-8"
         >
-          * Stellar network fee: 100 stroops (0.00001 XLM) per transaction, paid to the Stellar validators.
-          Stellar-star charges nothing.
+          * Stellar network fee is surge-aware and adapts to live conditions
+          (typically ~100 stroops / 0.00001 XLM per operation), paid to the
+          Stellar validators. Stellar-star charges nothing.
         </motion.p>
       </div>
     </section>

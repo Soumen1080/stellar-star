@@ -11,13 +11,13 @@ import {
 } from "@stellar/stellar-sdk";
 import {
   NETWORK_PASSPHRASE,
-  TX_BASE_FEE,
   MEMO_MAX_BYTES,
   MEMO_PREFIX,
   HORIZON_URL,
 } from "@/lib/utils/constants";
 import { toSdkAsset, parseAssetKey } from "@/lib/stellar/assets";
 import { isQuoteFresh, type PricedPath } from "@/lib/stellar/pathPayment";
+import { getSuggestedBaseFee } from "@/lib/stellar/fees";
 
 export interface BuildTxParams {
   sourcePublicKey: string;
@@ -71,11 +71,15 @@ export async function buildPaymentTransaction({
   const acctData = await acctRes.json() as { sequence: string };
   const account = new Account(sourcePublicKey, acctData.sequence);
 
+  // Adaptive fee: clear surge pricing instead of a fixed 100-stroop minimum
+  // that the network would reject when congested.
+  const fee = await getSuggestedBaseFee();
+
   const rawMemo = memoText ? `${MEMO_PREFIX}|${memoText}` : MEMO_PREFIX;
   const safeMemo = trimToMemoBytes(rawMemo);
 
   const tx = new TransactionBuilder(account, {
-    fee: String(TX_BASE_FEE),
+    fee,
     networkPassphrase: NETWORK_PASSPHRASE,
   })
     .addOperation(
@@ -137,11 +141,14 @@ export async function buildPathPaymentTransaction({
   const acctData = (await acctRes.json()) as { sequence: string };
   const account = new Account(sourcePublicKey, acctData.sequence);
 
+  // Adaptive fee: same strategy as the direct payment path above.
+  const fee = await getSuggestedBaseFee();
+
   const rawMemo = memoText ? `${MEMO_PREFIX}|${memoText}` : MEMO_PREFIX;
   const safeMemo = trimToMemoBytes(rawMemo);
 
   const tx = new TransactionBuilder(account, {
-    fee: String(TX_BASE_FEE),
+    fee,
     networkPassphrase: NETWORK_PASSPHRASE,
   })
     .addOperation(

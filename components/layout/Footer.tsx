@@ -5,6 +5,7 @@ import Link from "next/link";
 import { motion } from "framer-motion";
 import { Twitter, Github, ExternalLink, ArrowUpRight } from "lucide-react";
 import { StellarStarLogo } from "@/components/ui/Logo";
+import { NETWORK_LABEL } from "@/lib/utils/constants";
 
 const footerLinks = {
   Product: [
@@ -134,7 +135,7 @@ export default function Footer() {
           <div className="flex items-center gap-2">
             <span className="w-1.5 h-1.5 rounded-full bg-[#2DD4BF] animate-pulse" />
             <span className="text-xs text-[#555]">
-              Testnet Active
+              {NETWORK_LABEL} Active
             </span>
           </div>
         </div>
