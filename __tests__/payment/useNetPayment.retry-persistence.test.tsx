@@ -65,7 +65,8 @@ async function triggerPay(result: ReturnType<typeof renderHook>["result"]) {
   await act(async () => {
     await result.current.payNetSettlement({
       debts,
-      totalAmountXlm: "5.0000000",
+      totalAmount: "5.0000000",
+      asset: "native",
       payerWalletAddress: PAYER,
       tripName: "Weekend Trip",
     });
@@ -131,8 +132,8 @@ describe("useNetPayment — on-chain recording (Issue #79)", () => {
     expect(recordNetSettlementOnChain).toHaveBeenCalledTimes(1);
     const call = jest.mocked(recordNetSettlementOnChain).mock.calls[0][0];
     expect(call.debts).toEqual([
-      { expenseId: "exp-1", amountXlm: "3" },
-      { expenseId: "exp-2", amountXlm: "2" },
+      expect.objectContaining({ expenseId: "exp-1", amountXlm: "3" }),
+      expect.objectContaining({ expenseId: "exp-2", amountXlm: "2" }),
     ]);
     expect(call.tripId).toBe("trip-1");
     expect(call.payerPublicKey).toBe(PAYER);
@@ -164,8 +165,8 @@ describe("useNetPayment — on-chain recording (Issue #79)", () => {
     expect(stored).not.toBeNull();
     expect(stored!.txHash).toBe("tx-net-hash");
     expect(stored!.debts).toEqual([
-      { expenseId: "exp-1", amountXlm: "3" },
-      { expenseId: "exp-2", amountXlm: "2" },
+      expect.objectContaining({ expenseId: "exp-1", amountXlm: "3" }),
+      expect.objectContaining({ expenseId: "exp-2", amountXlm: "2" }),
     ]);
   });
 

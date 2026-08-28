@@ -4,7 +4,7 @@ import React from "react";
 import { CheckCircle2, ExternalLink, Layers } from "lucide-react";
 import { Modal } from "@/components/ui/Modal";
 import { TransactionHash } from "@/components/payment/TransactionHash";
-import { STELLAR_EXPLORER } from "@/lib/utils/constants";
+import { STELLAR_EXPLORER, NETWORK_DISPLAY_NAME } from "@/lib/utils/constants";
 import { cn } from "@/lib/utils";
 
 export interface ReceiptModalProps {
@@ -43,7 +43,7 @@ export function ReceiptModal({
           <CheckCircle2 size={32} className="text-[#134E4A]" />
         </div>
         <p className="text-xl font-bold text-[#0F0F14]">Payment Confirmed</p>
-        <p className="text-sm text-[#888]">Successfully sent on Stellar Testnet</p>
+        <p className="text-sm text-[#888]">Successfully sent on {NETWORK_DISPLAY_NAME}</p>
       </div>
 
       {/* ── Summary rows ── */}

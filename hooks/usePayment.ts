@@ -16,7 +16,14 @@ import { signXDR } from "@/lib/freighter";
 import { useWallet } from "@/hooks/useWallet";
 import { useExpense } from "@/hooks/useExpense";
 import { useToast } from "@/components/ui/Toast";
-import { NETWORK_PASSPHRASE, STELLAR_EXPLORER, CONTRACT_ID } from "@/lib/utils/constants";
+import {
+  NETWORK_PASSPHRASE,
+  STELLAR_EXPLORER,
+  CONTRACT_ID,
+  STELLAR_NETWORK,
+} from "@/lib/utils/constants";
+import { reportError } from "@/lib/observability/reportError";
+import { networkMismatchMessage } from "@/lib/stellar/networkMismatch";
 import {
   savePendingOnChain,
   loadPendingOnChain,
@@ -61,7 +68,7 @@ export type { PendingOnChainRecord };
 // ---------------------------------------------------------------------------
 
 export function usePayment({ expenseId }: UsePaymentOpts) {
-  const { publicKey, refreshBalance } = useWallet();
+  const { publicKey, refreshBalance, network } = useWallet();
   const { markSharePaid } = useExpense();
   const { success: toastSuccess, error: toastError, info: toastInfo } = useToast();
 
@@ -286,6 +293,24 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
         toastError("Wallet not connected", "Please connect your Freighter wallet first.");
         return;
       }
+
+      // Invariant 2: a wallet on a different network than the app must be
+      // blocked from signing, with a clear explanation. We detect it here —
+      // at the money path — rather than only at connect time, because the
+      // wallet's network can change mid-session.
+      const mismatchMsg = networkMismatchMessage(network);
+      if (mismatchMsg) {
+        setPaymentState({ status: "blocked", message: mismatchMsg });
+        toastError("Network mismatch", mismatchMsg);
+        reportError("payment.blocked-network-mismatch", new Error(mismatchMsg), {
+          stage: "payShare",
+          amount: share.amount,
+          walletNetwork: network,
+          appNetwork: STELLAR_NETWORK,
+        });
+        return;
+      }
+
       if (!share.walletAddress) {
         toastError("No wallet address", `${share.name} doesn't have a Stellar address.`);
         return;
@@ -392,6 +417,13 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
             onChain: false,
             message: onChainError,
           });
+          reportError("payment.onchain-proof-failed", new Error(onChainError), {
+            stage: "payShare",
+            hash: result.hash,
+            ledger: result.ledger,
+            amount: share.amount,
+            tripId,
+          });
           toastInfo(
             "Payment sent — recorded off-chain only",
             "The XLM transfer succeeded, but this settlement has no on-chain proof yet. Use retry to add it.",
@@ -416,9 +448,14 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
         const isRejected = /reject|denied|cancel/i.test(message.toLowerCase());
         const display    = isRejected ? "Transaction cancelled in wallet." : message;
 
-        setPaymentState({ status: "error", message: display });
-        toastError("Payment failed", display);
-      }
+      setPaymentState({ status: "error", message: display });
+      reportError("payment.failed", err, {
+        stage: "payShare",
+        amount: share.amount,
+        tripId,
+      });
+      toastError("Payment failed", display);
+    }
     },
     [
       publicKey,
@@ -430,6 +467,7 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
       toastInfo,
       loadPoolBalance,
       buildAndPersistPending,
+      network,
     ],
   );
 

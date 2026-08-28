@@ -17,6 +17,8 @@ import {
   HORIZON_URL,
   SETTLEMENT_ASSET_ID,
 } from "@/lib/utils/constants";
+import { getSuggestedBaseFee } from "@/lib/stellar/fees";
+import { reportError } from "@/lib/observability/reportError";
 import type {
   ContractPaymentRecord,
   GetPaymentsResult,
@@ -266,7 +268,7 @@ async function getPoolContractId(callerPublicKey: string): Promise<string> {
   const contract = new Contract(CONTRACT_ID);
 
   const tx = new TransactionBuilder(account, {
-    fee: SOROBAN_BASE_FEE,
+    fee: await getSuggestedBaseFee({ fallback: Number(SOROBAN_BASE_FEE) }),
     networkPassphrase: NETWORK_PASSPHRASE,
   })
     .addOperation(contract.call("get_pool_contract"))
@@ -315,7 +317,7 @@ export async function getPoolBalanceStroops(
     : poolContract.call("balance_of", new Address(memberPublicKey).toScVal());
 
   const tx = new TransactionBuilder(account, {
-    fee: SOROBAN_BASE_FEE,
+    fee: await getSuggestedBaseFee({ fallback: Number(SOROBAN_BASE_FEE) }),
     networkPassphrase: NETWORK_PASSPHRASE,
   })
     .addOperation(call)
@@ -411,7 +413,7 @@ export async function depositPoolBalance(
         );
 
     const tx = new TransactionBuilder(account, {
-      fee: SOROBAN_BASE_FEE,
+      fee: await getSuggestedBaseFee({ fallback: Number(SOROBAN_BASE_FEE) }),
       networkPassphrase: NETWORK_PASSPHRASE,
     })
       .addOperation(call)
@@ -483,7 +485,7 @@ export async function recordPaymentOnChain(
     ];
 
     const tx = new TransactionBuilder(account, {
-      fee:              SOROBAN_BASE_FEE,
+      fee: await getSuggestedBaseFee({ fallback: Number(SOROBAN_BASE_FEE) }),
       networkPassphrase: NETWORK_PASSPHRASE,
     })
       .addOperation(contract.call("record_payment", ...contractArgs))
@@ -509,7 +511,7 @@ export async function recordPaymentOnChain(
     return { success: true, ledger };
   } catch (err) {
     const message = err instanceof Error ? err.message : "Contract call failed.";
-    console.error("[StellarStar:contract] recordPaymentOnChain error:", message);
+    reportError("contract.recordPaymentOnChain", err, { message });
     return { success: false, error: message };
   }
 }
@@ -556,7 +558,7 @@ export async function recordNetSettlementOnChain(
     const contract = new Contract(CONTRACT_ID);
 
     let txBuilder = new TransactionBuilder(account, {
-      fee:              SOROBAN_BASE_FEE,
+      fee: await getSuggestedBaseFee({ fallback: Number(SOROBAN_BASE_FEE) }),
       networkPassphrase: NETWORK_PASSPHRASE,
     });
 
@@ -601,7 +603,7 @@ export async function recordNetSettlementOnChain(
     return { success: true, ledger };
   } catch (err) {
     const message = err instanceof Error ? err.message : "Contract call failed.";
-    console.error("[StellarStar:contract] recordNetSettlementOnChain error:", message);
+    reportError("contract.recordNetSettlementOnChain", err, { message });
     return { success: false, error: message };
   }
 }
@@ -619,7 +621,7 @@ export async function getContractPayments(
     const contract = new Contract(CONTRACT_ID);
 
     const tx = new TransactionBuilder(account, {
-      fee:              SOROBAN_BASE_FEE,
+      fee: await getSuggestedBaseFee({ fallback: Number(SOROBAN_BASE_FEE) }),
       networkPassphrase: NETWORK_PASSPHRASE,
     })
       .addOperation(
@@ -681,7 +683,7 @@ export async function checkIsPaid(
     const contract = new Contract(CONTRACT_ID);
 
     const tx = new TransactionBuilder(account, {
-      fee:              SOROBAN_BASE_FEE,
+      fee: await getSuggestedBaseFee({ fallback: Number(SOROBAN_BASE_FEE) }),
       networkPassphrase: NETWORK_PASSPHRASE,
     })
       .addOperation(

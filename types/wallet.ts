@@ -6,6 +6,10 @@ export interface WalletState {
   isLoadingBalance: boolean;
   isHydrated: boolean;
   network: string | null;
+  /** The network this deployment is configured for (from STELLAR_NETWORK). */
+  appNetwork: string;
+  /** True when a wallet is connected on a network different from appNetwork. */
+  networkMismatch: boolean;
   error: string | null;
   selectedWalletId: string | null;
 }

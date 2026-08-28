@@ -3,6 +3,7 @@
 import React from "react";
 import { motion } from "framer-motion";
 import { TrendingUp, Users, Globe, Zap } from "lucide-react";
+import { NETWORK_LABEL } from "@/lib/utils/constants";
 
 const stats = [
   {
@@ -10,7 +11,7 @@ const stats = [
     value: "2.3M",
     unit: "XLM",
     label: "Total Settled",
-    sub: "On Stellar Testnet",
+    sub: `On Stellar ${NETWORK_LABEL}`,
     color: "#2DD4BF",
   },
   {
