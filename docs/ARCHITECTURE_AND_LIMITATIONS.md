@@ -66,7 +66,8 @@ Stellar-star uses:
   amount. See `docs/DESIGN_PATH_PAYMENTS.md`.
 - **Price impact is measured relative to the best route found, not absolutely.**
   With only one route available it reads 0 regardless of how poor that route is.
-  Detecting absolute mispricing needs an independent reference rate (S4).
+  An independent reference rate (seam S4) is now provided by `lib/fx/rateService.ts`
+  via CoinGecko and ExchangeRate.host; see `docs/DESIGN_FX_RATES.md`.
 - **Path quotes expire after 30 seconds and must be refreshed manually.** A book
   can move past the slippage tolerance inside that window; the consequence is a
   failed transaction rather than an overspend, but the payer must retry.
