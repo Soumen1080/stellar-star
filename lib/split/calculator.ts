@@ -1,84 +1,215 @@
 import { StrKey } from "@stellar/stellar-sdk";
-import type { Member, SplitShare } from "@/types/expense";
+import type { Member, SplitMode, SplitShare } from "@/types/expense";
+import { Money, STROOPS_PER_UNIT } from "@/lib/money";
 
-function toXLM(n: number): string {
-  return n.toFixed(7);
+export interface ParticipantWeight {
+  id: string;
+  weight: number;
 }
 
-export function calculateEqualSplit(
-  totalXLM: number,
+/**
+ * Normalizes floating/decimal weights to exact non-negative integer scale.
+ * Eliminates IEEE-754 precision drift for fractional weights (e.g. 0.333, 1.5, 0.1).
+ */
+function scaleWeight(w: number): bigint {
+  if (!Number.isFinite(w) || w <= 0) return 0n;
+  const str = w.toString();
+  const dot = str.indexOf(".");
+  if (dot === -1) {
+    return BigInt(str) * 10_000_000n;
+  }
+  const decimals = str.length - dot - 1;
+  const intVal = BigInt(str.replace(".", ""));
+  if (decimals <= 7) {
+    return intVal * (10n ** BigInt(7 - decimals));
+  }
+  // If more than 7 decimals, truncate to 7 places
+  const factor = 10n ** BigInt(decimals - 7);
+  return intVal / factor;
+}
+
+/**
+ * Deterministic Largest Remainder (Hamilton / Hare-Niemeyer) Apportionment Engine.
+ *
+ * Invariants:
+ * 1. sum(shares) == total exactly down to the individual stroop.
+ * 2. No share is negative.
+ * 3. Equal weights produce shares differing by at most 1 minor unit (1 stroop).
+ * 4. Deterministic and independent of input array ordering (canonical ID tie-breaking).
+ * 5. Zero-weight members receive exactly 0 stroops and do not perturb other members' shares.
+ */
+export function apportionShares(
+  total: Money,
+  participants: ParticipantWeight[],
+): Map<string, Money> {
+  const result = new Map<string, Money>();
+  if (participants.length === 0) return result;
+
+  const totalStroops = total.stroops;
+  if (totalStroops === 0n) {
+    for (const p of participants) {
+      result.set(p.id, Money.zero());
+    }
+    return result;
+  }
+
+  // Scale weights
+  const scaledWeights = participants.map((p) => ({
+    id: p.id,
+    weightBig: scaleWeight(p.weight),
+  }));
+
+  const totalWeightBig = scaledWeights.reduce((sum, p) => sum + p.weightBig, 0n);
+
+  // If all weights are zero, fallback to equal distribution across all participants
+  if (totalWeightBig === 0n) {
+    const countBig = BigInt(participants.length);
+    const baseShare = totalStroops / countBig;
+    const remainder = Number(totalStroops % countBig);
+
+    // Sort by ID for deterministic tie-breaking
+    const sortedIds = participants.map((p) => p.id).sort();
+    const luckySet = new Set(sortedIds.slice(0, remainder));
+
+    for (const p of participants) {
+      const extra = luckySet.has(p.id) ? 1n : 0n;
+      result.set(p.id, Money.fromStroops(baseShare + extra));
+    }
+    return result;
+  }
+
+  // Calculate lower quotas and fractional remainders
+  let allocated = 0n;
+  const entries: Array<{ id: string; base: bigint; remainder: bigint; isZeroWeight: boolean }> = [];
+
+  for (const item of scaledWeights) {
+    if (item.weightBig === 0n) {
+      entries.push({ id: item.id, base: 0n, remainder: 0n, isZeroWeight: true });
+      continue;
+    }
+
+    const numerator = totalStroops * item.weightBig;
+    const base = numerator / totalWeightBig;
+    const rem = numerator % totalWeightBig;
+
+    allocated += base;
+    entries.push({ id: item.id, base, remainder: rem, isZeroWeight: false });
+  }
+
+  const unallocatedRemainder = Number(totalStroops - allocated);
+
+  // Sort remainder entries for deterministic largest remainder allocation:
+  // 1. Remainder DESC (largest fractional remainder gets priority)
+  // 2. ID ASC (lexicographical tie-breaker ensures array-order independence)
+  const remainderEligible = entries
+    .filter((e) => !e.isZeroWeight && e.remainder > 0n)
+    .sort((a, b) => {
+      if (b.remainder !== a.remainder) {
+        return b.remainder > a.remainder ? 1 : -1;
+      }
+      return a.id.localeCompare(b.id);
+    });
+
+  const bonusIds = new Set<string>();
+  for (let i = 0; i < unallocatedRemainder && i < remainderEligible.length; i++) {
+    bonusIds.add(remainderEligible[i].id);
+  }
+
+  for (const entry of entries) {
+    const extra = bonusIds.has(entry.id) ? 1n : 0n;
+    result.set(entry.id, Money.fromStroops(entry.base + extra));
+  }
+
+  return result;
+}
+
+/**
+ * Calculates exact shares for ALL members (including payer).
+ * Guarantees sum(allShares) === totalXLM down to the exact stroop.
+ */
+export function calculateAllShares(
+  totalXLM: number | string | Money,
   members: Member[],
-  paidByMemberId: string
+  mode: SplitMode = "equal",
 ): SplitShare[] {
   if (members.length === 0) return [];
 
-  const nonPayers = members.filter((m) => m.id !== paidByMemberId);
-  if (nonPayers.length === 0) return [];
+  const totalMoney = totalXLM instanceof Money ? totalXLM : Money.parse(totalXLM);
+  const participants: ParticipantWeight[] = members.map((m) => ({
+    id: m.id,
+    weight: mode === "custom" ? (m.weight ?? 1) : 1,
+  }));
 
-  const perHead = totalXLM / members.length;
-  const shares: SplitShare[] = [];
+  const shareMap = apportionShares(totalMoney, participants);
 
-  nonPayers.forEach((m, i) => {
-    const isLast = i === nonPayers.length - 1;
-    const accumulated = shares.reduce((s, x) => s + parseFloat(x.amount), 0);
-    const amount = isLast
-      ? perHead * nonPayers.length - accumulated
-      : perHead;
-
-    shares.push({
+  return members.map((m) => {
+    const shareMoney = shareMap.get(m.id) ?? Money.zero();
+    return {
       memberId: m.id,
       name: m.name,
       walletAddress: m.walletAddress,
-      amount: toXLM(Math.max(0, amount)),
+      amount: shareMoney.format(7),
       paid: false,
-    });
+    };
   });
-
-  return shares;
 }
 
-export function calculateCustomSplit(
-  totalXLM: number,
-  members: Member[],
-  paidByMemberId: string
-): SplitShare[] {
-  if (members.length === 0) return [];
-
-  const nonPayers = members.filter((m) => m.id !== paidByMemberId);
-  if (nonPayers.length === 0) return [];
-
-  const totalWeight = members.reduce((s, m) => s + (m.weight ?? 1), 0);
-  if (totalWeight <= 0) return [];
-
-  const nonPayerWeight = nonPayers.reduce((s, m) => s + (m.weight ?? 1), 0);
-  const totalNonPayerTarget = (totalXLM * nonPayerWeight) / totalWeight;
-  const shares: SplitShare[] = [];
-
-  nonPayers.forEach((m, i) => {
-    const isLast = i === nonPayers.length - 1;
-    const accumulated = shares.reduce((s, x) => s + parseFloat(x.amount), 0);
-    const weight = m.weight ?? 1;
-    const amount = isLast
-      ? totalNonPayerTarget - accumulated
-      : (totalXLM * weight) / totalWeight;
-
-    shares.push({
-      memberId: m.id,
-      name: m.name,
-      walletAddress: m.walletAddress,
-      amount: toXLM(Math.max(0, amount)),
-      paid: false,
-    });
-  });
-
-  return shares;
-}
-
-export function calculateSplit(
-  totalXLM: number,
+/**
+ * Calculates the exact share allocated to the payer.
+ */
+export function getPayerShare(
+  totalXLM: number | string | Money,
   members: Member[],
   paidByMemberId: string,
-  mode: "equal" | "custom"
+  mode: SplitMode = "equal",
+): Money {
+  const allShares = calculateAllShares(totalXLM, members, mode);
+  const payer = allShares.find((s) => s.memberId === paidByMemberId);
+  return payer ? Money.parse(payer.amount) : Money.zero();
+}
+
+/**
+ * Computes equal split shares for non-payers.
+ * Guarantees sum(nonPayerShares) + payerShare === totalXLM exactly.
+ */
+export function calculateEqualSplit(
+  totalXLM: number | string | Money,
+  members: Member[],
+  paidByMemberId: string,
+): SplitShare[] {
+  if (members.length === 0) return [];
+  const nonPayers = members.filter((m) => m.id !== paidByMemberId);
+  if (nonPayers.length === 0) return [];
+
+  const allShares = calculateAllShares(totalXLM, members, "equal");
+  return allShares.filter((s) => s.memberId !== paidByMemberId);
+}
+
+/**
+ * Computes custom weighted split shares for non-payers.
+ * Guarantees sum(nonPayerShares) + payerShare === totalXLM exactly.
+ */
+export function calculateCustomSplit(
+  totalXLM: number | string | Money,
+  members: Member[],
+  paidByMemberId: string,
+): SplitShare[] {
+  if (members.length === 0) return [];
+  const nonPayers = members.filter((m) => m.id !== paidByMemberId);
+  if (nonPayers.length === 0) return [];
+
+  const allShares = calculateAllShares(totalXLM, members, "custom");
+  return allShares.filter((s) => s.memberId !== paidByMemberId);
+}
+
+/**
+ * Dispatcher for split calculations.
+ */
+export function calculateSplit(
+  totalXLM: number | string | Money,
+  members: Member[],
+  paidByMemberId: string,
+  mode: SplitMode,
 ): SplitShare[] {
   return mode === "custom"
     ? calculateCustomSplit(totalXLM, members, paidByMemberId)
@@ -89,33 +220,24 @@ export function calculateSplit(
 
 export function isValidXLMAmount(value: string): boolean {
   const trimmed = value.trim();
-  const n = parseFloat(trimmed);
-  if (isNaN(n) || n <= 0 || n > 100_000_000) return false;
+  if (trimmed === "" || trimmed.startsWith("-")) return false;
 
-  // Stellar amounts are denominated in stroops (1 XLM = 10_000_000 stroops),
-  // so the maximum meaningful precision is 7 decimal places.
-  // We count digits after the decimal point directly on the *input string*
-  // to avoid floating-point representation artefacts (e.g. 0.1 + 0.2).
   const dotIndex = trimmed.indexOf(".");
   if (dotIndex !== -1 && trimmed.length - dotIndex - 1 > 7) return false;
 
-  return true;
-}
+  const parsed = Money.tryParse(trimmed);
+  if (!parsed || parsed.isNegative() || parsed.isZero()) return false;
 
+  const maxAllowed = 100_000_000n * STROOPS_PER_UNIT;
+  return parsed.stroops <= maxAllowed;
+}
 
 export function isValidStellarAddress(address: string): boolean {
   return StrKey.isValidEd25519PublicKey(address);
 }
 
-/**
- * Detects members sharing the same Stellar wallet address, comparing
- * trimmed + uppercased values. Only syntactically valid addresses are
- * considered — invalid ones are reported separately by field-level checks.
- * Returns a map of member index -> error message, flagging every member
- * involved in a collision (not just the second occurrence).
- */
 export function findDuplicateWalletErrors(
-  addresses: Array<string | undefined>
+  addresses: Array<string | undefined>,
 ): Record<number, string> {
   const seen = new Map<string, number>();
   const errors: Record<number, string> = {};

@@ -1,4 +1,4 @@
-import { computeNetPayments, type RawDebt } from "@/lib/settlement/netBalance";
+import { computeNetPayments, simplifyDebts, type RawDebt } from "@/lib/settlement/netBalance";
 
 describe("computeNetPayments", () => {
   // ─── Basic single debt ─────────────────────────────────────────────────────
@@ -20,16 +20,27 @@ describe("computeNetPayments", () => {
     expect(computeNetPayments([])).toHaveLength(0);
   });
 
-  // ─── Netting ──────────────────────────────────────────────────────────────
+  // ─── Simplification vs Pairwise ───────────────────────────────────────────
 
-  it("groups debts directionally without netting opposing balances", () => {
-    // Alice owes Bob 100, Bob owes Alice 40 
-    // They should stay as two separate payments to preserve exact share tracking
+  it("cancels mutual opposing debts by default in simplified mode", () => {
+    // Alice owes Bob 100, Bob owes Alice 40 => Alice owes Bob 60 net
     const debts: RawDebt[] = [
       { expenseId: "exp1", fromId: "u1", toId: "u2", from: "Alice", to: "Bob", amount: 100, asset: "native" },
       { expenseId: "exp2", fromId: "u2", toId: "u1", from: "Bob",   to: "Alice", amount: 40, asset: "native" },
     ];
     const result = computeNetPayments(debts);
+    expect(result).toHaveLength(1);
+    expect(result[0].from).toBe("Alice");
+    expect(result[0].to).toBe("Bob");
+    expect(parseFloat(result[0].amount)).toBeCloseTo(60, 5);
+  });
+
+  it("supports pairwise mode when explicitly requested", () => {
+    const debts: RawDebt[] = [
+      { expenseId: "exp1", fromId: "u1", toId: "u2", from: "Alice", to: "Bob", amount: 100, asset: "native" },
+      { expenseId: "exp2", fromId: "u2", toId: "u1", from: "Bob",   to: "Alice", amount: 40, asset: "native" },
+    ];
+    const result = computeNetPayments(debts, { mode: "pairwise" });
     expect(result).toHaveLength(2);
     
     const p1 = result.find(p => p.from === "Alice" && p.to === "Bob");
@@ -50,21 +61,29 @@ describe("computeNetPayments", () => {
     expect(result[0].settledDebts).toHaveLength(2);
   });
 
-  // ─── Three-person settlement ───────────────────────────────────────────────
+  // ─── Transitive chains ─────────────────────────────────────────────────────
 
-  it("preserves chains without multi-hop optimization", () => {
-    // A owes B 100, B owes C 100 
-    // Does NOT simplify to A pays C. Stays A->B, B->C to preserve shares
+  it("simplifies transitive chains in simplified mode (A->B 100, B->C 100 => A->C 100)", () => {
     const debts: RawDebt[] = [
       { expenseId: "exp1", fromId: "u1", toId: "u2", from: "A", to: "B", amount: 100, asset: "native" },
       { expenseId: "exp2", fromId: "u2", toId: "u3", from: "B", to: "C", amount: 100, asset: "native" },
     ];
     const result = computeNetPayments(debts);
+    expect(result).toHaveLength(1);
+    expect(result[0].from).toBe("A");
+    expect(result[0].to).toBe("C");
+    expect(parseFloat(result[0].amount)).toBeCloseTo(100, 5);
+  });
+
+  it("preserves chains in pairwise mode", () => {
+    const debts: RawDebt[] = [
+      { expenseId: "exp1", fromId: "u1", toId: "u2", from: "A", to: "B", amount: 100, asset: "native" },
+      { expenseId: "exp2", fromId: "u2", toId: "u3", from: "B", to: "C", amount: 100, asset: "native" },
+    ];
+    const result = computeNetPayments(debts, { mode: "pairwise" });
     expect(result).toHaveLength(2);
-    
     expect(result[0].from).toBe("A");
     expect(result[0].to).toBe("B");
-    
     expect(result[1].from).toBe("B");
     expect(result[1].to).toBe("C");
   });
@@ -121,6 +140,7 @@ describe("computeNetPayments", () => {
     const result = computeNetPayments(debts);
     expect(result[0].amount).toMatch(/^\d+\.\d{7}$/);
   });
+
   it("isolates debts in different assets completely", () => {
     // A owes B 20 USDC and 50 XLM
     const debts: RawDebt[] = [
