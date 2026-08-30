@@ -159,11 +159,11 @@ describe("Conflict Resolver & 3-Way Merge Engine (Issue #157 / Epic #51)", () =>
     expect(bobShare?.txHash).toBe("0x123456789abcdef");
 
     // Remaining unpaid amount to split = 110 - 50 = 60 XLM
-    // Charlie is the only unpaid non-payer -> Charlie's share = 60 XLM
+    // Alice (payer) and Charlie split it equally -> Charlie's share = 30 XLM
     const charlieShare = res.merged.shares.find((s) => s.memberId === "m-charlie");
     expect(charlieShare).toBeDefined();
     expect(charlieShare?.paid).toBe(false);
-    expect(charlieShare?.amount).toBe("60.0000000");
+    expect(charlieShare?.amount).toBe("30.0000000");
   });
 
   // ===========================================================================
@@ -262,7 +262,9 @@ describe("Conflict Resolver & 3-Way Merge Engine (Issue #157 / Epic #51)", () =>
     // Settled share preserved
     expect(shares.find((s) => s.memberId === "m-b")?.amount).toBe("20.0000000");
 
-    // Remaining unpaid = 80 - 20 = 60 XLM. Charlie (weight 3) is the only unpaid non-payer -> gets 60
-    expect(shares.find((s) => s.memberId === "m-c")?.amount).toBe("60.0000000");
+    // Remaining unpaid = 80 - 20 = 60 XLM.
+    // Unpaid members: Alice (weight 1) and Charlie (weight 3). Total weight = 4.
+    // Charlie's share = 60 * 3 / 4 = 45 XLM
+    expect(shares.find((s) => s.memberId === "m-c")?.amount).toBe("45.0000000");
   });
 });

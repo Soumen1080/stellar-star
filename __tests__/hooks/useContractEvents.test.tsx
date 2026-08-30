@@ -6,9 +6,13 @@ import { renderHook, waitFor } from "@testing-library/react";
 import { useContractEvents } from "@/hooks/useContractEvents";
 import { fetchContractEvents } from "@/lib/stellar/events";
 
-jest.mock("@/lib/utils/constants", () => ({
-  CONTRACT_ID: "contract-test-id",
-}));
+jest.mock("@/lib/utils/constants", () => {
+  const actual = jest.requireActual("@/lib/utils/constants");
+  return {
+    ...actual,
+    CONTRACT_ID: "contract-test-id",
+  };
+});
 
 jest.mock("@/lib/stellar/events", () => {
   return {

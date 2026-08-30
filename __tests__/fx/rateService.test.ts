@@ -202,6 +202,7 @@ describe("FxRateService — provider isolation", () => {
     const service = new FxRateService({ providers: [primary, secondary] });
 
     for (let i = 0; i < 3; i++) {
+      service.clearCache();
       const r = await service.getRate("EUR", "XLM");
       expect(r.source).toBe("exchangerate-host");
     }

@@ -20,10 +20,11 @@ import { useExpense } from "@/hooks/useExpense";
 import { useTrip } from "@/hooks/useTrip";
 import { useTripAutoSettlement } from "@/hooks/useTripAutoSettlement";
 import { useWallet } from "@/hooks/useWallet";
+import { Spinner } from "@/components/ui/Spinner";
 
 export default function TripDetailPage() {
   const params = useParams<{ id: string }>();
-  const { getTrip, settleTrip, addExpenseToTrip } = useTrip();
+  const { getTrip, settleTrip, addExpenseToTrip, isLoading } = useTrip();
   const { expenses } = useExpense();
   const { publicKey } = useWallet();
   const { user } = useAuth();
@@ -50,6 +51,14 @@ export default function TripDetailPage() {
   const { events: onChainEvents } = useContractEvents(trip?.id, tripExpenses);
 
   useTripAutoSettlement(trip, expenses, settleTrip);
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-[#F6F6F6] flex items-center justify-center">
+        <Spinner size={32} className="text-[#2DD4BF]" />
+      </div>
+    );
+  }
 
   if (!trip) {
     return <TripNotFound />;

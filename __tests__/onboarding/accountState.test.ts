@@ -162,6 +162,8 @@ describe("funded accounts", () => {
             asset_code: "USDC",
             asset_issuer: CIRCLE_USDC_ISSUER_TESTNET,
             balance: "25.0000000",
+            limit: "1000.0000000",
+            is_authorized: true,
           },
         ],
         subentry_count: 1,

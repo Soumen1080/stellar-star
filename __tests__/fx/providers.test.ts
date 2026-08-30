@@ -160,13 +160,9 @@ describe("ExchangeRateProvider", () => {
   });
 
   it("handles XLM → FIAT via USD bridge (success)", async () => {
-    // First call: XLM/USD live rate (XLMUSD quotes format).
-    // Second call: FIAT/USD rate.
-    let callCount = 0;
     const provider = new ExchangeRateProvider({
-      fetchImpl: () => {
-        callCount++;
-        if (callCount === 1) {
+      fetchImpl: (url: string) => {
+        if (url.includes("/live")) {
           // XLM/USD live rate: 1 XLM = 0.10 USD
           return Promise.resolve(okResponse({ quotes: { XLMUSD: 0.10 } }));
         }
@@ -180,11 +176,9 @@ describe("ExchangeRateProvider", () => {
   });
 
   it("returns null when XLM/USD sub-fetch fails", async () => {
-    let callCount = 0;
     const provider = new ExchangeRateProvider({
-      fetchImpl: () => {
-        callCount++;
-        if (callCount === 1) return Promise.resolve(errorResponse(503)); // XLM/USD fails.
+      fetchImpl: (url: string) => {
+        if (url.includes("/live")) return Promise.resolve(errorResponse(503)); // XLM/USD fails.
         return Promise.resolve(okResponse({ rates: { USD: 0.012 } }));
       },
     });

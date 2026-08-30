@@ -436,6 +436,7 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
 
         let onChain = false;
         let onChainError: string | null = null;
+        let finalLedger = result.ledger;
 
         if (CONTRACT_ID && tripId) {
           setPaymentState({ status: "recording", step: "simulating" });
@@ -468,6 +469,7 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
 
             if (contractResult.success) {
               onChain = true;
+              finalLedger = contractResult.ledger ?? result.ledger;
               loadPoolBalance();
             } else {
               onChainError = contractResult.error ?? "On-chain recording failed.";
@@ -481,7 +483,7 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
 
         if (intent) {
           try {
-            await markIntentRecorded(intent.id, result.ledger, onChain);
+            await markIntentRecorded(intent.id, finalLedger, onChain);
           } catch {}
         }
 
@@ -489,7 +491,7 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
           setPaymentState({
             status: "partial_success",
             hash: result.hash,
-            ledger: result.ledger,
+            ledger: finalLedger,
             onChain: false,
             message: onChainError,
           });
@@ -509,7 +511,7 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
           return;
         }
 
-        setPaymentState({ status: "success", hash: result.hash, ledger: result.ledger, onChain });
+        setPaymentState({ status: "success", hash: result.hash, ledger: finalLedger, onChain });
         toastSuccess(
           `Paid ${parseFloat(share.amount).toFixed(4)} XLM to ${share.name}`,
           onChain
