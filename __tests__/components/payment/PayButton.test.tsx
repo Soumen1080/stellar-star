@@ -17,6 +17,7 @@
 import React from "react";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { PayButton } from "@/components/payment/PayButton";
+import { LocaleProvider } from "@/context/LocaleContext";
 
 // ─── Default props ────────────────────────────────────────────────────────────
 
@@ -29,7 +30,9 @@ const defaultProps = {
 function renderButton(overrides: Partial<React.ComponentProps<typeof PayButton>> = {}) {
   const onClick = jest.fn();
   const result = render(
-    <PayButton {...defaultProps} onClick={onClick} {...overrides} />
+    <LocaleProvider>
+      <PayButton {...defaultProps} onClick={onClick} {...overrides} />
+    </LocaleProvider>
   );
   return { ...result, onClick };
 }
@@ -40,25 +43,28 @@ describe("PayButton — rendering", () => {
   beforeEach(() => jest.clearAllMocks());
 
   it("displays the formatted XLM amount (4 decimal places)", () => {
-    renderButton({ amount: "12.5" });
-    expect(screen.getByText(/Pay 12\.5000 XLM/i)).toBeTruthy();
+    const { container } = renderButton({ amount: "12.5" });
+    const cleanText = container.textContent?.replace(/\u00a0/g, " ");
+    expect(cleanText).toContain("Pay XLM 12.5000");
   });
 
   it("formats an integer amount to 4 decimal places", () => {
-    renderButton({ amount: "50" });
-    expect(screen.getByText(/Pay 50\.0000 XLM/i)).toBeTruthy();
+    const { container } = renderButton({ amount: "50" });
+    const cleanText = container.textContent?.replace(/\u00a0/g, " ");
+    expect(cleanText).toContain("Pay XLM 50.0000");
   });
 
   it("formats a high-precision amount to 4 decimal places", () => {
-    renderButton({ amount: "1.23456789" });
-    expect(screen.getByText(/Pay 1\.2346 XLM/i)).toBeTruthy();
+    const { container } = renderButton({ amount: "1.23456789" });
+    const cleanText = container.textContent?.replace(/\u00a0/g, " ");
+    expect(cleanText).toContain("Pay XLM 1.2346");
   });
 
   it("includes the recipient name in the title attribute", () => {
     const { container } = renderButton({ amount: "10", recipientName: "Bob" });
     const btn = container.querySelector("button")!;
     expect(btn.title).toContain("Bob");
-    expect(btn.title).toContain("10.0000 XLM");
+    expect(btn.title.replace(/\u00a0/g, " ")).toContain("XLM 10.0000");
   });
 
   it("renders the Zap icon (not loading) by default", () => {
@@ -121,8 +127,9 @@ describe("PayButton — loading state", () => {
   });
 
   it("hides the normal 'Pay ... XLM' text when isLoading is true", () => {
-    renderButton({ isLoading: true, amount: "20" });
-    expect(screen.queryByText(/Pay 20\.0000 XLM/i)).toBeNull();
+    const { container } = renderButton({ isLoading: true, amount: "20" });
+    const cleanText = container.textContent?.replace(/\u00a0/g, " ");
+    expect(cleanText).not.toContain("Pay XLM 20.0000");
   });
 
   it("button is disabled when isLoading is true", () => {

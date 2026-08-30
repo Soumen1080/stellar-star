@@ -8,6 +8,8 @@ import type { Trip } from "@/types/trip";
 import { cn } from "@/lib/utils";
 import { Modal, ModalFooter } from "@/components/ui/Modal";
 
+import { Money } from "@/components/ui/Money";
+
 interface TripCardProps {
   trip: Trip;
   expenseCount?: number;
@@ -40,10 +42,10 @@ export function TripCard({
   const canShowDeleteHint = !!onDelete && !isOwner;
 
   const assetEntries = Object.entries(totalsByAsset);
-  let displayTotal = null;
+  let displayTotal: React.ReactNode = null;
   if (assetEntries.length === 1) {
     const asset = assetEntries[0][0] === "native" ? "XLM" : assetEntries[0][0].split(":")[0];
-    displayTotal = `${assetEntries[0][1].toFixed(4)} ${asset}`;
+    displayTotal = <Money amount={assetEntries[0][1]} asset={asset} />;
   } else if (assetEntries.length > 1) {
     displayTotal = "Mixed Assets";
   }

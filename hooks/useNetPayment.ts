@@ -13,6 +13,8 @@ import {
 import { fetchAttestationsForDebts } from "@/lib/settlement/settleOnChain";
 import { signXDR } from "@/lib/freighter";
 import { useWallet } from "@/hooks/useWallet";
+import { useLocale } from "@/context/LocaleContext";
+import { formatMoney } from "@/lib/money/format";
 import { useExpense } from "@/hooks/useExpense";
 import { useToast } from "@/components/ui/Toast";
 import {
@@ -78,6 +80,7 @@ export function useNetPayment({ tripId }: UseNetPaymentOpts) {
   const { publicKey, refreshBalance, network } = useWallet();
   const { markSharePaid } = useExpense();
   const { success: toastSuccess, error: toastError, info: toastInfo } = useToast();
+  const { locale } = useLocale();
 
   const [paymentState, setPaymentState] = useState<PaymentState>({ status: "idle" });
   const [pendingNetSettlement, setPendingNetSettlementState] = useState<PendingNetSettlementRecord | null>(null);
@@ -173,9 +176,10 @@ export function useNetPayment({ tripId }: UseNetPaymentOpts) {
       try {
         const result = await depositPoolBalance(publicKey, amountXlm);
         if (result.success) {
+          const { formatted } = formatMoney(amountXlm, "XLM", locale);
           toastSuccess(
             "Deposit successful",
-            `Deposited ${parseFloat(amountXlm).toFixed(4)} XLM into pool.`,
+            `Deposited ${formatted} into pool.`,
           );
           await loadPoolBalance();
           return true;

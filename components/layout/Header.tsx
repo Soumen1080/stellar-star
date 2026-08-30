@@ -9,6 +9,7 @@ import { useAuth } from "@/context/AuthContext";
 import { cn, formatAddress, copyToClipboard } from "@/lib/utils";
 import { StellarStarLogo } from "@/components/ui/Logo";
 import { useToast } from "@/components/ui/Toast";
+import { useLocale, type Locale } from "@/context/LocaleContext";
 
 const navLinks = [
   // Anchor links must target the home page when the header is rendered on a subpage.
@@ -26,6 +27,7 @@ export default function Header() {
   const { isConnected, publicKey, disconnect } = useWallet();
   const { user, isAuthenticated, signOut } = useAuth();
   const { error: toastError } = useToast();
+  const { locale, setLocale } = useLocale();
 
   const handleSignOut = () => {
     signOut();
@@ -109,6 +111,18 @@ export default function Header() {
 
               {/* Desktop CTA */}
               <div className="hidden md:flex items-center gap-3">
+                <select
+                  value={locale}
+                  onChange={(e) => setLocale(e.target.value as Locale)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-black/5 hover:bg-black/10 rounded-xl transition-all duration-150 text-sm font-semibold text-[#0F0F14] border-0 cursor-pointer focus:ring-2 focus:ring-[#2DD4BF]"
+                  aria-label="Select Locale"
+                  id="locale-selector"
+                >
+                  <option value="en-US">🇺🇸 EN</option>
+                  <option value="de-DE">🇩🇪 DE</option>
+                  <option value="hi-IN">🇮🇳 HI</option>
+                  <option value="ja-JP">🇯🇵 JA</option>
+                </select>
                 {isAuthenticated ? (
                   <div ref={userMenuRef} className="relative">
                     {/* Trigger button */}
@@ -245,6 +259,21 @@ export default function Header() {
               ))}
             </nav>
             <div className="flex flex-col gap-2 pt-3 border-t border-[#E5E5E5]">
+              <div className="flex items-center justify-between px-3 py-1.5 bg-black/5 rounded-xl mb-1">
+                <span className="text-sm font-semibold text-[#0F0F14]">Language</span>
+                <select
+                  value={locale}
+                  onChange={(e) => setLocale(e.target.value as Locale)}
+                  className="bg-transparent text-sm font-semibold text-[#0F0F14] border-0 cursor-pointer focus:ring-0 focus:outline-none"
+                  aria-label="Select Locale"
+                  id="mobile-locale-selector"
+                >
+                  <option value="en-US">🇺🇸 EN</option>
+                  <option value="de-DE">🇩🇪 DE</option>
+                  <option value="hi-IN">🇮🇳 HI</option>
+                  <option value="ja-JP">🇯🇵 JA</option>
+                </select>
+              </div>
               {isAuthenticated ? (
                 <>
                   {/* User info */}

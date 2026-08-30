@@ -2,11 +2,11 @@
 
 import Link from "next/link";
 import { ArrowRight, CheckCircle2, ReceiptText } from "lucide-react";
+import { Money } from "@/components/ui/Money";
 import type { Expense } from "@/types/expense";
 
 export function RecentExpenseRow({ expense }: { expense: Expense }) {
   const paidCount = expense.shares.filter((share) => share.paid).length;
-  const total = parseFloat(expense.totalAmount);
   const allPaid = paidCount === expense.shares.length && expense.shares.length > 0;
   const date = new Date(expense.createdAt).toLocaleDateString("en-US", {
     month: "short",
@@ -14,7 +14,7 @@ export function RecentExpenseRow({ expense }: { expense: Expense }) {
   });
   const fiatAmount =
     expense.currency !== "XLM" && expense.exchangeRate
-      ? (parseFloat(expense.totalAmount) / parseFloat(expense.exchangeRate)).toFixed(2)
+      ? parseFloat(expense.totalAmount) / parseFloat(expense.exchangeRate)
       : null;
 
   return (
@@ -31,8 +31,16 @@ export function RecentExpenseRow({ expense }: { expense: Expense }) {
       </div>
       <div className="flex-1 min-w-0">
         <p className="text-sm font-semibold text-[#0F0F14] truncate">{expense.title}</p>
-        <p className="text-[11px] text-[#AAA]">
-          {total.toFixed(4)} XLM{fiatAmount ? ` (~${fiatAmount} ${expense.currency})` : ""} &middot; {expense.members.length} members &middot; {date}
+        <p className="text-[11px] text-[#AAA] flex flex-wrap items-center gap-1">
+          <Money amount={expense.totalAmount} asset="XLM" />
+          {fiatAmount !== null && (
+            <>
+              <span>(~</span>
+              <Money amount={fiatAmount} asset={expense.currency} />
+              <span>)</span>
+            </>
+          )}
+          <span>&middot; {expense.members.length} members &middot; {date}</span>
         </p>
       </div>
       <div className="shrink-0 flex items-center gap-2">

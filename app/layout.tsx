@@ -85,6 +85,8 @@ export const viewport: Viewport = {
   initialScale: 1,
 };
 
+import { LocaleProvider } from "@/context/LocaleContext";
+
 export default function RootLayout({
   children,
 }: {
@@ -93,21 +95,22 @@ export default function RootLayout({
   return (
     <html lang="en" className="scroll-smooth">
       <body className={`${poppins.className} bg-[#F6F6F6] text-[#0F0F14] font-sans antialiased`}>
-
-        <ToastProvider>
-          <WalletProvider>
-            <AuthProvider>
-              <ExpenseProvider>
-                <TripProvider>
-                  <ConfigProvider>
-                    <NetworkMismatchBanner />
-                    {children}
-                  </ConfigProvider>
-                </TripProvider>
-              </ExpenseProvider>
-            </AuthProvider>
-          </WalletProvider>
-        </ToastProvider>
+        <LocaleProvider>
+          <ToastProvider>
+            <WalletProvider>
+              <AuthProvider>
+                <ExpenseProvider>
+                  <TripProvider>
+                    <ConfigProvider>
+                      <NetworkMismatchBanner />
+                      {children}
+                    </ConfigProvider>
+                  </TripProvider>
+                </ExpenseProvider>
+              </AuthProvider>
+            </WalletProvider>
+          </ToastProvider>
+        </LocaleProvider>
       </body>
     </html>
   );

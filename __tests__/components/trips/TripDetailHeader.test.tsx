@@ -8,14 +8,22 @@ import { TripDetailHeader } from "@/components/trips/TripDetailHeader";
 import type { Expense } from "@/types/expense";
 import type { Trip } from "@/types/trip";
 
+import { LocaleProvider } from "@/context/LocaleContext";
+
 describe("TripDetailHeader", () => {
   it("renders trip totals, member count, and share progress", () => {
-    render(<TripDetailHeader trip={trip} expenses={expenses} />);
+    const { container } = render(
+      <LocaleProvider>
+        <TripDetailHeader trip={trip} expenses={expenses} />
+      </LocaleProvider>
+    );
 
     expect(screen.getByText("Goa Weekend")).toBeTruthy();
     expect(screen.getByText("2 members")).toBeTruthy();
     expect(screen.getByText("2 expenses")).toBeTruthy();
-    expect(screen.getByText("15.0000 XLM total")).toBeTruthy();
+    const cleanText = container.textContent?.replace(/\u00a0/g, " ");
+    expect(cleanText).toContain("XLM 15.0000");
+    expect(cleanText).toContain("total");
     expect(screen.getByText("1/2 shares paid")).toBeTruthy();
     expect(screen.getByText("Asha")).toBeTruthy();
     expect(screen.getByText("Ravi")).toBeTruthy();

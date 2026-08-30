@@ -16,12 +16,19 @@ jest.mock("next/link", () => ({
   ),
 }));
 
+import { LocaleProvider } from "@/context/LocaleContext";
+
 describe("RecentExpenseRow", () => {
   it("renders expense summary and payment progress", () => {
-    render(<RecentExpenseRow expense={makeExpense()} />);
+    const { container } = render(
+      <LocaleProvider>
+        <RecentExpenseRow expense={makeExpense()} />
+      </LocaleProvider>
+    );
 
     expect(screen.getByText("Dinner")).toBeTruthy();
-    expect(screen.getByText(/12\.5000 XLM/)).toBeTruthy();
+    const cleanText = container.textContent?.replace(/\u00a0/g, " ");
+    expect(cleanText).toContain("XLM 12.5000");
     expect(screen.getByText("1/2")).toBeTruthy();
     expect(screen.getByRole("link").getAttribute("href")).toBe("/expenses");
   });

@@ -4,6 +4,10 @@ import React from "react";
 import { Zap, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
+import { Money } from "@/components/ui/Money";
+import { formatMoney } from "@/lib/money/format";
+import { useLocale } from "@/context/LocaleContext";
+
 interface PayButtonProps {
   amount: string;
   recipientName: string;
@@ -23,7 +27,9 @@ export function PayButton({
   className,
   size = "md",
 }: PayButtonProps) {
-  const xlm = parseFloat(amount).toFixed(4);
+  const { locale } = useLocale();
+  const { formatted } = formatMoney(amount, "XLM", locale);
+  const titleText = `Pay ${formatted} to ${recipientName}`;
 
   return (
     <button
@@ -38,14 +44,21 @@ export function PayButton({
           : "text-sm px-4 py-2.5",
         className
       )}
-      title={`Pay ${xlm} XLM to ${recipientName}`}
+      title={titleText}
     >
       {isLoading ? (
         <Loader2 size={size === "sm" ? 11 : 14} className="animate-spin" />
       ) : (
         <Zap size={size === "sm" ? 11 : 14} className="fill-[#2DD4BF]" />
       )}
-      {isLoading ? "Paying..." : `Pay ${xlm} XLM`}
+      {isLoading ? (
+        "Paying..."
+      ) : (
+        <span className="flex items-center gap-1">
+          <span>Pay </span>
+          <Money amount={amount} asset="XLM" />
+        </span>
+      )}
     </button>
   );
 }

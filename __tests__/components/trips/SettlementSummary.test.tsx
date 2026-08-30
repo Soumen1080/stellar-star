@@ -86,10 +86,24 @@ const expenses: Expense[] = [
   },
 ];
 
+import { LocaleProvider } from "@/context/LocaleContext";
+
 describe("SettlementSummary", () => {
   beforeEach(() => {
-    mockUseWallet.mockReturnValue({ publicKey: "G".padEnd(56, "B") } as any);
-    mockUseExpense.mockReturnValue({ markSharePaid: jest.fn() } as any);
+    mockUseWallet.mockReturnValue({
+      publicKey: "G".padEnd(56, "B"), // Ravi is logged in
+      isConnected: true,
+      refreshBalance: jest.fn(),
+      network: "testnet",
+    });
+    mockUseExpense.mockReturnValue({
+      expenses: [],
+      isLoading: false,
+      isOffline: false,
+      addExpense: jest.fn(),
+      deleteExpense: jest.fn(),
+      markSharePaid: jest.fn(),
+    });
   });
 
   afterEach(() => {
@@ -110,13 +124,18 @@ describe("SettlementSummary", () => {
       },
     ];
 
-    render(<SettlementSummary trip={trip} expenses={expenses} onChainEvents={onChainEvents} />);
+    const { container } = render(
+      <LocaleProvider>
+        <SettlementSummary trip={trip} expenses={expenses} onChainEvents={onChainEvents} />
+      </LocaleProvider>
+    );
 
     expect(screen.getAllByText("On-chain")).toHaveLength(1);
     expect(screen.getByText("Confirmed on Stellar - ledger proof recorded")).toBeTruthy();
 
+    const cleanText = container.textContent?.replace(/\u00a0/g, " ");
     // The unrelated payment row should still be payable because only the matching expense/amount row is on-chain.
-    expect(screen.getByText("Pay 3.5000 XLM")).toBeTruthy();
-    expect(screen.queryByText("Pay 2.5000 XLM")).toBeNull();
+    expect(cleanText).toContain("Pay XLM 3.5000");
+    expect(cleanText).not.toContain("Pay XLM 2.5000");
   });
 });
