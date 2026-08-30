@@ -57,7 +57,7 @@ function deriveRawDebts(expenses: Expense[]): RawDebt[] {
 }
 
 // Converts an XLM amount (either a number or a string representation) into Stroops (the smallest subunit of XLM).
-function xlmToStroops(amount: string | number): string {
+export function xlmToStroops(amount: string | number): string {
   const amountStr = typeof amount === "number" ? amount.toFixed(7) : amount;
   const [whole, fraction = ""] = amountStr.split(".");
   const normalizedWhole = whole.replace(/^0+(?=\d)/, "") || "0";

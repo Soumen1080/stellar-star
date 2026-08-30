@@ -25,8 +25,11 @@ const config = {
   setupFiles: ["<rootDir>/jest.setup.ts"],
   collectCoverageFrom: [
     "lib/**/*.ts",
+    "app/**/*.{ts,tsx}",
+    "components/**/*.{ts,tsx}",
+    "hooks/**/*.{ts,tsx}",
+    "context/**/*.{ts,tsx}",
     "!lib/stellar/soroban.ts",
-    "!lib/supabase/**",
   ],
   coverageThreshold: {
     global: {
