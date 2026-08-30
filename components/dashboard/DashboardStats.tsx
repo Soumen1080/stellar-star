@@ -4,6 +4,7 @@ import { AlertCircle, Map, ReceiptText, TrendingUp } from "lucide-react";
 import { StatCard } from "@/components/dashboard/StatCard";
 import type { Expense } from "@/types/expense";
 import type { Trip } from "@/types/trip";
+import { Money } from "@/lib/money";
 
 interface DashboardStatsProps {
   expenses: Expense[];
@@ -13,12 +14,17 @@ interface DashboardStatsProps {
 export function DashboardStats({ expenses, trips }: DashboardStatsProps) {
   const settledExpenses = expenses.filter((e) => e.settled).length;
   const settledTrips = trips.filter((t) => t.settled).length;
+  const pendingShares = expenses.reduce(
+    (acc, e) => acc + (e.shares ?? []).filter((s) => !s.paid).length,
+    0,
+  );
 
   const totalsByAsset = expenses.reduce((acc, expense) => {
     const asset = expense.currency || "XLM";
-    acc[asset] = (acc[asset] || 0) + parseFloat(expense.totalAmount);
+    const amount = Money.tryParse(expense.totalAmount) ?? Money.zero();
+    acc[asset] = (acc[asset] ?? Money.zero()).plus(amount);
     return acc;
-  }, {} as Record<string, number>);
+  }, {} as Record<string, Money>);
 
   const assetEntries = Object.entries(totalsByAsset);
   // Default to XLM if nothing exists, otherwise pick the first or show "Mixed"
@@ -27,7 +33,7 @@ export function DashboardStats({ expenses, trips }: DashboardStatsProps) {
   let displaySub = "across all bills";
 
   if (assetEntries.length === 1) {
-    displayTotal = assetEntries[0][1].toFixed(2);
+    displayTotal = assetEntries[0][1].format(2);
     displayAsset = assetEntries[0][0] === "native" ? "XLM" : assetEntries[0][0].split(":")[0];
   } else if (assetEntries.length > 1) {
     displayTotal = expenses.length.toString();

@@ -1,35 +1,48 @@
 import { StrKey } from "@stellar/stellar-sdk";
 import type { Member, SplitShare } from "@/types/expense";
-
-function toXLM(n: number): string {
-  return n.toFixed(7);
-}
+import { Money, STROOPS_PER_UNIT, divideBigInt } from "@/lib/money";
 
 export function calculateEqualSplit(
-  totalXLM: number,
+  totalXLM: number | string | Money,
   members: Member[],
-  paidByMemberId: string
+  paidByMemberId: string,
 ): SplitShare[] {
   if (members.length === 0) return [];
 
   const nonPayers = members.filter((m) => m.id !== paidByMemberId);
   if (nonPayers.length === 0) return [];
 
-  const perHead = totalXLM / members.length;
+  const totalMoney = totalXLM instanceof Money ? totalXLM : Money.parse(totalXLM);
+  const totalMembersBig = BigInt(members.length);
+  const perHeadStroops = totalMoney.stroops / totalMembersBig;
+
   const shares: SplitShare[] = [];
+  let accumulatedStroops = 0n;
+
+  // Non-payer total target in stroops
+  const nonPayerCountBig = BigInt(nonPayers.length);
+  // Total expected from non-payers is total - payer_share
+  const payerShareStroops = perHeadStroops;
+  const totalNonPayerTargetStroops = totalMoney.stroops - payerShareStroops;
 
   nonPayers.forEach((m, i) => {
     const isLast = i === nonPayers.length - 1;
-    const accumulated = shares.reduce((s, x) => s + parseFloat(x.amount), 0);
-    const amount = isLast
-      ? perHead * nonPayers.length - accumulated
-      : perHead;
+    let shareStroops: bigint;
+
+    if (isLast) {
+      shareStroops = totalNonPayerTargetStroops - accumulatedStroops;
+    } else {
+      shareStroops = perHeadStroops;
+    }
+
+    if (shareStroops < 0n) shareStroops = 0n;
+    accumulatedStroops += shareStroops;
 
     shares.push({
       memberId: m.id,
       name: m.name,
       walletAddress: m.walletAddress,
-      amount: toXLM(Math.max(0, amount)),
+      amount: Money.fromStroops(shareStroops).format(7),
       paid: false,
     });
   });
@@ -38,9 +51,9 @@ export function calculateEqualSplit(
 }
 
 export function calculateCustomSplit(
-  totalXLM: number,
+  totalXLM: number | string | Money,
   members: Member[],
-  paidByMemberId: string
+  paidByMemberId: string,
 ): SplitShare[] {
   if (members.length === 0) return [];
 
@@ -50,23 +63,40 @@ export function calculateCustomSplit(
   const totalWeight = members.reduce((s, m) => s + (m.weight ?? 1), 0);
   if (totalWeight <= 0) return [];
 
+  const totalMoney = totalXLM instanceof Money ? totalXLM : Money.parse(totalXLM);
+  const totalWeightBig = BigInt(Math.round(totalWeight * 1_000_000));
+
   const nonPayerWeight = nonPayers.reduce((s, m) => s + (m.weight ?? 1), 0);
-  const totalNonPayerTarget = (totalXLM * nonPayerWeight) / totalWeight;
+  const nonPayerWeightBig = BigInt(Math.round(nonPayerWeight * 1_000_000));
+  const totalNonPayerTargetStroops = divideBigInt(
+    totalMoney.stroops * nonPayerWeightBig,
+    totalWeightBig,
+    "half_up",
+  );
+
   const shares: SplitShare[] = [];
+  let accumulatedStroops = 0n;
 
   nonPayers.forEach((m, i) => {
     const isLast = i === nonPayers.length - 1;
-    const accumulated = shares.reduce((s, x) => s + parseFloat(x.amount), 0);
     const weight = m.weight ?? 1;
-    const amount = isLast
-      ? totalNonPayerTarget - accumulated
-      : (totalXLM * weight) / totalWeight;
+    const weightBig = BigInt(Math.round(weight * 1_000_000));
+
+    let shareStroops: bigint;
+    if (isLast) {
+      shareStroops = totalNonPayerTargetStroops - accumulatedStroops;
+    } else {
+      shareStroops = (totalMoney.stroops * weightBig) / totalWeightBig;
+    }
+
+    if (shareStroops < 0n) shareStroops = 0n;
+    accumulatedStroops += shareStroops;
 
     shares.push({
       memberId: m.id,
       name: m.name,
       walletAddress: m.walletAddress,
-      amount: toXLM(Math.max(0, amount)),
+      amount: Money.fromStroops(shareStroops).format(7),
       paid: false,
     });
   });
@@ -75,10 +105,10 @@ export function calculateCustomSplit(
 }
 
 export function calculateSplit(
-  totalXLM: number,
+  totalXLM: number | string | Money,
   members: Member[],
   paidByMemberId: string,
-  mode: "equal" | "custom"
+  mode: "equal" | "custom",
 ): SplitShare[] {
   return mode === "custom"
     ? calculateCustomSplit(totalXLM, members, paidByMemberId)
@@ -89,19 +119,19 @@ export function calculateSplit(
 
 export function isValidXLMAmount(value: string): boolean {
   const trimmed = value.trim();
-  const n = parseFloat(trimmed);
-  if (isNaN(n) || n <= 0 || n > 100_000_000) return false;
+  if (trimmed === "" || trimmed.startsWith("-")) return false;
 
-  // Stellar amounts are denominated in stroops (1 XLM = 10_000_000 stroops),
-  // so the maximum meaningful precision is 7 decimal places.
-  // We count digits after the decimal point directly on the *input string*
-  // to avoid floating-point representation artefacts (e.g. 0.1 + 0.2).
+  // Maximum meaningful precision is 7 decimal places
   const dotIndex = trimmed.indexOf(".");
   if (dotIndex !== -1 && trimmed.length - dotIndex - 1 > 7) return false;
 
-  return true;
-}
+  const parsed = Money.tryParse(trimmed);
+  if (!parsed || parsed.isNegative() || parsed.isZero()) return false;
 
+  // Max 100 million XLM
+  const maxAllowed = 100_000_000n * STROOPS_PER_UNIT;
+  return parsed.stroops <= maxAllowed;
+}
 
 export function isValidStellarAddress(address: string): boolean {
   return StrKey.isValidEd25519PublicKey(address);
@@ -115,7 +145,7 @@ export function isValidStellarAddress(address: string): boolean {
  * involved in a collision (not just the second occurrence).
  */
 export function findDuplicateWalletErrors(
-  addresses: Array<string | undefined>
+  addresses: Array<string | undefined>,
 ): Record<number, string> {
   const seen = new Map<string, number>();
   const errors: Record<number, string> = {};
