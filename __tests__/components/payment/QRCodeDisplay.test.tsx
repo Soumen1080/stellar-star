@@ -27,6 +27,11 @@ import React from "react";
 import { render, screen, fireEvent, act } from "@testing-library/react";
 import { QRCodeDisplay, QRToggle } from "@/components/payment/QRCodeDisplay";
 import type { QRPaymentData } from "@/lib/qr/generator";
+import { LocaleProvider } from "@/context/LocaleContext";
+
+function renderQR(ui: React.ReactElement) {
+  return render(<LocaleProvider>{ui}</LocaleProvider>);
+}
 
 // ─── Mocks ───────────────────────────────────────────────────────────────────
 
@@ -87,32 +92,34 @@ const testData: QRPaymentData = {
 
 describe("QRCodeDisplay — rendering", () => {
   it("renders a QR code SVG element", () => {
-    render(<QRCodeDisplay data={testData} />);
+    renderQR(<QRCodeDisplay data={testData} />);
     expect(screen.getByTestId("qr-svg")).toBeTruthy();
   });
 
   it("shows the amount formatted to 4 decimal places", () => {
-    render(<QRCodeDisplay data={testData} />);
-    expect(screen.getByText(/25\.5000 XLM/i)).toBeTruthy();
+    const { container } = renderQR(<QRCodeDisplay data={testData} />);
+    const cleanText = container.textContent?.replace(/\u00a0/g, " ");
+    expect(cleanText).toContain("XLM 25.5000");
   });
 
   it("shows 'Scan to pay' label with the formatted amount", () => {
-    render(<QRCodeDisplay data={testData} />);
-    expect(screen.getByText(/scan to pay 25\.5000 XLM/i)).toBeTruthy();
+    const { container } = renderQR(<QRCodeDisplay data={testData} />);
+    const cleanText = container.textContent?.replace(/\u00a0/g, " ");
+    expect(cleanText).toContain("Scan to pay XLM 25.5000");
   });
 
   it("shows the compatible wallet note", () => {
-    render(<QRCodeDisplay data={testData} />);
+    renderQR(<QRCodeDisplay data={testData} />);
     expect(screen.getByText(/freighter.*lobstr.*sep-0007/i)).toBeTruthy();
   });
 
   it("shows 'Copy payment link' button text by default", () => {
-    render(<QRCodeDisplay data={testData} />);
+    renderQR(<QRCodeDisplay data={testData} />);
     expect(screen.getByText(/copy payment link/i)).toBeTruthy();
   });
 
   it("passes the correct SEP-0007 URI value to the QR component", () => {
-    render(<QRCodeDisplay data={testData} />);
+    renderQR(<QRCodeDisplay data={testData} />);
     const qrSvg = screen.getByTestId("qr-svg");
     const uri = qrSvg.getAttribute("data-value") ?? "";
     expect(uri).toContain("web+stellar:pay");
@@ -232,9 +239,10 @@ describe("QRCodeDisplay — data edge cases", () => {
       destination: "GAYP4BR4UCI2OT6T7OMVZWWDGCFXHCB7NH64UNGPUHSND3F5SJKBS7AU",
       amount: "10",
     };
-    render(<QRCodeDisplay data={dataNoMemo} />);
+    const { container } = renderQR(<QRCodeDisplay data={dataNoMemo} />);
     expect(screen.getByTestId("qr-svg")).toBeTruthy();
-    expect(screen.getByText(/10\.0000 XLM/i)).toBeTruthy();
+    const cleanText = container.textContent?.replace(/\u00a0/g, " ");
+    expect(cleanText).toContain("XLM 10.0000");
   });
 
   it("URI does not contain memo_type when memo is absent", async () => {
@@ -242,7 +250,7 @@ describe("QRCodeDisplay — data edge cases", () => {
       destination: "GAYP4BR4UCI2OT6T7OMVZWWDGCFXHCB7NH64UNGPUHSND3F5SJKBS7AU",
       amount: "10",
     };
-    render(<QRCodeDisplay data={dataNoMemo} />);
+    renderQR(<QRCodeDisplay data={dataNoMemo} />);
     const qrSvg = screen.getByTestId("qr-svg");
     const uri = qrSvg.getAttribute("data-value") ?? "";
     expect(uri).not.toContain("memo_type");

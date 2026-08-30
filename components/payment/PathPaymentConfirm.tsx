@@ -24,6 +24,7 @@ import { Modal } from "@/components/ui/Modal";
 import { Button } from "@/components/ui/Button";
 import { Spinner } from "@/components/ui/Spinner";
 import { formatAssetLabel } from "@/lib/stellar/assets";
+import { Money } from "@/components/ui/Money";
 import {
   isQuoteFresh,
   quoteAgeRemainingMs,
@@ -58,16 +59,23 @@ function failureGuidance(reason: PathFailureReason): string {
     case "no_path":
       return (
         "No route exists on the Stellar DEX between the assets you hold and the asset " +
-        "this debt is in. You can acquire that asset directly, or ask to settle in " +
-        "another one."
+        "the recipient requires."
       );
     case "insufficient_balance":
       return (
-        "You hold the right assets, but not enough of them to cover this amount at the " +
-        "current rate. Add funds and try again."
+        "You do not hold enough of the chosen source asset to cover the maximum cost " +
+        "of this payment."
       );
+    case "insufficient_liquidity":
+      return (
+        "The DEX order books along this route are too thin. Try choosing a different " +
+        "source asset or paying off-chain."
+      );
+    case "stale":
+      return "The market prices changed while you were confirming. Refresh to get a new quote.";
     case "unavailable":
-      return "Could not reach the Stellar network to price a route. This is usually temporary — try again shortly.";
+    default:
+      return "An unexpected error occurred while querying the network. Please try again.";
   }
 }
 
@@ -83,17 +91,26 @@ export function PathPaymentConfirm({
   onRefreshQuote,
   onConfirm,
 }: PathPaymentConfirmProps) {
-  // Drives the countdown; the freshness decision itself is `isQuoteFresh`.
-  const [, forceTick] = useState(0);
+  const [secondsLeft, setSecondsLeft] = useState(0);
 
   useEffect(() => {
-    if (!open || !path) return;
-    const id = setInterval(() => forceTick((n) => n + 1), 1000);
-    return () => clearInterval(id);
-  }, [open, path]);
+    if (!open || !path || loading || failure) return;
 
-  const fresh = path ? isQuoteFresh(path) : false;
-  const secondsLeft = path ? Math.ceil(quoteAgeRemainingMs(path) / 1000) : 0;
+    const update = () => {
+      const ms = quoteAgeRemainingMs(path);
+      setSecondsLeft(Math.max(0, Math.ceil(ms / 1000)));
+    };
+
+    update();
+    const interval = setInterval(update, 1000);
+    return () => clearInterval(interval);
+  }, [open, path, loading, failure]);
+
+  const isStale = path && !isQuoteFresh(path);
+  const showStaleWarning = !loading && !failure && path && (isStale || secondsLeft <= 0);
+
+  const priceImpact = path ? path.priceImpactPercent : 0;
+  const isHighImpact = priceImpact >= 5.0;
 
   return (
     <Modal
@@ -139,7 +156,7 @@ export function PathPaymentConfirm({
               <div>
                 <p className="text-xs uppercase tracking-wide text-white/40">You send up to</p>
                 <p className="text-lg font-bold text-white">
-                  {path.sendMax} {formatAssetLabel(path.sourceAsset)}
+                  <Money amount={path.sendMax} asset={formatAssetLabel(path.sourceAsset)} showExact />
                 </p>
               </div>
               <ArrowRight size={18} className="shrink-0 text-white/30" />
@@ -148,7 +165,7 @@ export function PathPaymentConfirm({
                   {recipientName} receives
                 </p>
                 <p className="text-lg font-bold text-[#2DD4BF]">
-                  {path.destinationAmount} {formatAssetLabel(path.destinationAsset)}
+                  <Money amount={path.destinationAmount} asset={formatAssetLabel(path.destinationAsset)} showExact />
                 </p>
               </div>
             </div>
@@ -158,14 +175,14 @@ export function PathPaymentConfirm({
             <div className="flex justify-between gap-4">
               <dt className="text-white/50">Expected to spend</dt>
               <dd className="text-white/80">
-                {path.sourceAmount} {formatAssetLabel(path.sourceAsset)}
+                <Money amount={path.sourceAmount} asset={formatAssetLabel(path.sourceAsset)} showExact />
               </dd>
             </div>
             <div className="flex justify-between gap-4">
               <dt className="font-medium text-white/70">Maximum you can spend</dt>
               {/* Invariant 2: this is the network-enforced ceiling. */}
               <dd className="font-semibold text-white">
-                {path.sendMax} {formatAssetLabel(path.sourceAsset)}
+                <Money amount={path.sendMax} asset={formatAssetLabel(path.sourceAsset)} showExact />
               </dd>
             </div>
             <div className="flex justify-between gap-4">

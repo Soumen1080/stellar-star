@@ -21,6 +21,7 @@ import { TransactionHash } from "@/components/payment/TransactionHash";
 import { cn } from "@/lib/utils";
 import { useNetPayment } from "@/hooks/useNetPayment";
 import { buildPaymentEventKey } from "@/lib/stellar/events";
+import { Money } from "@/components/ui/Money";
 
 interface SettlementSummaryProps {
   trip: Trip;
@@ -147,8 +148,7 @@ function NetPaymentRow({
 
         <div className="flex items-center justify-between sm:justify-end gap-2">
           <span className="text-sm font-bold">
-            {parseFloat(payment.amount).toFixed(4)}{" "}
-            <span className="text-[10px] font-normal text-[#888]">{payment.asset}</span>
+            <Money amount={payment.amount} asset={payment.asset} />
           </span>
 
           {hasPendingRetry && paymentState.status === "partial_success" ? (

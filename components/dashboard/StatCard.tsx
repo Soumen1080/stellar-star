@@ -4,7 +4,7 @@ import type { ElementType } from "react";
 
 interface StatCardProps {
   label: string;
-  value: string | number;
+  value: React.ReactNode;
   sub?: string;
   icon: ElementType;
   accent?: boolean;

@@ -6,6 +6,8 @@ import { ReceiptText, Inbox } from "lucide-react";
 import type { Expense } from "@/types/expense";
 import { cn } from "@/lib/utils";
 
+import { Money } from "@/components/ui/Money";
+
 interface ExpenseListProps {
   expenses: Expense[];
   onSelect?: (expense: Expense) => void;
@@ -26,7 +28,6 @@ export function ExpenseList({ expenses, onSelect }: ExpenseListProps) {
       <AnimatePresence mode="popLayout">
         {expenses.map((expense, i) => {
           const paidCount = expense.shares.filter((s) => s.paid).length;
-          const total = parseFloat(expense.totalAmount);
           const createdAt = new Date(expense.createdAt).toLocaleDateString("en-US", {
             month: "short",
             day: "numeric",
@@ -58,8 +59,9 @@ export function ExpenseList({ expenses, onSelect }: ExpenseListProps) {
                     <p className="text-sm font-semibold text-[#0F0F14] truncate">
                       {expense.title}
                     </p>
-                    <p className="text-[11px] text-[#AAA]">
-                      {total.toFixed(4)} XLM &middot; {createdAt}
+                    <p className="text-[11px] text-[#AAA] flex items-center gap-1">
+                      <Money amount={expense.totalAmount} asset="XLM" />
+                      <span>&middot; {createdAt}</span>
                     </p>
                   </div>
                 </div>

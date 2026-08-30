@@ -11,6 +11,7 @@ import { PayButton } from "@/components/payment/PayButton";
 import { QRToggle } from "@/components/payment/QRCodeDisplay";
 import { ReceiptModal } from "@/components/expenses/ReceiptModal";
 import { trimToMemoBytes } from "@/lib/stellar/buildTransaction";
+import { Money } from "@/components/ui/Money";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -131,8 +132,7 @@ export function PaymentRow({
           {/* Amount + action */}
           <div className="flex items-center justify-between sm:justify-end gap-2">
             <span className="text-sm font-bold text-[#0F0F14]">
-              {parseFloat(share.amount).toFixed(4)}{" "}
-              <span className="text-[10px] font-normal text-[#888]">XLM</span>
+              <Money amount={share.amount} asset="XLM" />
             </span>
 
             {share.paid ? (
@@ -162,7 +162,7 @@ export function PaymentRow({
             <span className="text-[#666]">
               Contract pool:{" "}
               <strong className="text-[#0F0F14]">
-                {poolBalanceValue !== null ? `${poolBalanceValue.toFixed(4)} XLM` : "Loading..."}
+                {poolBalanceValue !== null ? <Money amount={poolBalanceValue} asset="XLM" /> : "Loading..."}
               </strong>
             </span>
             {poolShortfall !== null && (
@@ -170,8 +170,9 @@ export function PaymentRow({
                 {poolShortfall <= 0 ? (
                   <span className="text-[#134E4A] font-semibold">Ready to record</span>
                 ) : (
-                  <span className="text-red-500 font-semibold">
-                    Shortfall: {poolShortfall.toFixed(4)} XLM
+                  <span className="text-red-500 font-semibold flex items-center gap-1">
+                    <span>Shortfall: </span>
+                    <Money amount={poolShortfall} asset="XLM" />
                   </span>
                 )}
                 {poolShortfall > 0 && (

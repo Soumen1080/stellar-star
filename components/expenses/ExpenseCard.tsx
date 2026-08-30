@@ -8,6 +8,8 @@ import { SplitCalculator } from "@/components/expenses/SplitCalculator";
 import { usePayment } from "@/hooks/usePayment";
 import type { Expense, SplitShare } from "@/types/expense";
 
+import { Money } from "@/components/ui/Money";
+
 interface ExpenseCardProps {
   expense: Expense;
   currentUserPublicKey?: string | null;
@@ -30,7 +32,6 @@ export function ExpenseCard({ expense, currentUserPublicKey, onDelete, tripId }:
   } = usePayment({ expenseId: expense.id });
 
   const paidCount = expense.shares.filter((share) => share.paid).length;
-  const total = parseFloat(expense.totalAmount);
   const payer = expense.members.find((member) => member.id === expense.paidByMemberId);
   const createdAt = new Date(expense.createdAt).toLocaleDateString("en-US", {
     month: "short",
@@ -44,7 +45,7 @@ export function ExpenseCard({ expense, currentUserPublicKey, onDelete, tripId }:
 
   const fiatAmount =
     expense.currency !== "XLM" && expense.exchangeRate
-      ? (parseFloat(expense.totalAmount) / parseFloat(expense.exchangeRate)).toFixed(2)
+      ? parseFloat(expense.totalAmount) / parseFloat(expense.exchangeRate)
       : null;
 
   const handlePay = async (share: SplitShare) => {
@@ -76,8 +77,16 @@ export function ExpenseCard({ expense, currentUserPublicKey, onDelete, tripId }:
           </div>
           <div className="min-w-0">
             <p className="text-sm font-bold text-[#0F0F14] truncate">{expense.title}</p>
-            <p className="text-xs text-[#AAA] leading-relaxed">
-              {total.toFixed(4)} XLM{fiatAmount ? ` (agreed as ${fiatAmount} ${expense.currency})` : ""} &middot; {expense.members.length} members &middot; {createdAt}
+            <p className="text-xs text-[#AAA] leading-relaxed flex flex-wrap items-center gap-1">
+              <Money amount={expense.totalAmount} asset="XLM" />
+              {fiatAmount !== null && (
+                <>
+                  <span>(agreed as </span>
+                  <Money amount={fiatAmount} asset={expense.currency} />
+                  <span>)</span>
+                </>
+              )}
+              <span>&middot; {expense.members.length} members &middot; {createdAt}</span>
             </p>
           </div>
         </div>

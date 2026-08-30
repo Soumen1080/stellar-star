@@ -40,3 +40,6 @@ next-env.d.ts
 /playwright-report/
 /blob-report/
 /playwright/.cache/
+
+# Live-network E2E fixture (contains testnet secret keys — NEVER commit)
+e2e/.testnet-fixtures.json

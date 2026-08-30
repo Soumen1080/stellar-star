@@ -1,0 +1,124 @@
+name: Live Stellar Network
+
+# Runs on a nightly schedule and can be triggered manually.
+# This job submits a real XLM payment to Stellar Testnet and verifies it succeeds.
+#
+# Required secrets (set in repository Settings → Secrets):
+#   TESTNET_PAYER_SECRET     — Stellar secret key for the funded payer account
+#   TESTNET_RECIPIENT_SECRET — Stellar secret key for the recipient account
+#
+# If the secrets are absent the suite skips gracefully instead of failing.
+# A testnet reset is clearly distinguished from a code regression.
+
+on:
+  schedule:
+    # Nightly at 02:00 UTC
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+    inputs:
+      re_provision:
+        description: "Re-provision testnet accounts before running (runs provision-testnet.ts)"
+        required: false
+        default: "false"
+        type: choice
+        options: ["true", "false"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-network
+  cancel-in-progress: false   # Never cancel a live run mid-way
+
+jobs:
+  live-network:
+    name: Live Stellar Network (Testnet)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      NEXT_PUBLIC_SUPABASE_URL: https://example.supabase.co
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ci-placeholder-key
+      # Injected from secrets — live tests skip gracefully if absent
+      TESTNET_PAYER_SECRET: ${{ secrets.TESTNET_PAYER_SECRET }}
+      TESTNET_RECIPIENT_SECRET: ${{ secrets.TESTNET_RECIPIENT_SECRET }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # ── Optional re-provisioning (manual dispatch only) ─────────────────────
+      - name: Provision testnet accounts
+        if: github.event.inputs.re_provision == 'true'
+        run: npm run e2e:provision
+        env:
+          # Provisioning uses Friendbot — no secrets needed
+          NODE_ENV: test
+
+      # ── Infrastructure check ────────────────────────────────────────────────
+      - name: Check if live secrets are configured
+        id: secrets_check
+        run: |
+          if [ -z "$TESTNET_PAYER_SECRET" ]; then
+            echo "::warning::TESTNET_PAYER_SECRET is not set — live tests will be skipped"
+            echo "secrets_present=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "secrets_present=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── Install Playwright ──────────────────────────────────────────────────
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Build Next.js app
+        run: npm run build
+
+      # ── Run live suite ──────────────────────────────────────────────────────
+      - name: Run live-network Playwright suite
+        run: npx playwright test --project=live
+        env:
+          CI: true
+        # Don't mark the workflow as failed if secrets are absent (tests will skip)
+        continue-on-error: ${{ steps.secrets_check.outputs.secrets_present == 'false' }}
+
+      # ── Teardown ────────────────────────────────────────────────────────────
+      - name: Teardown testnet fixtures
+        if: always()
+        run: npm run e2e:teardown
+        continue-on-error: true
+
+      # ── Artifacts ───────────────────────────────────────────────────────────
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-network-playwright-report
+          path: playwright-report/
+          retention-days: 14
+
+      - name: Upload Playwright traces
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-network-traces
+          path: test-results/
+          retention-days: 7
+
+      - name: Upload fixture metadata
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-network-fixtures-meta
+          # Only the fixture file (contains public keys + timestamps, no secrets)
+          path: e2e/.testnet-fixtures.json
+          retention-days: 7
+          if-no-files-found: ignore

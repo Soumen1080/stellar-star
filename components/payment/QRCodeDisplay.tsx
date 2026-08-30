@@ -9,6 +9,8 @@ import type { QRPaymentData } from "@/lib/qr/generator";
 import { cn, copyToClipboard } from "@/lib/utils";
 import { useToast } from "@/components/ui/Toast";
 
+import { Money } from "@/components/ui/Money";
+
 // ─── Inline QR panel ──────────────────────────────────────────────────────────
 
 interface QRCodeDisplayProps {
@@ -54,8 +56,9 @@ export function QRCodeDisplay({ data, className }: QRCodeDisplayProps) {
       </div>
 
       <div className="text-center">
-        <p className="text-xs font-semibold text-[#555] mb-0.5">
-          Scan to pay {parseFloat(data.amount).toFixed(4)} XLM
+        <p className="text-xs font-semibold text-[#555] mb-0.5 flex items-center justify-center gap-1">
+          <span>Scan to pay </span>
+          <Money amount={data.amount} asset="XLM" />
         </p>
         <p className="text-[10px] text-[#AAA]">
           Works with Freighter, Lobstr &amp; SEP-0007 wallets

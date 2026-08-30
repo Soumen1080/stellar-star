@@ -7,6 +7,9 @@ import { PaymentRow } from "./PaymentRow";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
+import { Money } from "@/components/ui/Money";
+import { adjustAmountsForDisplay } from "@/lib/money/format";
+
 interface SplitCalculatorProps {
   shares: SplitShare[];
   payerName: string;
@@ -58,16 +61,27 @@ export function SplitCalculator({
     );
   }
 
+  // Adjust share display amounts to sum exactly to totalAmount
+  const rawAmounts = shares.map((s) => s.amount);
+  const adjustedAmounts = adjustAmountsForDisplay(rawAmounts, totalAmount, "XLM");
+  const adjustedShares = shares.map((s, idx) => ({
+    ...s,
+    amount: adjustedAmounts[idx],
+  }));
+
+  const adjustedSplitTotal = adjustedShares.reduce((s, x) => s + parseFloat(x.amount), 0);
+
   return (
     <div className="space-y-3">
       {/* Summary bar */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-4 py-3 bg-[#F8F8F8] rounded-xl border border-[#E5E5E5]">
         <div className="flex items-start sm:items-center gap-2 text-sm text-[#555] min-w-0">
           <Calculator size={14} />
-          <span className="leading-relaxed">
-            <strong className="text-[#0F0F14]">{payerName}</strong> paid{" "}
+          <span className="leading-relaxed flex items-center gap-1">
+            <strong className="text-[#0F0F14]">{payerName}</strong>
+            <span>paid</span>
             <strong className="text-[#0F0F14]">
-              {total.toFixed(4)} XLM
+              <Money amount={totalAmount} asset="XLM" />
             </strong>
           </span>
         </div>
@@ -90,7 +104,7 @@ export function SplitCalculator({
 
       {/* Rows */}
       <div className="space-y-2">
-        {shares.map((share, i) => (
+        {adjustedShares.map((share, i) => (
           <PaymentRow
             key={share.memberId}
             share={share}
@@ -112,10 +126,10 @@ export function SplitCalculator({
         <span>Split total</span>
         <span
           className={
-            Math.abs(splitTotal - total) < 0.0001 ? "text-[#134E4A]" : "text-orange-500"
+            Math.abs(adjustedSplitTotal - total) < 0.0001 ? "text-[#134E4A]" : "text-orange-500"
           }
         >
-          {splitTotal.toFixed(7)} XLM
+          <Money amount={adjustedSplitTotal} asset="XLM" showExact />
         </span>
       </div>
     </div>

@@ -7,6 +7,8 @@ import { TransactionHash } from "@/components/payment/TransactionHash";
 import { STELLAR_EXPLORER, NETWORK_DISPLAY_NAME } from "@/lib/utils/constants";
 import { cn } from "@/lib/utils";
 
+import { Money } from "@/components/ui/Money";
+
 export interface ReceiptModalProps {
   open: boolean;
   onClose: () => void;
@@ -28,7 +30,6 @@ export function ReceiptModal({
   ledger,
 }: ReceiptModalProps) {
   const explorerUrl = `${STELLAR_EXPLORER}/tx/${txHash}`;
-  const displayAmount = parseFloat(amount).toFixed(4);
 
   return (
     <Modal
@@ -53,7 +54,7 @@ export function ReceiptModal({
           label="Amount"
           value={
             <span className="font-bold text-[#2DD4BF] bg-[#0F0F14] px-2 py-0.5 rounded text-sm">
-              {displayAmount} XLM
+              <Money amount={amount} asset="XLM" />
             </span>
           }
         />
