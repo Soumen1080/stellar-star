@@ -69,13 +69,19 @@ jobs:
         run: cargo test
 
   playwright:
-    name: Playwright E2E Tests
+    name: Playwright E2E — ${{ matrix.project }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: quality
     env:
       NEXT_PUBLIC_SUPABASE_URL: https://example.supabase.co
       NEXT_PUBLIC_SUPABASE_ANON_KEY: ci-placeholder-key
+
+    strategy:
+      # Don't cancel other browsers if one fails
+      fail-fast: false
+      matrix:
+        project: [chromium, firefox, webkit]
 
     steps:
       - name: Checkout
@@ -90,30 +96,29 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Install Playwright browsers
-        run: npx playwright install --with-deps chromium
+      - name: Install Playwright browsers (${{ matrix.project }})
+        run: npx playwright install --with-deps ${{ matrix.project }}
 
       - name: Build Next.js app
         run: npm run build
 
-      - name: Run Playwright E2E tests (Chromium only in CI)
-        run: npx playwright test --project=chromium
+      - name: Run Playwright E2E (${{ matrix.project }})
+        run: npx playwright test --project=${{ matrix.project }}
         env:
           CI: true
 
-      - name: Upload Playwright report
+      - name: Upload Playwright report (${{ matrix.project }})
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-report
+          name: playwright-report-${{ matrix.project }}
           path: playwright-report/
           retention-days: 14
 
-      - name: Upload Playwright traces
+      - name: Upload Playwright traces (${{ matrix.project }})
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-traces
+          name: playwright-traces-${{ matrix.project }}
           path: test-results/
           retention-days: 7
-

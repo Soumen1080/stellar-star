@@ -2,6 +2,80 @@ import { randomUUID } from "crypto";
 import type { Page } from "@playwright/test";
 import { Keypair, TransactionBuilder } from "@stellar/stellar-sdk";
 import { NETWORK_PASSPHRASE } from "@/lib/utils/constants";
+import { assertAccountLive, InfrastructureError, TestnetResetError, TESTNET_HORIZON_URL } from "./fixtures/network";
+
+// Re-export for convenience in spec files
+export { InfrastructureError, TestnetResetError, TESTNET_HORIZON_URL };
+
+// ── Retry utility ──────────────────────────────────────────────────────────────
+
+/**
+ * Wraps an async operation with exponential back-off retry.
+ *
+ * Environmental noise (fetch timeouts, Horizon 503s, Friendbot rate-limits) is
+ * retried silently. Assertion failures — wrong status codes, wrong field values
+ * — propagate immediately so the test is marked FAILED rather than FLAKY.
+ *
+ * @param fn          - Async function to run
+ * @param maxAttempts - Maximum total attempts (default 4)
+ * @param baseDelayMs - Base delay for first retry in ms (default 1000; doubles each retry)
+ */
+export async function withRetry<T>(
+  fn: () => Promise<T>,
+  maxAttempts = 4,
+  baseDelayMs = 1_000
+): Promise<T> {
+  let attempt = 0;
+  while (true) {
+    try {
+      return await fn();
+    } catch (err) {
+      attempt++;
+      // Always propagate assertion failures and testnet resets immediately
+      if (err instanceof TestnetResetError) throw err;
+      if (isAssertionError(err)) throw err;
+
+      // Propagate if we've exhausted retries
+      if (attempt >= maxAttempts) throw err;
+
+      // Infrastructure noise: log a warning and retry with back-off
+      const delay = baseDelayMs * Math.pow(2, attempt - 1);
+      console.warn(
+        `[withRetry] Attempt ${attempt}/${maxAttempts} failed (${String(err)}). ` +
+          `Retrying in ${delay}ms…`
+      );
+      await sleep(delay);
+    }
+  }
+}
+
+/** Returns true for errors that indicate a real test assertion failure. */
+function isAssertionError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const name = err.name ?? "";
+  // Playwright assertion errors
+  if (name === "AssertionError" || name.includes("Expect")) return true;
+  // HTTP errors with a non-5xx status (e.g. 400 Bad Request = submission bug)
+  if (err.message.includes("HTTP 4")) return true;
+  // Stellar SDK errors with a result code that is our fault
+  if (err.message.includes("tx_bad_auth") || err.message.includes("tx_invalid")) return true;
+  return false;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// ── Testnet reset guard ─────────────────────────────────────────────────────────
+
+/**
+ * Asserts that a testnet account is still alive (i.e. testnet has not been reset).
+ *
+ * Call at the start of live tests that rely on pre-provisioned accounts.
+ * Throws TestnetResetError with an actionable message if the account is gone.
+ * Throws InfrastructureError if Horizon is unreachable.
+ */
+export { assertAccountLive as assertNotTestnetReset };
 
 /**
  * Injects a fake connected wallet so authenticated flows can be exercised

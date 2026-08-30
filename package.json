@@ -20,7 +20,10 @@
     "test:e2e": "npx playwright test",
     "test:e2e:ui": "npx playwright test --ui",
     "test:e2e:report": "npx playwright show-report",
-    "test:security-build": "node scripts/verify-no-e2e-bypass.mjs"
+    "test:e2e:live": "npx playwright test --project=live",
+    "test:security-build": "node scripts/verify-no-e2e-bypass.mjs",
+    "e2e:provision": "npx tsx scripts/provision-testnet.ts",
+    "e2e:teardown": "npx tsx scripts/teardown-testnet.ts"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.1",
@@ -58,6 +61,7 @@
     "postcss": "^8.5.9",
     "tailwindcss": "^3.4.1",
     "ts-jest": "^29.4.9",
+    "tsx": "^4.23.13",
     "typescript": "^5"
   }
 }
