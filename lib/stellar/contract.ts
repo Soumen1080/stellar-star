@@ -12,11 +12,14 @@ import type { Attestation } from "@/lib/settlement/attest";
 import { sorobanServer } from "./soroban";
 import { signXDR } from "@/lib/freighter";
 import {
-  CONTRACT_ID,
-  NETWORK_PASSPHRASE,
   HORIZON_URL,
+  SOROBAN_RPC_URL,
+  CONTRACT_ID,
   SETTLEMENT_ASSET_ID,
+  NETWORK_PASSPHRASE,
+  APP_NAME,
 } from "@/lib/utils/constants";
+import { Money } from "@/lib/money";
 import { getSuggestedBaseFee } from "@/lib/stellar/fees";
 import { reportError } from "@/lib/observability/reportError";
 import type {
@@ -182,18 +185,11 @@ async function submitAndPoll(
 }
 
 function xlmToStroops(xlm: string): bigint {
-  const parts = xlm.split(".");
-  const whole = BigInt(parts[0] ?? "0");
-  const fracStr = (parts[1] ?? "").padEnd(7, "0").slice(0, 7);
-  const frac = BigInt(fracStr);
-  return whole * 10_000_000n + frac;
+  return Money.parse(xlm).toStroops();
 }
 
 export function stroopsToXlm(stroops: bigint | string): string {
-  const n = BigInt(stroops);
-  const whole = n / 10_000_000n;
-  const frac  = n % 10_000_000n;
-  return `${whole}.${frac.toString().padStart(7, "0")}`;
+  return Money.fromStroops(stroops).format(7);
 }
 
 function contractReady(caller: string): boolean {

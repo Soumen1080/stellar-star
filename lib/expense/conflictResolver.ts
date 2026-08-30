@@ -12,7 +12,8 @@
  */
 
 import type { Expense, Member, SplitMode, SplitShare } from "@/types/expense";
-import { calculateEqualSplit, calculateCustomSplit } from "@/lib/split/calculator";
+import { calculateEqualSplit, calculateCustomSplit, calculateSplit } from "@/lib/split/calculator";
+import { Money } from "@/lib/money";
 
 export interface ConflictDetails {
   fields: string[];
@@ -40,10 +41,6 @@ export class ExpenseConflictError extends Error {
   }
 }
 
-function toXLM(n: number): string {
-  return n.toFixed(7);
-}
-
 /**
  * Recomputes shares for an expense while strictly preserving all settled shares (Invariant 2 & 3).
  *
@@ -58,17 +55,25 @@ export function recomputeSharesWithSettled(
   splitMode: SplitMode,
   existingShares: SplitShare[] = [],
 ): SplitShare[] {
-  const totalAmount = parseFloat(totalAmountStr);
-  if (Number.isNaN(totalAmount) || totalAmount < 0 || members.length === 0) {
+  const totalMoney = Money.tryParse(totalAmountStr);
+  if (!totalMoney || totalMoney.isNegative() || members.length === 0) {
     return [];
   }
 
   // 1. Extract settled shares and their total
   const settledShares = existingShares.filter((s) => s.paid);
-  const settledTotal = settledShares.reduce((sum, s) => sum + parseFloat(s.amount), 0);
+
+  // If no settled shares exist, perform a clean fresh split
+  if (settledShares.length === 0) {
+    return calculateSplit(totalMoney, members, paidByMemberId, splitMode);
+  }
+
+  const settledTotal = Money.sum(settledShares.map((s) => s.amount));
 
   // If total is less than what has already been settled, clamp unpaid to 0
-  const unpaidTarget = Math.max(0, totalAmount - settledTotal);
+  const unpaidTarget = totalMoney.greaterThan(settledTotal)
+    ? totalMoney.minus(settledTotal)
+    : Money.zero();
 
   // 2. Identify unpaid members (members who do not have a settled share)
   const settledMemberIds = new Set(settledShares.map((s) => s.memberId));
@@ -80,21 +85,41 @@ export function recomputeSharesWithSettled(
   }
 
   // 3. Compute unpaid split for unpaid non-payers
+  const unpaidNonPayers = unpaidMembers.filter((m) => m.id !== paidByMemberId);
+  if (unpaidNonPayers.length === 0) {
+    return settledShares;
+  }
+
   let newUnpaidShares: SplitShare[] = [];
-  if (unpaidTarget > 0) {
+  if (unpaidTarget.isPositive()) {
     if (splitMode === "custom") {
-      newUnpaidShares = calculateCustomSplit(unpaidTarget, unpaidMembers, paidByMemberId);
+      const customShares = unpaidTarget.splitByWeights(
+        unpaidNonPayers.map((m) => m.weight ?? 1),
+      );
+      newUnpaidShares = unpaidNonPayers.map((m, i) => ({
+        memberId: m.id,
+        name: m.name,
+        walletAddress: m.walletAddress,
+        amount: customShares[i].format(7),
+        paid: false,
+      }));
     } else {
-      newUnpaidShares = calculateEqualSplit(unpaidTarget, unpaidMembers, paidByMemberId);
+      const equalShares = unpaidTarget.split(unpaidNonPayers.length);
+      newUnpaidShares = unpaidNonPayers.map((m, i) => ({
+        memberId: m.id,
+        name: m.name,
+        walletAddress: m.walletAddress,
+        amount: equalShares[i].format(7),
+        paid: false,
+      }));
     }
   } else {
     // Zero unpaid amount: create 0-amount shares for non-payers
-    const unpaidNonPayers = unpaidMembers.filter((m) => m.id !== paidByMemberId);
     newUnpaidShares = unpaidNonPayers.map((m) => ({
       memberId: m.id,
       name: m.name,
       walletAddress: m.walletAddress,
-      amount: toXLM(0),
+      amount: Money.zero().format(7),
       paid: false,
     }));
   }
@@ -269,19 +294,19 @@ export function mergeExpenseUpdates(
 
   // Ensure settled shares are not violated (Invariant 2)
   const settledShares = serverExpense.shares.filter((s) => s.paid);
-  const settledTotal = settledShares.reduce((sum, s) => sum + parseFloat(s.amount), 0);
+  const settledTotal = Money.sum(settledShares.map((s) => s.amount));
 
   const effectiveTotalAmountStr = clientModified.has("totalAmount")
     ? proposedUpdates.totalAmount!
     : serverExpense.totalAmount;
-  const effectiveTotalAmount = parseFloat(effectiveTotalAmountStr);
+  const effectiveTotalAmount = Money.tryParse(effectiveTotalAmountStr) ?? Money.zero();
 
-  if (effectiveTotalAmount < settledTotal) {
+  if (effectiveTotalAmount.lessThan(settledTotal)) {
     return {
       success: false,
       conflict: {
         fields: ["totalAmount"],
-        reason: `Cannot reduce total to ${effectiveTotalAmountStr} XLM because ${toXLM(settledTotal)} XLM has already been settled on-chain.`,
+        reason: `Cannot reduce total to ${effectiveTotalAmountStr} XLM because ${settledTotal.format(7)} XLM has already been settled on-chain.`,
         serverExpense,
         proposedUpdates,
       },

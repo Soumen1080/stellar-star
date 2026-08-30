@@ -1,3 +1,11 @@
+export type {
+  AssetRef,
+  AssetDef,
+  AssetType,
+  AssetFlags,
+  StellarNetwork,
+} from "@/lib/stellar/assets";
+
 export interface StellarSubmitResult {
   hash: string;
   ledger: number;

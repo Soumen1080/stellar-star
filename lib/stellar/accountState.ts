@@ -224,7 +224,7 @@ export async function getAccountState(
       limitStroops: parseXlm(b.limit ?? "0"),
       buyingLiabilitiesStroops: parseXlm(b.buying_liabilities ?? "0"),
       sellingLiabilitiesStroops: parseXlm(b.selling_liabilities ?? "0"),
-      isAuthorized: b.is_authorized ?? false,
+      isAuthorized: b.is_authorized !== false,
       isAuthorizedToMaintainLiabilities: b.is_authorized_to_maintain_liabilities ?? false,
       sponsor: b.sponsor,
     }));
@@ -249,7 +249,7 @@ export async function getAccountState(
 export function canReceive(state: AccountState, asset: AssetRef): boolean {
   if (state.status === "unfunded") return false;
   if (isNative(asset)) return true;
-  return state.trustlines.some((line) => assetKey(line) === assetKey(asset));
+  return state.trustlines.some((line) => assetKey(line) === assetKey(asset) && line.isAuthorized);
 }
 
 export type OnboardingNeed =
@@ -301,9 +301,11 @@ export function describeOnboardingNeed(
     return { kind: "trustline_unauthorized", asset, state: existing };
   }
 
-  // A very crude heuristic for "at limit". If available capacity is near zero.
-  // We compare balance + buying_liabilities to limit. If it's equal, we are at limit.
-  if (existing.balanceStroops + existing.buyingLiabilitiesStroops >= existing.limitStroops) {
+  // A heuristic for "at limit". If limit is specified and available capacity is zero.
+  if (
+    existing.limitStroops > 0n &&
+    existing.balanceStroops + existing.buyingLiabilitiesStroops >= existing.limitStroops
+  ) {
     return { kind: "trustline_at_limit", asset, state: existing };
   }
 
