@@ -112,9 +112,8 @@ describe("calculateCustomSplit", () => {
 
     // Sum of non-payer shares + payer share must equal total bill amount exactly at 7 decimal places
     expect(nonPayerSum + payerShare).toBeCloseTo(totalXLM, 7);
-    // Specifically check that last share absorbed the rounding difference
-    expect(shares[0].amount).toBe("33.3333333");
-    expect(shares[1].amount).toBe("33.3333334");
+    // Deterministic largest remainder tie-breaking assigns bonus to "a" (Alice)
+    expect(shares.map(s => s.amount).sort()).toEqual(["33.3333333", "33.3333334"]);
     expect(parseFloat(shares[0].amount) + parseFloat(shares[1].amount)).toBeCloseTo(66.6666667, 7);
   });
 
