@@ -6,6 +6,7 @@ import { CheckCircle2, XCircle, Loader2, Database, AlertCircle } from "lucide-re
 import { TransactionHash } from "./TransactionHash";
 import type { PaymentState } from "@/hooks/usePayment";
 import { cn } from "@/lib/utils";
+import { categorizeError } from "@/lib/observability/errorTaxonomy";
 
 interface PaymentStatusProps {
   state: PaymentState;
@@ -161,23 +162,43 @@ export function PaymentStatus({ state, onReset, onRetryOnChain, className }: Pay
           )}
 
           {/* Error */}
-          {state.status === "error" && (
-            <div className="flex items-start gap-2">
-              <XCircle size={16} className="text-red-500 shrink-0 mt-0.5" />
-              <div>
-                <p className="text-sm font-bold text-red-600">Payment failed</p>
-                <p className="text-xs text-red-500 mt-0.5">{state.message}</p>
-                {onReset && (
-                  <button
-                    onClick={onReset}
-                    className="text-xs text-red-400 hover:text-red-600 underline mt-1 transition-colors"
-                  >
-                    Try again
-                  </button>
+          {state.status === "error" && (() => {
+            const cat = categorizeError(state.message);
+            return (
+              <div className="flex items-start gap-2">
+                {cat.category === "ambiguous_submission" ? (
+                  <AlertCircle size={16} className="text-amber-600 shrink-0 mt-0.5" />
+                ) : (
+                  <XCircle size={16} className="text-red-500 shrink-0 mt-0.5" />
                 )}
+                <div>
+                  <p className={cn("text-sm font-bold", {
+                    "text-amber-800": cat.category === "ambiguous_submission",
+                    "text-red-600": cat.category !== "ambiguous_submission",
+                  })}>
+                    {cat.title}
+                  </p>
+                  <p className={cn("text-xs mt-0.5", {
+                    "text-amber-700": cat.category === "ambiguous_submission",
+                    "text-red-500": cat.category !== "ambiguous_submission",
+                  })}>
+                    {cat.copy}
+                  </p>
+                  {onReset && (
+                    <button
+                      onClick={onReset}
+                      className={cn("text-xs underline mt-1 transition-colors block", {
+                        "text-amber-700 hover:text-amber-900": cat.category === "ambiguous_submission",
+                        "text-red-400 hover:text-red-600": cat.category !== "ambiguous_submission",
+                      })}
+                    >
+                      {cat.safeToRetry ? "Try again" : "Dismiss"}
+                    </button>
+                  )}
+                </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
         </motion.div>
       )}
     </AnimatePresence>

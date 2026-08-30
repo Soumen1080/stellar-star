@@ -61,6 +61,31 @@ describe("Exactly-Once Settlement Recording & Concurrency (Issue #156 / Epic #50
     mockIntentsDb = new Map();
     mockExpensesDb = new Map();
 
+    // Mock rowToSettlementIntent mapping to handle both snake_case and camelCase seeded objects
+    jest.mocked(dbQueries.rowToSettlementIntent).mockImplementation((row: any) => {
+      if (!row) return null as any;
+      return {
+        id: row.id,
+        idempotencyKey: row.idempotency_key ?? row.idempotencyKey,
+        tripId: row.trip_id ?? row.tripId,
+        expenseId: row.expense_id ?? row.expenseId,
+        memberId: row.member_id ?? row.memberId,
+        payerWallet: row.payer_wallet ?? row.payerWallet,
+        memberWallet: row.member_wallet ?? row.memberWallet,
+        amount: row.amount,
+        currency: row.currency,
+        status: row.status,
+        txHash: row.tx_hash ?? row.txHash ?? null,
+        ledger: row.ledger !== null && row.ledger !== undefined ? Number(row.ledger) : null,
+        onChain: row.on_chain ?? row.onChain ?? false,
+        errorMessage: row.error_message ?? row.errorMessage ?? null,
+        createdByWallet: row.created_by_wallet ?? row.createdByWallet,
+        createdAt: row.created_at ?? row.createdAt,
+        updatedAt: row.updated_at ?? row.updatedAt,
+        expiresAt: row.expires_at ?? row.expiresAt,
+      };
+    });
+
     // Mock Supabase DB query implementations
     jest.mocked(dbQueries.createSettlementIntentRow).mockImplementation(async (payload: any) => {
       const id = `intent-${Date.now()}-${Math.random()}`;

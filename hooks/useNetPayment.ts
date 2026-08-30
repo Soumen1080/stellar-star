@@ -294,7 +294,7 @@ export function useNetPayment({ tripId }: UseNetPaymentOpts) {
         toastError("Network mismatch", mismatchMsg);
         reportError("payment.blocked-network-mismatch", new Error(mismatchMsg), {
           stage: "payNetSettlement",
-          totalAmountXlm,
+          totalAmount,
           tripId,
           walletNetwork: network,
           appNetwork: STELLAR_NETWORK,
@@ -443,7 +443,7 @@ export function useNetPayment({ tripId }: UseNetPaymentOpts) {
             stage: "payNetSettlement",
             hash: result.hash,
             ledger: result.ledger,
-            totalAmountXlm,
+            totalAmount,
             tripId,
           });
           toastInfo(
@@ -474,7 +474,7 @@ export function useNetPayment({ tripId }: UseNetPaymentOpts) {
       setPaymentState({ status: "error", message: display });
       reportError("payment.failed", err, {
         stage: "payNetSettlement",
-        totalAmountXlm,
+        totalAmount,
         tripId,
       });
       toastError("Payment failed", display);

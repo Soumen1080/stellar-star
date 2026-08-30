@@ -2,10 +2,17 @@
 
 import { act, renderHook } from "@testing-library/react";
 import { useRealtimeCollection } from "@/lib/supabase/useRealtimeCollection";
-import { getSupabaseClient, isSupabaseConfigured } from "@/lib/supabase/client";
+import { getSupabaseClient, isSupabaseConfigured, requireAuthenticatedClient } from "@/lib/supabase/client";
 import { useAccessToken, useSessionWallet } from "@/lib/supabase/useSession";
 
-jest.mock("@/lib/supabase/client");
+jest.mock("@/lib/supabase/client", () => ({
+  isSupabaseConfigured: jest.fn(),
+  getSupabaseClient: jest.fn(),
+  requireSupabaseClient: jest.fn(),
+  requireAuthenticatedClient: jest.fn(),
+  resetSupabaseClient: jest.fn(),
+  supabase: null,
+}));
 jest.mock("@/lib/supabase/useSession");
 
 interface TestItem {
@@ -37,10 +44,12 @@ describe("useRealtimeCollection — Version Monotonicity & Out-of-Order Delivery
     };
 
     jest.mocked(isSupabaseConfigured).mockReturnValue(true);
-    jest.mocked(getSupabaseClient).mockReturnValue({
+    const mockClient = {
       channel: jest.fn(() => mockChannel),
       removeChannel: jest.fn(),
-    } as any);
+    };
+    jest.mocked(getSupabaseClient).mockReturnValue(mockClient as any);
+    jest.mocked(requireAuthenticatedClient).mockReturnValue(mockClient as any);
 
     jest.mocked(useAccessToken).mockReturnValue("test-token");
     jest.mocked(useSessionWallet).mockReturnValue(WALLET);
