@@ -21,3 +21,12 @@ if (!(global as any).TextEncoder) {
 if (!(global as any).TextDecoder) {
   (global as any).TextDecoder = TextDecoder as unknown as typeof global.TextDecoder;
 }
+
+import * as fc from "fast-check";
+if (process.env.FC_SEED) {
+  const seed = parseInt(process.env.FC_SEED, 10);
+  if (!isNaN(seed)) {
+    fc.configureGlobal({ seed });
+    console.log(`[Fast-Check] Configured global seed: ${seed}`);
+  }
+}
