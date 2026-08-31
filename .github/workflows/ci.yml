@@ -52,6 +52,39 @@ jobs:
       - name: Build
         run: npm run build
 
+  # Release gate for the invariant "no production build contains a code path
+  # that bypasses real wallet signing" (docs/THREAT_MODEL.md §6, tracked item
+  # K4). Builds a clean, flag-less production bundle and asserts the injected
+  # wallet marker is absent from the emitted chunks.
+  #
+  # This runs as its own job rather than inside `quality` because it performs a
+  # second full production build; keeping it separate stops it from inflating
+  # the main job's runtime and makes a failure unambiguously a security-gate
+  # failure rather than a generic test failure.
+  security-build-gate:
+    name: Security — no wallet bypass in production bundle
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      NEXT_PUBLIC_SUPABASE_URL: https://example.supabase.co
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ci-placeholder-key
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Assert no E2E wallet bypass in a production build
+        run: npm run test:security-build
+
   rust-contract:
     name: Rust Contract Tests
     runs-on: ubuntu-latest
@@ -99,9 +132,9 @@ jobs:
       - name: Install Playwright browsers (${{ matrix.project }})
         run: npx playwright install --with-deps ${{ matrix.project }}
 
-      - name: Build Next.js app
-        run: npm run build
-
+      # No pre-build step: this matrix drives `next dev` (started by Playwright's
+      # webServer), so a production build here would be discarded. The
+      # production-mode build is covered by the `playwright-production` job.
       - name: Run Playwright E2E (${{ matrix.project }})
         run: npx playwright test --project=${{ matrix.project }}
         env:
@@ -122,3 +155,53 @@ jobs:
           name: playwright-traces-${{ matrix.project }}
           path: test-results/
           retention-days: 7
+
+  # Invariant: "The E2E suite still runs, including against a production-mode
+  # build." The matrix above drives `next dev`, which never exercises the
+  # production minifier — so on its own it cannot show that the build-time-gated
+  # wallet seam still works through a real build. This job runs the same suite
+  # against `next build && next start`.
+  #
+  # Chromium only: the point is the build mode, not browser coverage, which the
+  # matrix above already provides.
+  #
+  # The bundle built here sets NEXT_PUBLIC_E2E_TEST_MODE=true and is a TEST
+  # ARTIFACT. It is never uploaded or deployed; `security-build-gate` covers the
+  # flag-less case that represents a real deployment.
+  playwright-production:
+    name: Playwright E2E — production build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: quality
+    env:
+      NEXT_PUBLIC_SUPABASE_URL: https://example.supabase.co
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ci-placeholder-key
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browsers (chromium)
+        run: npx playwright install --with-deps chromium
+
+      - name: Run Playwright E2E against a production build
+        run: npm run test:e2e:prod -- --project=chromium
+        env:
+          CI: true
+
+      - name: Upload Playwright report (production build)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-production
+          path: playwright-report/
+          retention-days: 14

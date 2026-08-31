@@ -149,7 +149,7 @@ includes a shipped impersonation primitive.
 | K1 | Add a Content-Security-Policy (and SRI where feasible) to shrink the XSS blast radius (T1/T3). | `next.config.mjs` headers | Reduce T1/T3 residual. |
 | K2 | Audit trip-ownership / participant-mutation RLS so a member cannot add confederate addresses (T2). | `supabase-setup.sql` | Close T2 gap. |
 | K3 | Signing-clarity review: ensure every `signXDR` call shows amount + counterparty (T4). | wallet UI | Reduce T4 deception. |
-| K4 | Keep `scripts/verify-no-e2e-bypass.mjs` in CI as a release gate (B4). | CI | Enforce #162 invariant. |
+| ~~K4~~ | ~~Keep `scripts/verify-no-e2e-bypass.mjs` in CI as a release gate (B4).~~ | CI | **DONE (#208)** — runs as the `security-build-gate` job in `.github/workflows/ci.yml` on every PR and push to `main`. |
 
 ## 6. E2E test seam (B4) — design note
 
@@ -169,3 +169,29 @@ seam lives **only** in `lib/stellar/e2eWallet.ts`, gated on the build-time flag
 
 This replaces the previous `window.__E2E_WALLET__`-only check (T1 historical
 gap) that was reachable by any script in production.
+
+### 6.1 Why the suite runs in production mode too (#208)
+
+A build-time gate is only as trustworthy as the evidence that the *built*
+artifact behaves as claimed. Two runs are needed, and they assert opposite
+things about the same mechanism:
+
+| Run | Flag | Asserts | Enforced by |
+|-----|------|---------|-------------|
+| Flag-less production build | unset | The seam is **absent** — `__E2E_WALLET__` does not appear in any emitted chunk. This is the deployment artifact. | `security-build-gate` job → `scripts/verify-no-e2e-bypass.mjs` |
+| Flagged production build | `NEXT_PUBLIC_E2E_TEST_MODE=true` | The seam is **present and functional** through a real `next build`, so the suite still exercises the app end to end. Test artifact only. | `playwright-production` job → `npm run test:e2e:prod` |
+
+Running the suite *only* against `next dev` would leave a gap: the dev server
+does not run the production minifier, so a passing dev-mode suite plus a passing
+absence-scan together still would not show that the gated seam survives a real
+build correctly. The production-mode run closes that gap — it is what makes the
+absence-scan a statement about a configuration we actually test, rather than
+about an untested one.
+
+`E2E_PRODUCTION_MODE=1` switches `playwright.config.ts` to build and serve
+rather than run a dev server; `scripts/run-e2e-production.mjs` sets it portably
+(no `cross-env` dependency).
+
+**Deployment rule (unchanged):** the deploy pipeline builds *without*
+`NEXT_PUBLIC_E2E_TEST_MODE`. Any bundle built with it set is a test artifact and
+must never be deployed. Neither CI job uploads a deployable artifact.
