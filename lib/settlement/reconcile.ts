@@ -298,14 +298,48 @@ export interface ReconcileTripFromChainResult extends ReconcileTripResult {
   payments: ContractPaymentRecord[];
   events: ContractPaymentEvent[];
   source: "state" | "events" | "merged" | "none";
+  /** Contract storage for this trip was archived or its TTL expired. */
+  stateArchived: boolean;
+  /** The requested event range fell outside the RPC retention window. */
+  eventsRetentionExpired: boolean;
+  /** True when neither source could produce an authoritative answer. */
+  degraded: boolean;
 }
 
 /**
- * Reconciles a trip completely against both durable contract state (`get_payments`)
- * and live RPC streaming events (`fetchContractEvents`).
+ * State-vs-event authority rule
+ * ------------------------------
+ * When durable contract state and the RPC event stream disagree about a
+ * payment, **contract state wins**, with one bounded exception.
  *
- * Solves the RPC retention window problem: trips older than ~24 hours reconcile
- * reliably from contract state even if event history was pruned.
+ * Why state is authoritative:
+ *  - `get_payments` reads the contract's own persistent ledger entries. It is
+ *    what the contract itself would act on, and it is what a fresh client on a
+ *    new device sees. Events are a side-channel notification derived from the
+ *    same transactions, retained by the RPC node for ~24h as a convenience.
+ *  - Events are lossy by design (retention pruning, page-budget truncation,
+ *    a node that was behind). Absence of an event is therefore never evidence
+ *    that a payment did not happen. Absence from live contract state is
+ *    meaningful — unless that state is archived (see below).
+ *
+ * The exception — recency:
+ *  - A payment present in events but absent from state is still accepted as
+ *    real. Simulation reads a slightly older ledger snapshot than the event
+ *    stream, so a just-landed payment legitimately appears in events first.
+ *    Accepting it is safe: settlement is monotonic (a share only ever moves
+ *    unpaid -> paid) and `markSharePaidRow` is idempotent, so an event-sourced
+ *    record that state later confirms causes no double-write, and one that
+ *    state would never confirm cannot occur — events are emitted only by
+ *    committed transactions.
+ *  - Conversely a payment in state but absent from events is always accepted;
+ *    that is the ordinary older-than-retention case.
+ *
+ * So the union is taken, and on a key collision the *state* record is kept as
+ * the canonical representation (it carries the settled amount, asset and tx
+ * hash straight from contract storage).
+ *
+ * When state is archived/TTL-expired, it cannot refute anything, so events
+ * become the best available evidence and the result is flagged `degraded`.
  */
 export async function reconcileTripFromChain(
   tripId: string,
@@ -315,11 +349,18 @@ export async function reconcileTripFromChain(
 ): Promise<ReconcileTripFromChainResult> {
   let payments: ContractPaymentRecord[] = [];
   let events: ContractPaymentEvent[] = [];
+  let stateArchived = false;
+  let stateOk = false;
+  let eventsRetentionExpired = false;
+  let eventsOk = false;
 
   if (CONTRACT_ID && tripId) {
-    // 1. Read durable contract storage (survives event retention expiry)
+    // 1. Read durable contract storage — authoritative, survives event pruning.
     try {
       const stateResult = await getContractPayments(callerPublicKey || "", tripId);
+      stateArchived = Boolean(stateResult.isArchived);
+      // Archived state is "successful" but carries no evidence either way.
+      stateOk = stateResult.success && !stateArchived;
       if (stateResult.success && stateResult.payments.length > 0) {
         payments = stateResult.payments;
       }
@@ -327,9 +368,11 @@ export async function reconcileTripFromChain(
       console.warn("[reconcile] Contract state read error:", err);
     }
 
-    // 2. Read live RPC event stream (real-time notifications)
+    // 2. Read the live RPC event stream — fresher, but lossy.
     try {
       const eventsResult = await fetchContractEvents(0, tripId);
+      eventsRetentionExpired = eventsResult.retentionExpired;
+      eventsOk = !eventsResult.retentionExpired && !eventsResult.truncated && !eventsResult.error;
       if (eventsResult.events.length > 0) {
         events = eventsResult.events;
       }
@@ -338,31 +381,35 @@ export async function reconcileTripFromChain(
     }
   }
 
-  // Deduplicate union using buildPaymentEventKey
+  // Union, deduplicated on the exact (trip, expense, member, amount, asset) key.
+  // Events are inserted first so that a state record with the same key
+  // overwrites it — state is the canonical representation per the rule above.
   const combinedMap = new Map<string, PaymentRecordOrEvent>();
 
-  for (const p of payments) {
-    const key = buildPaymentEventKey({
-      tripId: p.tripId,
-      expenseId: p.expenseId,
-      member: p.member,
-      amountStroops: p.amountStroops,
-      asset: p.asset,
-    });
-    combinedMap.set(key, p);
+  for (const e of events) {
+    combinedMap.set(
+      buildPaymentEventKey({
+        tripId: e.tripId,
+        expenseId: e.expenseId,
+        member: e.member,
+        amountStroops: e.amountStroops,
+        asset: e.asset,
+      }),
+      e,
+    );
   }
 
-  for (const e of events) {
-    const key = buildPaymentEventKey({
-      tripId: e.tripId,
-      expenseId: e.expenseId,
-      member: e.member,
-      amountStroops: e.amountStroops,
-      asset: e.asset,
-    });
-    if (!combinedMap.has(key)) {
-      combinedMap.set(key, e);
-    }
+  for (const p of payments) {
+    combinedMap.set(
+      buildPaymentEventKey({
+        tripId: p.tripId,
+        expenseId: p.expenseId,
+        member: p.member,
+        amountStroops: p.amountStroops,
+        asset: p.asset,
+      }),
+      p,
+    );
   }
 
   const allPayments = Array.from(combinedMap.values());
@@ -384,5 +431,10 @@ export async function reconcileTripFromChain(
     payments,
     events,
     source,
+    stateArchived,
+    eventsRetentionExpired,
+    // Neither source could speak authoritatively: the UI must say "unknown",
+    // not "nothing was paid".
+    degraded: !stateOk && !eventsOk,
   };
 }

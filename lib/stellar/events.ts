@@ -14,6 +14,21 @@ const LOOKBACK_LEDGERS = 600;
 const EVENT_PAGE_LIMIT = 200;
 const MAX_PAGES = 50;
 
+/**
+ * Soroban RPC only retains events for a limited window (~24h on public
+ * infrastructure). When `startLedger` falls outside it, the node rejects the
+ * request rather than returning a truncated result. We detect that explicitly
+ * so callers can fall back to the durable contract-state path instead of
+ * treating "no events" as "nothing was paid".
+ */
+const RETENTION_ERROR_RE =
+  /start\s*ledger|startLedger|not\s*(?:available|found)|outside|retention|older than|must be (?:within|between)|-32600|ledger.*(?:pruned|unavailable)/i;
+
+export function isRetentionWindowError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err ?? "");
+  return RETENTION_ERROR_RE.test(msg);
+}
+
 type RawEventLike = {
   ledger?: number;
   ledgerClosedAt?: string;
@@ -129,12 +144,30 @@ export function parsePaymentEvent(raw: RawEventLike): ContractPaymentEvent | nul
   }
 }
 
+export interface FetchEventsResult {
+  events: ContractPaymentEvent[];
+  latestLedger: number;
+  /**
+   * True when the requested `startLedger` fell outside the RPC retention
+   * window. Events are unavailable for that range *forever*; the caller must
+   * reconcile from durable contract state instead.
+   */
+  retentionExpired: boolean;
+  /**
+   * True when pagination stopped at MAX_PAGES with a cursor still outstanding,
+   * i.e. records past the page budget were not read. Callers must not treat the
+   * returned set as complete.
+   */
+  truncated: boolean;
+  error?: string;
+}
+
 export async function fetchContractEvents(
   startLedger: number,
   tripId?: string,
-): Promise<{ events: ContractPaymentEvent[]; latestLedger: number }> {
+): Promise<FetchEventsResult> {
   if (!CONTRACT_ID) {
-    return { events: [], latestLedger: startLedger };
+    return { events: [], latestLedger: startLedger, retentionExpired: false, truncated: false };
   }
 
   try {
@@ -164,8 +197,13 @@ export async function fetchContractEvents(
     let latestLedger = fromLedger;
     let cursor: string | undefined;
     let pageCount = 0;
+    let truncated = false;
 
-    while (pageCount < MAX_PAGES) {
+    // Exhaustive pagination: follow the cursor until the server stops handing
+    // one back. A short page is NOT an end-of-stream signal — RPC may return
+    // fewer than `limit` records and still have more behind the cursor — so the
+    // cursor alone terminates the walk.
+    for (;;) {
       pageCount++;
       const response = await (server as any).getEvents({
         ...(cursor ? {} : { startLedger: fromLedger }),
@@ -183,27 +221,47 @@ export async function fetchContractEvents(
         latestLedger = response.latestLedger;
       }
 
-      const nextCursor = typeof response?.cursor === "string" ? response.cursor : undefined;
-      const shouldContinue =
-        pageEvents.length > 0 &&
-        Boolean(nextCursor) &&
-        nextCursor !== cursor &&
-        pageEvents.length >= EVENT_PAGE_LIMIT;
+      const nextCursor = typeof response?.cursor === "string" && response.cursor
+        ? response.cursor
+        : undefined;
 
-      if (!shouldContinue) break;
+      // No cursor, or a cursor that did not advance, means the stream is drained.
+      if (!nextCursor || nextCursor === cursor) break;
 
       cursor = nextCursor;
+
+      if (pageCount >= MAX_PAGES) {
+        // Budget exhausted with records still outstanding. Report it rather
+        // than silently dropping them — the caller falls back to contract state.
+        truncated = true;
+        console.warn(
+          `[StellarStar] fetchContractEvents: page budget (${MAX_PAGES}) exhausted for trip ${tripId ?? "*"}; results truncated.`,
+        );
+        break;
+      }
     }
 
     const events: ContractPaymentEvent[] = rawEvents
       .map((ev: any) => parsePaymentEvent(ev))
       .filter((e): e is ContractPaymentEvent => e !== null && !!e.tripId);
 
-    return { events, latestLedger };
+    return { events, latestLedger, retentionExpired: false, truncated };
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err);
-    console.warn("[StellarStar] fetchContractEvents error:", errorMsg);
-    // If startLedger was outside retention window, return empty events so state-based reconciliation takes over
-    return { events: [], latestLedger: startLedger };
+    const retentionExpired = isRetentionWindowError(err);
+
+    if (!retentionExpired) {
+      console.warn("[StellarStar] fetchContractEvents error:", errorMsg);
+    }
+
+    // startLedger outside the retention window is expected for older trips and
+    // is not an error condition — it is the signal to reconcile from state.
+    return {
+      events: [],
+      latestLedger: startLedger,
+      retentionExpired,
+      truncated: false,
+      error: errorMsg,
+    };
   }
 }

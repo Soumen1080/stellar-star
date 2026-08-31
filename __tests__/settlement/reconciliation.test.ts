@@ -185,6 +185,8 @@ describe("On-chain Reconciliation Engine", () => {
 
       // Events are completely empty because 24h retention window passed
       mockedFetchContractEvents.mockResolvedValueOnce({
+        retentionExpired: false,
+        truncated: false,
         events: [],
         latestLedger: 9999,
       });
@@ -255,6 +257,8 @@ describe("On-chain Reconciliation Engine", () => {
       });
 
       mockedFetchContractEvents.mockResolvedValueOnce({
+        retentionExpired: false,
+        truncated: false,
         events: [
           {
             ledger: 100,
@@ -287,6 +291,8 @@ describe("On-chain Reconciliation Engine", () => {
       });
 
       mockedFetchContractEvents.mockResolvedValueOnce({
+        retentionExpired: false,
+        truncated: false,
         events: [
           {
             ledger: 50,
@@ -312,6 +318,142 @@ describe("On-chain Reconciliation Engine", () => {
         "tx-event-fallback",
         undefined,
       );
+    });
+  });
+
+  describe("Invariant 6: State-vs-event authority rule", () => {
+    it("keeps the contract-state record as canonical when both sources report the same payment", async () => {
+      mockedGetContractPayments.mockResolvedValueOnce({
+        success: true,
+        payments: [
+          {
+            tripId: "trip-1",
+            expenseId: "exp-xlm-1",
+            payer: memberWalletB,
+            member: memberWalletA,
+            amountStroops: 100000000n,
+            asset: "native",
+            txHash: "tx-from-state",
+            timestamp: 1700000000,
+          },
+        ],
+      });
+
+      mockedFetchContractEvents.mockResolvedValueOnce({
+        retentionExpired: false,
+        truncated: false,
+        events: [
+          {
+            ledger: 100,
+            ledgerClosedAt: "2026-01-01T00:00:00Z",
+            tripId: "trip-1",
+            expenseId: "exp-xlm-1",
+            member: memberWalletA,
+            amountStroops: "100000000",
+            asset: "native",
+            // Same logical payment, different tx hash recorded by the notifier.
+            txHash: "tx-from-event",
+          },
+        ],
+        latestLedger: 100,
+      });
+
+      const result = await reconcileTripFromChain("trip-1", mockExpenses);
+
+      expect(result.reconciledCount).toBe(1);
+      // Durable contract storage wins the tie-break, not the event stream.
+      expect(mockedMarkSharePaidRow).toHaveBeenCalledWith(
+        "exp-xlm-1",
+        "m-a",
+        "tx-from-state",
+        undefined,
+      );
+      expect(result.degraded).toBe(false);
+    });
+
+    it("accepts an event-only payment that state has not caught up to yet", async () => {
+      // Simulation reads a slightly older snapshot than the event stream, so a
+      // just-landed payment legitimately appears in events first.
+      mockedGetContractPayments.mockResolvedValueOnce({ success: true, payments: [] });
+      mockedFetchContractEvents.mockResolvedValueOnce({
+        retentionExpired: false,
+        truncated: false,
+        events: [
+          {
+            ledger: 101,
+            ledgerClosedAt: "2026-01-01T00:00:00Z",
+            tripId: "trip-1",
+            expenseId: "exp-xlm-1",
+            member: memberWalletA,
+            amountStroops: "100000000",
+            asset: "native",
+            txHash: "tx-just-landed",
+          },
+        ],
+        latestLedger: 101,
+      });
+
+      const result = await reconcileTripFromChain("trip-1", mockExpenses);
+
+      expect(result.source).toBe("events");
+      expect(result.reconciledCount).toBe(1);
+      expect(result.degraded).toBe(false);
+    });
+
+    it("reports degraded when events are pruned AND contract state is archived", async () => {
+      mockedGetContractPayments.mockResolvedValueOnce({
+        success: true,
+        isArchived: true,
+        payments: [],
+      });
+      mockedFetchContractEvents.mockResolvedValueOnce({
+        retentionExpired: true,
+        truncated: false,
+        events: [],
+        latestLedger: 0,
+      });
+
+      const result = await reconcileTripFromChain("trip-1", mockExpenses);
+
+      // Neither source can speak: "unknown", never "unpaid".
+      expect(result.degraded).toBe(true);
+      expect(result.stateArchived).toBe(true);
+      expect(result.eventsRetentionExpired).toBe(true);
+      expect(result.reconciledCount).toBe(0);
+      expect(mockedMarkSharePaidRow).not.toHaveBeenCalled();
+    });
+
+    it("is not degraded when state answers even though events were pruned", async () => {
+      mockedGetContractPayments.mockResolvedValueOnce({ success: true, payments: [] });
+      mockedFetchContractEvents.mockResolvedValueOnce({
+        retentionExpired: true,
+        truncated: false,
+        events: [],
+        latestLedger: 0,
+      });
+
+      const result = await reconcileTripFromChain("trip-old", mockExpenses);
+
+      expect(result.degraded).toBe(false);
+      expect(result.eventsRetentionExpired).toBe(true);
+    });
+
+    it("treats a truncated event page as non-authoritative", async () => {
+      mockedGetContractPayments.mockResolvedValueOnce({
+        success: false,
+        payments: [],
+        error: "rpc down",
+      });
+      mockedFetchContractEvents.mockResolvedValueOnce({
+        retentionExpired: false,
+        truncated: true,
+        events: [],
+        latestLedger: 100,
+      });
+
+      const result = await reconcileTripFromChain("trip-1", mockExpenses);
+
+      expect(result.degraded).toBe(true);
     });
   });
 });
