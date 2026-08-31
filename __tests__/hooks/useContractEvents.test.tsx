@@ -48,12 +48,16 @@ describe("useContractEvents", () => {
     mockedFetchContractEvents.mockResolvedValue({
       events: [],
       latestLedger: 100,
+      retentionExpired: false,
+      truncated: false,
     });
   });
 
   it("preserves distinct payment events even when they share the same tx hash", async () => {
     mockedFetchContractEvents.mockResolvedValue({
       latestLedger: 120,
+      retentionExpired: false,
+      truncated: false,
       events: [
         {
           ledger: 100,
@@ -111,6 +115,8 @@ describe("useContractEvents", () => {
     mockedFetchContractEvents.mockResolvedValue({
       events: [],
       latestLedger: 500,
+      retentionExpired: true,
+      truncated: false,
     });
 
     const { result } = renderHook(() => useContractEvents("trip-old"));
@@ -159,6 +165,8 @@ describe("useContractEvents", () => {
         },
       ],
       latestLedger: 110,
+      retentionExpired: false,
+      truncated: false,
     });
 
     const { result } = renderHook(() => useContractEvents("trip-1"));
