@@ -13,6 +13,13 @@
  *   HALF_OPEN  → one probe call is forwarded; success re-closes, failure
  *                re-opens.
  *
+ * ## Hangs count as failures
+ *
+ * Every call is bounded by `callTimeoutMs`. A provider that accepts the
+ * connection and then never answers is a failure like any other — without the
+ * bound it would never trip the breaker, and each request would pay the full
+ * hang.
+ *
  * ## Thread safety
  *
  * JavaScript is single-threaded, so in-memory state is safe without locks.
@@ -24,7 +31,14 @@ import type { CircuitState, CircuitBreakerConfig } from "./types";
 const DEFAULT_CONFIG: CircuitBreakerConfig = {
   failureThreshold: 3,
   resetTimeoutMs: 30_000,
+  // Long enough for a healthy provider on a slow network, short enough that a
+  // hung provider does not hold up expense creation. Three consecutive hangs
+  // (~9 s) open the circuit, after which the provider costs nothing.
+  callTimeoutMs: 3_000,
 };
+
+/** Sentinel resolved by the timeout race; never a legitimate provider value. */
+const TIMED_OUT = Symbol("fx-provider-timeout");
 
 export class CircuitBreaker {
   private state: CircuitState = "CLOSED";
@@ -70,8 +84,22 @@ export class CircuitBreaker {
     }
 
     // ── CLOSED / HALF_OPEN ────────────────────────────────────────────────────
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const result = await fn();
+      // Race the provider against the call budget. A provider that hangs is
+      // indistinguishable from one that is down, and must be treated as such —
+      // otherwise it never trips the breaker and every request pays the hang.
+      const result = await Promise.race([
+        fn(),
+        new Promise<typeof TIMED_OUT>((resolve) => {
+          timer = setTimeout(() => resolve(TIMED_OUT), this.cfg.callTimeoutMs);
+        }),
+      ]);
+
+      if (result === TIMED_OUT) {
+        this.onFailure();
+        return null;
+      }
 
       if (result !== null) {
         // Success — reset failure count and re-close if we were half-open.
@@ -86,6 +114,10 @@ export class CircuitBreaker {
       // Providers should not throw, but guard anyway.
       this.onFailure();
       return null;
+    } finally {
+      // Always clear the timer: an un-cleared one keeps the process alive and
+      // makes tests hang after the assertion has already passed.
+      if (timer !== undefined) clearTimeout(timer);
     }
   }
 

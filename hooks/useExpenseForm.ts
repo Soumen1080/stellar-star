@@ -10,6 +10,7 @@ import {
   isValidXLMAmount,
 } from "@/lib/split/calculator";
 import type { Expense, Member, SplitMode } from "@/types/expense";
+import { fetchExchangeRate, describeAge } from "@/lib/fx/quote";
 
 export interface UseExpenseFormOptions {
   onSuccess?: (expenseId?: string) => void;
@@ -68,6 +69,7 @@ export function validateExpenseFormFields({
 }
 
 
+
 export function useExpenseForm({
   onSuccess,
   currentUserPublicKey,
@@ -75,7 +77,7 @@ export function useExpenseForm({
   defaultMembers,
 }: UseExpenseFormOptions) {
   const { addExpense } = useExpense();
-  const { success: toastSuccess, error: toastError } = useToast();
+  const { success: toastSuccess, error: toastError, info: toastInfo } = useToast();
   const initialMembersRef = useRef<Member[] | null>(null);
 
   if (!initialMembersRef.current) {
@@ -91,6 +93,12 @@ export function useExpenseForm({
   const [paidByMemberId, setPaidByMemberId] = useState(initialMembersRef.current![0]?.id ?? "");
   const [submitting, setSubmitting] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  /**
+   * True when the FX service could not price the chosen currency at submit
+   * time. The form stays filled in so the user can switch to XLM and retry —
+   * an outage at a third party must not discard what they typed.
+   */
+  const [rateUnavailable, setRateUnavailable] = useState(false);
 
   const namedMembers = useMemo(() => members.filter((member) => member.name.trim()), [members]);
   const shares = useMemo(() => {
@@ -131,6 +139,7 @@ export function useExpenseForm({
       if (!validate()) return;
 
       setSubmitting(true);
+      setRateUnavailable(false);
       try {
         const cleanMembers = members.map((member) => ({
           ...member,
@@ -141,14 +150,36 @@ export function useExpenseForm({
         let exchangeRateTimestamp: string | undefined = undefined;
 
         if (currency !== "XLM") {
-          const res = await fetch(`/api/fx/rate?from=${currency}&to=XLM`);
-          if (!res.ok) throw new Error("Failed to fetch exchange rate");
-          const data = await res.json();
-          if (data.error) throw new Error(data.error);
-          
-          exchangeRate = data.rate;
-          exchangeRateTimestamp = data.timestamp;
-          finalXlmAmount = finalXlmAmount * parseFloat(exchangeRate!);
+          const quote = await fetchExchangeRate(currency);
+
+          if (quote === null) {
+            // Invariant: rate unavailability never blocks expense creation.
+            // The degraded path is a designed state, so we stop converting and
+            // record the expense in the currency the user typed, rather than
+            // failing the submit or — worse — multiplying by NaN and persisting
+            // "NaN" as the amount.
+            setSubmitting(false);
+            setRateUnavailable(true);
+            toastError(
+              `Cannot price ${currency} right now`,
+              "Exchange rates are temporarily unavailable. Enter the amount in XLM to continue — nothing you typed has been lost.",
+            );
+            return;
+          }
+
+          exchangeRate = quote.rate;
+          exchangeRateTimestamp = quote.fetchedAtIso;
+          finalXlmAmount = finalXlmAmount * parseFloat(quote.rate);
+
+          if (quote.stale) {
+            // Served from cache past its TTL. The expense is still created —
+            // a slightly old rate beats no expense — but the user is told,
+            // because a silently stale rate is the worst failure mode.
+            toastInfo(
+              "Using a recent exchange rate",
+              `The live rate is unavailable, so a rate from ${describeAge(quote.rateAgeMs)} ago was used.`,
+            );
+          }
         }
 
         const calculatedShares = calculateSplit(
@@ -220,6 +251,8 @@ export function useExpenseForm({
     setPaidByMemberId,
     submitting,
     errors,
+    /** True when the last submit could not be priced; the form is still filled in. */
+    rateUnavailable,
     namedMembers,
     shares,
     payerName,
