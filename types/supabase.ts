@@ -224,6 +224,38 @@ export type Database = {
         };
         Returns: Json;
       };
+      update_expense_versioned: {
+        Args: {
+          p_id: string;
+          p_expected_version: number;
+          p_title: string | null;
+          p_description: string | null;
+          p_total_amount: string | null;
+          p_currency: string | null;
+          p_split_mode: string | null;
+          p_paid_by_member_id: string | null;
+          p_members: Json | null;
+          p_shares: Json | null;
+          p_settled: boolean | null;
+        };
+        Returns: ExpenseRow[];
+      };
+      mark_share_paid: {
+        Args: {
+          p_expense_id: string;
+          p_member_id: string;
+          p_tx_hash: string;
+          p_on_chain?: boolean;
+        };
+        Returns: ExpenseRow[];
+      };
+      mark_shares_paid_batch: {
+        Args: {
+          p_updates: Json;
+          p_tx_hash: string;
+        };
+        Returns: ExpenseRow[];
+      };
     };
     Enums: { [_ in never]: never };
     CompositeTypes: { [_ in never]: never };

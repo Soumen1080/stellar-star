@@ -78,6 +78,7 @@ CREATE TABLE IF NOT EXISTS public.expenses (
   members           JSONB       NOT NULL DEFAULT '[]'::jsonb,
   shares            JSONB       NOT NULL DEFAULT '[]'::jsonb,
   settled           BOOLEAN     NOT NULL DEFAULT FALSE,
+  version           INT         NOT NULL DEFAULT 1,
   created_by_wallet TEXT        NOT NULL,
   member_wallets    TEXT[]      NOT NULL DEFAULT ARRAY[]::TEXT[],
   created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -130,6 +131,18 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM information_schema.columns
                  WHERE table_schema = 'public' AND table_name = 'expenses' AND column_name = 'exchange_rate_timestamp') THEN
     ALTER TABLE public.expenses ADD COLUMN exchange_rate_timestamp TIMESTAMPTZ;
+  END IF;
+
+  -- expenses version column ------------------------------------------------
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                 WHERE table_schema = 'public' AND table_name = 'expenses' AND column_name = 'version') THEN
+    ALTER TABLE public.expenses ADD COLUMN version INT NOT NULL DEFAULT 1;
+  END IF;
+
+  -- expenses version column ------------------------------------------------
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                 WHERE table_schema = 'public' AND table_name = 'expenses' AND column_name = 'version') THEN
+    ALTER TABLE public.expenses ADD COLUMN version INT NOT NULL DEFAULT 1;
   END IF;
 
   -- expenses / trips wallet columns ----------------------------------------
@@ -859,6 +872,404 @@ END;
 $fn$;
 
 GRANT EXECUTE ON FUNCTION public.claim_trip_invite(TEXT, TEXT, TEXT) TO anon, authenticated;
+
+-- ============================================================================
+-- 12. CONCURRENT EXPENSE EDITING (ISSUE #203)
+-- ============================================================================
+
+CREATE OR REPLACE FUNCTION public.update_expense_versioned(
+  p_id UUID,
+  p_expected_version INT,
+  p_title TEXT,
+  p_description TEXT,
+  p_total_amount TEXT,
+  p_currency TEXT,
+  p_split_mode TEXT,
+  p_paid_by_member_id TEXT,
+  p_members JSONB,
+  p_shares JSONB,
+  p_settled BOOLEAN
+)
+RETURNS SETOF public.expenses
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $fn$
+DECLARE
+  v_current_version INT;
+BEGIN
+  -- We use SELECT FOR UPDATE to serialize writes on this expense
+  SELECT version INTO v_current_version
+    FROM public.expenses
+   WHERE id = p_id
+     FOR UPDATE;
+     
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Expense not found';
+  END IF;
+  
+  IF v_current_version <> p_expected_version THEN
+    RAISE EXCEPTION 'Version conflict: expected %, got %', p_expected_version, v_current_version USING ERRCODE = '40001';
+  END IF;
+  
+  -- Perform update
+  RETURN QUERY UPDATE public.expenses
+     SET title = COALESCE(p_title, title),
+         description = COALESCE(p_description, description),
+         split_mode = COALESCE(p_split_mode, split_mode),
+         paid_by_member_id = COALESCE(p_paid_by_member_id, paid_by_member_id),
+         members = COALESCE(p_members, members),
+         shares = COALESCE(p_shares, shares),
+         settled = COALESCE(p_settled, settled),
+         version = version + 1
+   WHERE id = p_id
+   RETURNING *;
+END;
+$fn$;
+
+CREATE OR REPLACE FUNCTION public.mark_share_paid(
+  p_expense_id UUID,
+  p_member_id TEXT,
+  p_tx_hash TEXT,
+  p_on_chain BOOLEAN DEFAULT true
+)
+RETURNS SETOF public.expenses
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $fn$
+DECLARE
+  v_expense public.expenses;
+  v_shares JSONB;
+  v_share JSONB;
+  v_updated_shares JSONB := '[]'::jsonb;
+  v_found BOOLEAN := false;
+  v_all_paid BOOLEAN := true;
+  v_len INT;
+  v_idx INT;
+BEGIN
+  SELECT * INTO v_expense
+    FROM public.expenses
+   WHERE id = p_expense_id
+     FOR UPDATE;
+     
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Expense not found';
+  END IF;
+  
+  v_shares := v_expense.shares;
+  v_len := jsonb_array_length(v_shares);
+  
+  IF v_shares IS NULL OR v_len = 0 THEN
+    RETURN QUERY SELECT * FROM public.expenses WHERE id = p_expense_id;
+    RETURN;
+  END IF;
+  
+  FOR v_idx IN 0..(v_len - 1) LOOP
+    v_share := v_shares -> v_idx;
+    
+    IF (v_share ->> 'memberId') = p_member_id THEN
+      v_found := true;
+      -- Update this share
+      v_share := v_share || jsonb_build_object('paid', true, 'txHash', p_tx_hash);
+    END IF;
+    
+    -- Check if all shares are paid now
+    IF NOT (v_share ->> 'paid')::boolean THEN
+      v_all_paid := false;
+    END IF;
+    
+    v_updated_shares := v_updated_shares || jsonb_build_array(v_share);
+  END LOOP;
+  
+  IF v_found THEN
+    RETURN QUERY UPDATE public.expenses
+       SET shares = v_updated_shares,
+           settled = v_all_paid,
+           version = version + 1
+     WHERE id = p_expense_id
+     RETURNING *;
+  ELSE
+    RETURN QUERY SELECT * FROM public.expenses WHERE id = p_expense_id;
+  END IF;
+END;
+$fn$;
+
+CREATE OR REPLACE FUNCTION public.mark_shares_paid_batch(
+  p_updates JSONB,
+  p_tx_hash TEXT
+)
+RETURNS SETOF public.expenses
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $fn$
+DECLARE
+  v_update JSONB;
+  v_expense_id UUID;
+  v_member_id TEXT;
+  v_expense public.expenses;
+  v_len INT;
+  v_idx INT;
+  v_shares JSONB;
+  v_share JSONB;
+  v_updated_shares JSONB;
+  v_all_paid BOOLEAN;
+  v_found BOOLEAN;
+  v_share_idx INT;
+  v_share_len INT;
+BEGIN
+  v_len := jsonb_array_length(p_updates);
+  
+  FOR v_idx IN 0..(v_len - 1) LOOP
+    v_update := p_updates -> v_idx;
+    v_expense_id := (v_update ->> 'expenseId')::UUID;
+    v_member_id := v_update ->> 'memberId';
+    
+    -- Need to acquire lock on each expense and update it
+    SELECT * INTO v_expense
+      FROM public.expenses
+     WHERE id = v_expense_id
+       FOR UPDATE;
+       
+    IF FOUND THEN
+      v_shares := v_expense.shares;
+      v_share_len := jsonb_array_length(v_shares);
+      v_updated_shares := '[]'::jsonb;
+      v_found := false;
+      v_all_paid := true;
+      
+      IF v_shares IS NOT NULL AND v_share_len > 0 THEN
+        FOR v_share_idx IN 0..(v_share_len - 1) LOOP
+          v_share := v_shares -> v_share_idx;
+          IF (v_share ->> 'memberId') = v_member_id THEN
+            v_found := true;
+            v_share := v_share || jsonb_build_object('paid', true, 'txHash', p_tx_hash);
+          END IF;
+          IF NOT (v_share ->> 'paid')::boolean THEN
+            v_all_paid := false;
+          END IF;
+          v_updated_shares := v_updated_shares || jsonb_build_array(v_share);
+        END LOOP;
+        
+        IF v_found THEN
+          UPDATE public.expenses
+             SET shares = v_updated_shares,
+                 settled = v_all_paid,
+                 version = version + 1
+           WHERE id = v_expense_id;
+        END IF;
+      END IF;
+    END IF;
+  END LOOP;
+  
+  -- Return all updated expenses without duplicates
+  RETURN QUERY SELECT DISTINCT * FROM public.expenses 
+   WHERE id IN (
+     SELECT (jsonb_array_elements(p_updates) ->> 'expenseId')::UUID
+   );
+END;
+$fn$;
+
+GRANT EXECUTE ON FUNCTION public.update_expense_versioned(UUID, INT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, JSONB, JSONB, BOOLEAN) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.mark_share_paid(UUID, TEXT, TEXT, BOOLEAN) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.mark_shares_paid_batch(JSONB, TEXT) TO anon, authenticated;
+
+-- ============================================================================
+-- 12. CONCURRENT EXPENSE EDITING (ISSUE #203)
+-- ============================================================================
+
+CREATE OR REPLACE FUNCTION public.update_expense_versioned(
+  p_id UUID,
+  p_expected_version INT,
+  p_title TEXT,
+  p_description TEXT,
+  p_total_amount TEXT,
+  p_currency TEXT,
+  p_split_mode TEXT,
+  p_paid_by_member_id TEXT,
+  p_members JSONB,
+  p_shares JSONB,
+  p_settled BOOLEAN
+)
+RETURNS SETOF public.expenses
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $fn$
+DECLARE
+  v_current_version INT;
+BEGIN
+  -- We use SELECT FOR UPDATE to serialize writes on this expense
+  SELECT version INTO v_current_version
+    FROM public.expenses
+   WHERE id = p_id
+     FOR UPDATE;
+     
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Expense not found';
+  END IF;
+  
+  IF v_current_version <> p_expected_version THEN
+    RAISE EXCEPTION 'Version conflict: expected %, got %', p_expected_version, v_current_version USING ERRCODE = '40001';
+  END IF;
+  
+  -- Perform update
+  RETURN QUERY UPDATE public.expenses
+     SET title = COALESCE(p_title, title),
+         description = COALESCE(p_description, description),
+         split_mode = COALESCE(p_split_mode, split_mode),
+         paid_by_member_id = COALESCE(p_paid_by_member_id, paid_by_member_id),
+         members = COALESCE(p_members, members),
+         shares = COALESCE(p_shares, shares),
+         settled = COALESCE(p_settled, settled),
+         version = version + 1
+   WHERE id = p_id
+   RETURNING *;
+END;
+$fn$;
+
+CREATE OR REPLACE FUNCTION public.mark_share_paid(
+  p_expense_id UUID,
+  p_member_id TEXT,
+  p_tx_hash TEXT,
+  p_on_chain BOOLEAN DEFAULT true
+)
+RETURNS SETOF public.expenses
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $fn$
+DECLARE
+  v_expense public.expenses;
+  v_shares JSONB;
+  v_share JSONB;
+  v_updated_shares JSONB := '[]'::jsonb;
+  v_found BOOLEAN := false;
+  v_all_paid BOOLEAN := true;
+  v_len INT;
+  v_idx INT;
+BEGIN
+  SELECT * INTO v_expense
+    FROM public.expenses
+   WHERE id = p_expense_id
+     FOR UPDATE;
+     
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Expense not found';
+  END IF;
+  
+  v_shares := v_expense.shares;
+  v_len := jsonb_array_length(v_shares);
+  
+  IF v_shares IS NULL OR v_len = 0 THEN
+    RETURN QUERY SELECT * FROM public.expenses WHERE id = p_expense_id;
+    RETURN;
+  END IF;
+  
+  FOR v_idx IN 0..(v_len - 1) LOOP
+    v_share := v_shares -> v_idx;
+    
+    IF (v_share ->> 'memberId') = p_member_id THEN
+      v_found := true;
+      -- Update this share
+      v_share := v_share || jsonb_build_object('paid', true, 'txHash', p_tx_hash);
+    END IF;
+    
+    -- Check if all shares are paid now
+    IF NOT (v_share ->> 'paid')::boolean THEN
+      v_all_paid := false;
+    END IF;
+    
+    v_updated_shares := v_updated_shares || jsonb_build_array(v_share);
+  END LOOP;
+  
+  IF v_found THEN
+    RETURN QUERY UPDATE public.expenses
+       SET shares = v_updated_shares,
+           settled = v_all_paid,
+           version = version + 1
+     WHERE id = p_expense_id
+     RETURNING *;
+  ELSE
+    RETURN QUERY SELECT * FROM public.expenses WHERE id = p_expense_id;
+  END IF;
+END;
+$fn$;
+
+CREATE OR REPLACE FUNCTION public.mark_shares_paid_batch(
+  p_updates JSONB,
+  p_tx_hash TEXT
+)
+RETURNS SETOF public.expenses
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $fn$
+DECLARE
+  v_update JSONB;
+  v_expense_id UUID;
+  v_member_id TEXT;
+  v_expense public.expenses;
+  v_len INT;
+  v_idx INT;
+  v_shares JSONB;
+  v_share JSONB;
+  v_updated_shares JSONB;
+  v_all_paid BOOLEAN;
+  v_found BOOLEAN;
+  v_share_idx INT;
+  v_share_len INT;
+BEGIN
+  v_len := jsonb_array_length(p_updates);
+  
+  FOR v_idx IN 0..(v_len - 1) LOOP
+    v_update := p_updates -> v_idx;
+    v_expense_id := (v_update ->> 'expenseId')::UUID;
+    v_member_id := v_update ->> 'memberId';
+    
+    -- Need to acquire lock on each expense and update it
+    SELECT * INTO v_expense
+      FROM public.expenses
+     WHERE id = v_expense_id
+       FOR UPDATE;
+       
+    IF FOUND THEN
+      v_shares := v_expense.shares;
+      v_share_len := jsonb_array_length(v_shares);
+      v_updated_shares := '[]'::jsonb;
+      v_found := false;
+      v_all_paid := true;
+      
+      IF v_shares IS NOT NULL AND v_share_len > 0 THEN
+        FOR v_share_idx IN 0..(v_share_len - 1) LOOP
+          v_share := v_shares -> v_share_idx;
+          IF (v_share ->> 'memberId') = v_member_id THEN
+            v_found := true;
+            v_share := v_share || jsonb_build_object('paid', true, 'txHash', p_tx_hash);
+          END IF;
+          IF NOT (v_share ->> 'paid')::boolean THEN
+            v_all_paid := false;
+          END IF;
+          v_updated_shares := v_updated_shares || jsonb_build_array(v_share);
+        END LOOP;
+        
+        IF v_found THEN
+          UPDATE public.expenses
+             SET shares = v_updated_shares,
+                 settled = v_all_paid,
+                 version = version + 1
+           WHERE id = v_expense_id;
+        END IF;
+      END IF;
+    END IF;
+  END LOOP;
+  
+  -- Return all updated expenses without duplicates
+  RETURN QUERY SELECT DISTINCT * FROM public.expenses 
+   WHERE id IN (
+     SELECT (jsonb_array_elements(p_updates) ->> 'expenseId')::UUID
+   );
+END;
+$fn$;
+
+GRANT EXECUTE ON FUNCTION public.update_expense_versioned(UUID, INT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, JSONB, JSONB, BOOLEAN) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.mark_share_paid(UUID, TEXT, TEXT, BOOLEAN) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.mark_shares_paid_batch(JSONB, TEXT) TO anon, authenticated;
 
 -- ─── RECORD APPLIED MIGRATIONS ───────────────────────────────────────────────
 
