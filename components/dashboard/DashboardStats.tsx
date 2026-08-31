@@ -7,6 +7,7 @@ import { Money as MoneyDisplay } from "@/components/ui/Money";
 import type { Expense } from "@/types/expense";
 import type { Trip } from "@/types/trip";
 import { Money } from "@/lib/money";
+import { settlementAssetOf } from "@/lib/settlement/expenseAsset";
 
 interface DashboardStatsProps {
   expenses: Expense[];
@@ -22,7 +23,9 @@ export function DashboardStats({ expenses, trips }: DashboardStatsProps) {
   );
 
   const totalsByAsset = expenses.reduce((acc, expense) => {
-    const asset = expense.currency || "XLM";
+    // Settlement asset, not the typed-in fiat currency: a EUR expense and a
+    // USD expense both settle in XLM and belong in one bucket.
+    const asset = settlementAssetOf(expense);
     const amount = Money.tryParse(expense.totalAmount) ?? Money.zero();
     acc[asset] = (acc[asset] ?? Money.zero()).plus(amount);
     return acc;

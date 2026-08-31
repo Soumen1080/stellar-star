@@ -32,6 +32,7 @@ import {
   tryParseAssetKey,
   NATIVE_ASSET_KEY,
 } from "@/lib/stellar/assets";
+import { settlementAssetOf } from "@/lib/settlement/expenseAsset";
 import type { Expense } from "@/types/expense";
 import type { ContractPaymentEvent, ContractPaymentRecord } from "@/types/contract";
 import type { StellarStarClient } from "@/lib/supabase/client";
@@ -252,7 +253,10 @@ export async function reconcileTripWithChainState(
     const expense = expenses.find((e) => e.id === payment.expenseId);
     if (!expense) continue;
 
-    const expenseAsset = normalizeAssetKey(expense.currency);
+    // The expense's SETTLEMENT asset. Matching on `expense.currency` compared
+    // an on-chain asset against a fiat code, so a EUR-entered expense never
+    // matched its own native-XLM payment and silently failed to reconcile.
+    const expenseAsset = normalizeAssetKey(settlementAssetOf(expense));
     const paymentAsset = normalizeAssetKey(payment.asset);
     if (expenseAsset !== paymentAsset) {
       // Invariant 1: Never match payments across different assets (e.g. 10 USDC vs 10 XLM)

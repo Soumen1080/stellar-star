@@ -7,6 +7,7 @@ import type { Trip } from "@/types/trip";
 
 import { Money as MoneyDisplay } from "@/components/ui/Money";
 import { Money } from "@/lib/money";
+import { settlementAssetOf } from "@/lib/settlement/expenseAsset";
 
 interface TripDetailHeaderProps {
   trip: Trip;
@@ -15,8 +16,12 @@ interface TripDetailHeaderProps {
 }
 
 export function TripDetailHeader({ trip, expenses, onOpenInvite }: TripDetailHeaderProps) {
+  // Group by SETTLEMENT asset. Grouping by `expense.currency` split a trip of
+  // EUR- and USD-entered expenses into two buckets and labelled it "Mixed
+  // Assets", even though every amount was already converted to XLM and the
+  // trip is single-asset.
   const totalsByAsset = expenses.reduce((acc, expense) => {
-    const asset = expense.currency || "XLM";
+    const asset = settlementAssetOf(expense);
     const amount = Money.tryParse(expense.totalAmount) ?? Money.zero();
     acc[asset] = (acc[asset] ?? Money.zero()).plus(amount);
     return acc;
