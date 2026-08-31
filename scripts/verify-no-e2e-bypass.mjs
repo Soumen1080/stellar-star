@@ -13,8 +13,12 @@
  * client code: it is still minified, NEXT_PUBLIC-inlined production output, so
  * the scan is representative of a real deployment artifact.
  *
- * Run directly:  node scripts/verify-no-e2e-bypass.mjs
- * Run in suite:  npm test  (see __tests__/security/no-e2e-bypass.test.ts)
+ * Run directly:  npm run test:security-build
+ * Run in jest:   RUN_SECURITY_BUILD=1 npm test
+ *                (__tests__/security/no-e2e-bypass.test.ts skips by default —
+ *                 a full production build is too slow for the unit suite)
+ * Run in CI:     the `security-build-gate` job in .github/workflows/ci.yml
+ *                executes this unconditionally on every PR and push to main.
  */
 import { spawnSync } from "node:child_process";
 import {

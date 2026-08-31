@@ -27,7 +27,28 @@ import { defineConfig, devices } from "@playwright/test";
  *
  * The base URL points to the local Next.js dev server.
  * In CI the server is started via `webServer` below.
+ *
+ * Dev server vs production-mode build
+ * ───────────────────────────────────
+ * By default the suite drives `next dev`, which is fast to iterate against.
+ * Set `E2E_PRODUCTION_MODE=1` to instead build and serve a real production
+ * bundle (`next build && next start`).
+ *
+ * This matters for the security invariant in docs/THREAT_MODEL.md §6: the E2E
+ * wallet seam is gated on the build-time flag `NEXT_PUBLIC_E2E_TEST_MODE`, and
+ * a dev server does not exercise the production minifier's dead-code
+ * elimination at all. Running the suite in production mode proves the seam
+ * still works when the flag IS set through a real build — which is what makes
+ * the complementary assertion (that a flag-LESS build has no seam, see
+ * scripts/verify-no-e2e-bypass.mjs) a meaningful gate rather than a claim about
+ * an untested configuration.
+ *
+ * A production-mode run here is still a TEST ARTIFACT: it is built with
+ * NEXT_PUBLIC_E2E_TEST_MODE=true and must never be deployed.
+ *
+ *   E2E_PRODUCTION_MODE=1 npx playwright test --project=chromium
  */
+const PRODUCTION_MODE = process.env.E2E_PRODUCTION_MODE === "1";
 export default defineConfig({
   testDir: "./e2e",
 
@@ -102,12 +123,18 @@ export default defineConfig({
     },
   ],
 
-  /* Start the Next.js dev server before running tests in CI */
+  /* Start the Next.js server before running tests in CI.
+   * Dev server by default; a real production build when E2E_PRODUCTION_MODE=1.
+   * The build must happen inside this command so it inherits the env below —
+   * NEXT_PUBLIC_E2E_TEST_MODE is inlined at BUILD time, not at serve time. */
   webServer: {
-    command: "npm run dev",
+    command: PRODUCTION_MODE
+      ? "npm run build && npm run start"
+      : "npm run dev",
     url: "http://localhost:3000",
     reuseExistingServer: !process.env.CI,
-    timeout: 120_000,
+    // A production build needs materially longer than starting a dev server.
+    timeout: PRODUCTION_MODE ? 300_000 : 120_000,
     env: {
       NEXT_PUBLIC_SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL ?? "https://example.supabase.co",
       NEXT_PUBLIC_SUPABASE_ANON_KEY: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "ci-placeholder-key",

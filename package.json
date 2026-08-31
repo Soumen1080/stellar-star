@@ -18,6 +18,7 @@
     "db:migrate": "node scripts/migrate.mjs",
     "db:status": "node scripts/migrate.mjs --status",
     "test:e2e": "npx playwright test",
+    "test:e2e:prod": "node scripts/run-e2e-production.mjs",
     "test:e2e:ui": "npx playwright test --ui",
     "test:e2e:report": "npx playwright show-report",
     "test:e2e:live": "npx playwright test --project=live",
