@@ -10,6 +10,7 @@ import { useLocale } from "@/context/LocaleContext";
 
 interface PayButtonProps {
   amount: string;
+  asset?: string;
   recipientName: string;
   onClick: () => void;
   isLoading?: boolean;
@@ -20,6 +21,7 @@ interface PayButtonProps {
 
 export function PayButton({
   amount,
+  asset = "XLM",
   recipientName,
   onClick,
   isLoading = false,
@@ -28,7 +30,8 @@ export function PayButton({
   size = "md",
 }: PayButtonProps) {
   const { locale } = useLocale();
-  const { formatted } = formatMoney(amount, "XLM", locale);
+  const displayAsset = asset === "native" ? "XLM" : asset.split(":")[0];
+  const { formatted } = formatMoney(amount, displayAsset, locale);
   const titleText = `Pay ${formatted} to ${recipientName}`;
 
   return (
@@ -56,7 +59,7 @@ export function PayButton({
       ) : (
         <span className="flex items-center gap-1">
           <span>Pay </span>
-          <Money amount={amount} asset="XLM" />
+          <Money amount={amount} asset={displayAsset} />
         </span>
       )}
     </button>

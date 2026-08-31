@@ -106,11 +106,7 @@ export function PathPaymentConfirm({
     return () => clearInterval(interval);
   }, [open, path, loading, failure]);
 
-  const isStale = path && !isQuoteFresh(path);
-  const showStaleWarning = !loading && !failure && path && (isStale || secondsLeft <= 0);
-
-  const priceImpact = path ? path.priceImpactPercent : 0;
-  const isHighImpact = priceImpact >= 5.0;
+  const isFresh = Boolean(path && isQuoteFresh(path) && secondsLeft > 0);
 
   return (
     <Modal
@@ -250,15 +246,15 @@ export function PathPaymentConfirm({
           {/* Freshness: a stale quote cannot be signed against. */}
           <div
             className={`flex items-center justify-between gap-3 rounded-xl border p-3 ${
-              fresh
+              isFresh
                 ? "border-white/10 bg-white/[0.02]"
                 : "border-amber-500/30 bg-amber-500/10"
             }`}
           >
             <div className="flex items-center gap-2 text-sm">
-              <Clock size={14} className={fresh ? "text-white/40" : "text-amber-400"} />
-              <span className={fresh ? "text-white/60" : "text-amber-100"}>
-                {fresh
+              <Clock size={14} className={isFresh ? "text-white/40" : "text-amber-400"} />
+              <span className={isFresh ? "text-white/60" : "text-amber-100"}>
+                {isFresh
                   ? `Quote valid for ${secondsLeft}s`
                   : "Quote expired — the rate may have moved"}
               </span>
@@ -277,8 +273,8 @@ export function PathPaymentConfirm({
             <Button variant="ghost-white" onClick={onClose}>
               Cancel
             </Button>
-            <Button onClick={onConfirm} disabled={!fresh}>
-              {fresh ? `Confirm — spend up to ${path.sendMax}` : "Refresh quote to continue"}
+            <Button onClick={onConfirm} disabled={!isFresh}>
+              {isFresh ? `Confirm — spend up to ${path.sendMax}` : "Refresh quote to continue"}
             </Button>
           </div>
         </div>
