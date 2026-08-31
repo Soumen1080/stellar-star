@@ -22,19 +22,49 @@
 import { HORIZON_URL } from "@/lib/utils/constants";
 import { assetKey, fromHorizonFields, isNative, type AssetRef } from "@/lib/stellar/assets";
 
-/** Stellar's base reserve, in stroops. 0.5 XLM at protocol 19+. Now fetched dynamically. */
+/**
+ * Last-resort base reserve, in stroops (0.5 XLM at protocol 19+).
+ *
+ * The base reserve is a NETWORK PARAMETER and can be changed by validator vote,
+ * so this constant is a fallback for when the ledger cannot be read — never the
+ * value we prefer. `getNetworkBaseReserve` reads the live figure, and
+ * `baseReserveIsLive` reports whether the number in hand actually came from the
+ * ledger, so callers can avoid asserting a reserve amount they had to guess.
+ */
 export const BASE_RESERVE_STROOPS = 5_000_000n;
 
 let cachedBaseReserveStroops = BASE_RESERVE_STROOPS;
 let lastBaseReserveFetch = 0;
+/** False until a ledger read has actually succeeded at least once. */
+let baseReserveFromLedger = false;
 
-/** Fetches the live base reserve from the network, with a 60s cache. */
+/** Whether the cached base reserve came from the ledger rather than the fallback. */
+export function baseReserveIsLive(): boolean {
+  return baseReserveFromLedger;
+}
+
+/** Test seam: drop the cache so a test can control what the next read sees. */
+export function __resetBaseReserveCache(): void {
+  cachedBaseReserveStroops = BASE_RESERVE_STROOPS;
+  lastBaseReserveFetch = 0;
+  baseReserveFromLedger = false;
+}
+
+/**
+ * Fetches the live base reserve from the network, with a 60s cache.
+ *
+ * A failed read does NOT refresh the cache timestamp: retrying on the next call
+ * is much better than pinning the hardcoded fallback for a minute, because
+ * every reserve figure shown to the user depends on this number.
+ */
 export async function getNetworkBaseReserve(
   horizonUrl: string = HORIZON_URL,
   fetchImpl: typeof fetch = fetch,
 ): Promise<bigint> {
   const now = Date.now();
-  if (now - lastBaseReserveFetch < 60_000) return cachedBaseReserveStroops;
+  if (baseReserveFromLedger && now - lastBaseReserveFetch < 60_000) {
+    return cachedBaseReserveStroops;
+  }
 
   try {
     const res = await fetchImpl(`${horizonUrl}/ledgers?order=desc&limit=1`, {
@@ -47,10 +77,12 @@ export async function getNetworkBaseReserve(
       if (val) {
         cachedBaseReserveStroops = BigInt(val);
         lastBaseReserveFetch = now;
+        baseReserveFromLedger = true;
       }
     }
-  } catch (e) {
-    // Silently fallback to cache
+  } catch {
+    // Fall through to the previous value; the timestamp is deliberately not
+    // advanced, so the next call retries the ledger.
   }
   return cachedBaseReserveStroops;
 }
@@ -263,7 +295,23 @@ export type OnboardingNeed =
   /** The trustline exists, but the user is only authorized to maintain liabilities (cannot receive). */
   | { kind: "trustline_auth_maintain"; asset: AssetRef; state: TrustlineState }
   /** The trustline exists, but has insufficient limit capacity to receive more. */
-  | { kind: "trustline_at_limit"; asset: AssetRef; state: TrustlineState };
+  | { kind: "trustline_at_limit"; asset: AssetRef; state: TrustlineState }
+  /**
+   * The trustline is usable, but its reserve is paid by someone else.
+   *
+   * Not a blocker — the user can receive the asset today. It is surfaced
+   * because it is a *fact about their money* they would otherwise not know:
+   * the sponsor can revoke the sponsorship, at which point the reserve becomes
+   * the user's own obligation and their spendable balance silently drops.
+   */
+  | {
+      kind: "trustline_sponsored";
+      asset: AssetRef;
+      state: TrustlineState;
+      sponsor: string;
+      /** What the user would need to cover themselves if the sponsor revoked. */
+      reserveStroops: bigint;
+    };
 
 export function describeOnboardingNeed(
   state: AccountState,
@@ -301,7 +349,9 @@ export function describeOnboardingNeed(
     return { kind: "trustline_unauthorized", asset, state: existing };
   }
 
-  // A heuristic for "at limit". If limit is specified and available capacity is zero.
+  // "At limit": the line cannot absorb more, counting funds already committed
+  // to open buy offers — otherwise we would tell a user they have headroom that
+  // an offer will consume the moment it fills.
   if (
     existing.limitStroops > 0n &&
     existing.balanceStroops + existing.buyingLiabilitiesStroops >= existing.limitStroops
@@ -309,5 +359,28 @@ export function describeOnboardingNeed(
     return { kind: "trustline_at_limit", asset, state: existing };
   }
 
+  // Usable, but somebody else is paying for it. Reported last: the blocking
+  // states above all take precedence, since they stop the payment outright.
+  if (existing.sponsor) {
+    return {
+      kind: "trustline_sponsored",
+      asset,
+      state: existing,
+      sponsor: existing.sponsor,
+      reserveStroops: trustlineReserveStroops(state.baseReserveStroops),
+    };
+  }
+
   return { kind: "none" };
+}
+
+/**
+ * Whether a need still blocks receiving the asset.
+ *
+ * `trustline_sponsored` is informational — the user can receive today — so a
+ * caller gating a payment on "is this account ready" must not treat every
+ * non-`none` need as a blocker.
+ */
+export function isBlockingNeed(need: OnboardingNeed): boolean {
+  return need.kind !== "none" && need.kind !== "trustline_sponsored";
 }
