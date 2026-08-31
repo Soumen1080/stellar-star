@@ -1,6 +1,16 @@
 import * as fc from "fast-check";
 import { computeNetPayments, type RawDebt, type NetPayment } from "@/lib/settlement/netBalance";
 import { makeRawDebtsArb } from "./generators";
+import { Money } from "@/lib/money";
+import { parseAssetKey, assetKey } from "@/lib/stellar/assets";
+
+function normalizeAsset(asset: string): string {
+  try {
+    return assetKey(parseAssetKey(asset));
+  } catch {
+    return asset;
+  }
+}
 
 describe("Netting Property Tests", () => {
   // Helper to compute net positions in stroops to avoid float issues
@@ -8,11 +18,12 @@ describe("Netting Property Tests", () => {
     const assetPositions = new Map<string, Map<string, bigint>>();
 
     for (const d of debts) {
-      if (!assetPositions.has(d.asset)) {
-        assetPositions.set(d.asset, new Map());
+      const asset = normalizeAsset(d.asset);
+      if (!assetPositions.has(asset)) {
+        assetPositions.set(asset, new Map());
       }
-      const balances = assetPositions.get(d.asset)!;
-      const amountStroops = BigInt(Math.round(d.amount * 1e7));
+      const balances = assetPositions.get(asset)!;
+      const amountStroops = Money.parse(d.amount).toStroops();
 
       balances.set(d.fromId, (balances.get(d.fromId) ?? 0n) - amountStroops);
       balances.set(d.toId, (balances.get(d.toId) ?? 0n) + amountStroops);
@@ -24,14 +35,13 @@ describe("Netting Property Tests", () => {
     const assetPositions = new Map<string, Map<string, bigint>>();
 
     for (const p of payments) {
-      if (!assetPositions.has(p.asset)) {
-        assetPositions.set(p.asset, new Map());
+      const asset = normalizeAsset(p.asset);
+      if (!assetPositions.has(asset)) {
+        assetPositions.set(asset, new Map());
       }
-      const balances = assetPositions.get(p.asset)!;
-      const amountStroops = BigInt(Math.round(parseFloat(p.amount) * 1e7));
+      const balances = assetPositions.get(asset)!;
+      const amountStroops = Money.parse(p.amount).toStroops();
 
-      // In NetPayment, "from" and "to" are names, but we can resolve them.
-      // Wait, to compare properly, let's map by name.
       balances.set(p.from, (balances.get(p.from) ?? 0n) - amountStroops);
       balances.set(p.to, (balances.get(p.to) ?? 0n) + amountStroops);
     }
@@ -48,11 +58,12 @@ describe("Netting Property Tests", () => {
           // Get net positions from input (by name to match NetPayment)
           const inputBalances = new Map<string, Map<string, bigint>>();
           for (const d of debts) {
-            if (!inputBalances.has(d.asset)) {
-              inputBalances.set(d.asset, new Map());
+            const asset = normalizeAsset(d.asset);
+            if (!inputBalances.has(asset)) {
+              inputBalances.set(asset, new Map());
             }
-            const bal = inputBalances.get(d.asset)!;
-            const stroops = BigInt(Math.round(d.amount * 1e7));
+            const bal = inputBalances.get(asset)!;
+            const stroops = Money.parse(d.amount).toStroops();
             bal.set(d.from, (bal.get(d.from) ?? 0n) - stroops);
             bal.set(d.to, (bal.get(d.to) ?? 0n) + stroops);
           }
@@ -64,7 +75,7 @@ describe("Netting Property Tests", () => {
             const outBals = outputBalances.get(asset) ?? new Map();
             balances.forEach((inBal, name) => {
               const outBal = outBals.get(name) ?? 0n;
-              expect(Number(inBal) / 1e7).toBeCloseTo(Number(outBal) / 1e7, 5);
+              expect(inBal).toBe(outBal);
             });
           });
         }
@@ -83,7 +94,7 @@ describe("Netting Property Tests", () => {
           result.forEach((p) => {
             expect(p.settledDebts.length).toBeGreaterThan(0);
             p.settledDebts.forEach((d) => {
-              expect(d.asset).toBe(p.asset);
+              expect(normalizeAsset(d.asset)).toBe(normalizeAsset(p.asset));
             });
           });
         }
@@ -99,10 +110,10 @@ describe("Netting Property Tests", () => {
         ({ debts }) => {
           const result = computeNetPayments(debts);
 
-          const inputTotalStroops = debts.reduce((s, d) => s + BigInt(Math.round(d.amount * 1e7)), 0n);
-          const outputTotalStroops = result.reduce((s, p) => s + BigInt(Math.round(parseFloat(p.amount) * 1e7)), 0n);
+          const inputTotalStroops = debts.reduce((s, d) => s + Money.parse(d.amount).toStroops(), 0n);
+          const outputTotalStroops = result.reduce((s, p) => s + Money.parse(p.amount).toStroops(), 0n);
 
-          expect(Number(outputTotalStroops)).toBeLessThanOrEqual(Number(inputTotalStroops));
+          expect(outputTotalStroops).toBeLessThanOrEqual(inputTotalStroops);
         }
       ),
       { numRuns: 100 }

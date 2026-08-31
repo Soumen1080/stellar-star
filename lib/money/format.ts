@@ -1,4 +1,5 @@
 import { type AssetRef } from "@/lib/stellar/assets";
+import { divideBigInt } from "./amount";
 
 export interface AssetFormattingConfig {
   decimals: number;
@@ -25,7 +26,7 @@ export function getAssetConfig(asset: string): AssetFormattingConfig {
   // Check dynamically if it is a valid ISO currency code
   try {
     const formatter = new Intl.NumberFormat("en-US", { style: "currency", currency: upper });
-    const decimals = formatter.resolvedOptions().maximumFractionDigits;
+    const decimals = formatter.resolvedOptions().maximumFractionDigits ?? 2;
     return { decimals, isFiat: true, name: upper };
   } catch {
     // If invalid, treat as custom crypto token
@@ -42,7 +43,7 @@ export interface FormatMoneyResult {
  * Formats a given monetary amount into a localized display representation.
  */
 export function formatMoney(
-  amount: number | string | bigint,
+  amount: number | string | bigint | { stroops: bigint; format?: (decimals?: number) => string },
   asset: string,
   locale: string,
   options: { showExact?: boolean } = {}
@@ -52,7 +53,17 @@ export function formatMoney(
   }
 
   const config = getAssetConfig(asset);
-  const amountNum = typeof amount === "bigint" ? Number(amount) : parseFloat(String(amount));
+  let amountNum: number;
+
+  if (typeof amount === "number") {
+    amountNum = amount;
+  } else if (typeof amount === "bigint") {
+    amountNum = Number(amount);
+  } else if (amount && typeof amount === "object" && "format" in amount && typeof amount.format === "function") {
+    amountNum = parseFloat(amount.format(config.decimals));
+  } else {
+    amountNum = parseFloat(String(amount));
+  }
 
   if (isNaN(amountNum)) {
     return { formatted: "—", a11y: "no amount" };
@@ -106,11 +117,17 @@ export function formatMoney(
  * using BigInt for the integer portion and exact string parsing to avoid float limits.
  */
 export function formatExact(
-  amount: number | string | bigint,
+  amount: number | string | bigint | { stroops: bigint; format?: (decimals?: number) => string },
   asset: string,
   locale: string
 ): FormatMoneyResult {
-  const amountStr = String(amount).trim();
+  let amountStr: string;
+  if (amount && typeof amount === "object" && "format" in amount && typeof amount.format === "function") {
+    amountStr = amount.format();
+  } else {
+    amountStr = String(amount).trim();
+  }
+
   const isNegative = amountStr.startsWith("-");
   const cleanAmountStr = isNegative ? amountStr.slice(1) : amountStr;
 
@@ -185,7 +202,7 @@ export function formatExact(
 /**
  * Adjusts a list of component amounts (as strings) so that when formatted to the asset's
  * display decimal places, they sum exactly to the formatted total amount.
- * Uses the Largest Remainder Method (Hare-Niemeyer).
+ * Uses the Largest Remainder Method (Hare-Niemeyer) with exact BigInt integer scaling.
  */
 export function adjustAmountsForDisplay(
   amounts: string[],
@@ -194,48 +211,80 @@ export function adjustAmountsForDisplay(
 ): string[] {
   const config = getAssetConfig(asset);
   const decimals = config.decimals;
-  const factor = Math.pow(10, decimals);
 
-  const parsedTotal = parseFloat(total);
-  const parsedAmounts = amounts.map(a => parseFloat(a));
+  if (amounts.length === 0) return amounts;
 
-  if (isNaN(parsedTotal) || parsedAmounts.some(isNaN) || amounts.length === 0) {
+  const baseDecimals = 7;
+  const scale = 10n ** BigInt(baseDecimals);
+
+  function parseToBig(s: string): bigint | null {
+    const trimmed = String(s).trim();
+    if (!trimmed) return null;
+    const match = /^(-)?(\d+)(?:\.(\d*))?$/.exec(trimmed);
+    if (!match) return null;
+    const isNeg = match[1] === "-";
+    const whole = BigInt(match[2]);
+    const fracStr = (match[3] ?? "").slice(0, baseDecimals).padEnd(baseDecimals, "0");
+    const frac = BigInt(fracStr);
+    const val = whole * scale + frac;
+    return isNeg ? -val : val;
+  }
+
+  const parsedTotal = parseToBig(total);
+  const parsedAmounts = amounts.map(parseToBig);
+
+  if (parsedTotal === null || parsedAmounts.some((a) => a === null)) {
     return amounts;
   }
 
-  const targetTotalScaled = Math.round(parsedTotal * factor);
-  const scaledAmounts = parsedAmounts.map(a => Math.round(a * factor));
+  const diffDecimals = baseDecimals - decimals;
+  const divisor = 10n ** BigInt(diffDecimals >= 0 ? diffDecimals : 0);
 
-  const sumScaled = scaledAmounts.reduce((sum, val) => sum + val, 0);
-  let difference = targetTotalScaled - sumScaled;
+  // Target total in display scale
+  const targetTotalScaled = divideBigInt(parsedTotal, divisor, "half_even");
 
-  if (difference === 0) {
-    return scaledAmounts.map(v => (v / factor).toFixed(decimals));
+  const scaledAmounts: bigint[] = [];
+  const remainders: Array<{ index: number; rem: bigint }> = [];
+  let sumScaled = 0n;
+
+  for (let i = 0; i < parsedAmounts.length; i++) {
+    const val = parsedAmounts[i]!;
+    const base = val / divisor;
+    const rem = val % divisor;
+    scaledAmounts.push(base);
+    remainders.push({ index: i, rem: rem < 0n ? -rem : rem });
+    sumScaled += base;
   }
 
-  const errors = parsedAmounts.map((val, index) => {
-    const originalScaled = val * factor;
-    const roundedScaled = scaledAmounts[index];
-    return {
-      index,
-      error: originalScaled - roundedScaled,
-    };
-  });
+  const difference = targetTotalScaled - sumScaled;
 
-  if (difference > 0) {
-    errors.sort((a, b) => b.error - a.error);
-    for (let i = 0; i < difference; i++) {
-      const idx = errors[i % errors.length].index;
-      scaledAmounts[idx] += 1;
+  if (difference > 0n) {
+    remainders.sort((a, b) => (b.rem > a.rem ? 1 : b.rem < a.rem ? -1 : a.index - b.index));
+    const count = Number(difference);
+    for (let i = 0; i < count; i++) {
+      const idx = remainders[i % remainders.length].index;
+      scaledAmounts[idx] += 1n;
     }
-  } else {
-    errors.sort((a, b) => a.error - b.error);
-    const absDiff = Math.abs(difference);
+  } else if (difference < 0n) {
+    remainders.sort((a, b) => (a.rem > b.rem ? 1 : a.rem < b.rem ? -1 : a.index - b.index));
+    const absDiff = Number(-difference);
     for (let i = 0; i < absDiff; i++) {
-      const idx = errors[i % errors.length].index;
-      scaledAmounts[idx] -= 1;
+      const idx = remainders[i % remainders.length].index;
+      scaledAmounts[idx] -= 1n;
     }
   }
 
-  return scaledAmounts.map(v => (v / factor).toFixed(decimals));
+  return scaledAmounts.map((v) => {
+    const isNeg = v < 0n;
+    const absV = isNeg ? -v : v;
+    if (decimals === 0) {
+      return `${isNeg ? "-" : ""}${absV.toString()}`;
+    }
+    const decScale = 10n ** BigInt(decimals);
+    const wholePart = absV / decScale;
+    const fracPart = (absV % decScale).toString().padStart(decimals, "0");
+    const sign = isNeg ? "-" : "";
+    return `${sign}${wholePart.toString()}.${fracPart}`;
+  });
 }
+

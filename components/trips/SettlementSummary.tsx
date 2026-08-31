@@ -21,7 +21,8 @@ import { TransactionHash } from "@/components/payment/TransactionHash";
 import { cn } from "@/lib/utils";
 import { useNetPayment } from "@/hooks/useNetPayment";
 import { buildPaymentEventKey } from "@/lib/stellar/events";
-import { Money } from "@/components/ui/Money";
+import { Money as MoneyDisplay } from "@/components/ui/Money";
+import { Money } from "@/lib/money";
 
 interface SettlementSummaryProps {
   trip: Trip;
@@ -47,7 +48,7 @@ function deriveRawDebts(expenses: Expense[]): RawDebt[] {
         toId:       payer.id,
         from:       share.name,
         to:         payer.name,
-        amount:     parseFloat(share.amount),
+        amount:     share.amount,
         asset:      expense.currency || "XLM",
         fromWallet: share.walletAddress,
         toWallet:   payer.walletAddress,
@@ -58,12 +59,8 @@ function deriveRawDebts(expenses: Expense[]): RawDebt[] {
 }
 
 // Converts an XLM amount (either a number or a string representation) into Stroops (the smallest subunit of XLM).
-export function xlmToStroops(amount: string | number): string {
-  const amountStr = typeof amount === "number" ? amount.toFixed(7) : amount;
-  const [whole, fraction = ""] = amountStr.split(".");
-  const normalizedWhole = whole.replace(/^0+(?=\d)/, "") || "0";
-  const normalizedFraction = (fraction + "0000000").slice(0, 7);
-  return `${BigInt(normalizedWhole) * 10_000_000n + BigInt(normalizedFraction)}`;
+export function xlmToStroops(amount: string | number | Money): string {
+  return Money.parse(amount).toStroops().toString();
 }
 
 // Builds a lookup key for a debt row in the UI to match against on-chain payment keys using the exact trip, expense, debtor wallet, and amount in stroops.
@@ -148,7 +145,7 @@ function NetPaymentRow({
 
         <div className="flex items-center justify-between sm:justify-end gap-2">
           <span className="text-sm font-bold">
-            <Money amount={payment.amount} asset={payment.asset} />
+            <MoneyDisplay amount={payment.amount} asset={payment.asset} />
           </span>
 
           {hasPendingRetry && paymentState.status === "partial_success" ? (

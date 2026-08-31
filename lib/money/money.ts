@@ -139,6 +139,9 @@ export class Money {
     if (value instanceof Money) {
       return value;
     }
+    if (value && typeof value === "object" && "stroops" in value && typeof (value as any).stroops === "bigint") {
+      return new Money((value as any).stroops);
+    }
     if (typeof value === "bigint") {
       // BigInt alone represents whole units when passed to parse (1n -> 10_000_000 stroops)
       return new Money(value * STROOPS_PER_UNIT);
@@ -147,7 +150,7 @@ export class Money {
       if (Number.isNaN(value) || !Number.isFinite(value)) {
         throw new TypeError(`Cannot parse invalid number as Money: ${value}`);
       }
-      value = value.toString();
+      value = value.toFixed(DECIMALS);
     }
 
     if (typeof value !== "string") {

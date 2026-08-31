@@ -2,6 +2,7 @@ import * as fc from "fast-check";
 import { simplifyDebts } from "@/lib/settlement/graph";
 import { computeNetPayments, type RawDebt, type NetPayment } from "@/lib/settlement/netBalance";
 import { makeRawDebtsArb } from "./generators";
+import { Money } from "@/lib/money";
 
 describe("Simplification Property Tests", () => {
   function getNetPositionsFromPayments(payments: NetPayment[]): Map<string, Map<string, bigint>> {
@@ -12,7 +13,7 @@ describe("Simplification Property Tests", () => {
         assetPositions.set(p.asset, new Map());
       }
       const balances = assetPositions.get(p.asset)!;
-      const amountStroops = BigInt(Math.round(parseFloat(p.amount) * 1e7));
+      const amountStroops = Money.parse(p.amount).toStroops();
 
       balances.set(p.from, (balances.get(p.from) ?? 0n) - amountStroops);
       balances.set(p.to, (balances.get(p.to) ?? 0n) + amountStroops);
@@ -34,7 +35,7 @@ describe("Simplification Property Tests", () => {
               inputBalances.set(d.asset, new Map());
             }
             const bal = inputBalances.get(d.asset)!;
-            const stroops = BigInt(Math.round(d.amount * 1e7));
+            const stroops = Money.parse(d.amount).toStroops();
             bal.set(d.from, (bal.get(d.from) ?? 0n) - stroops);
             bal.set(d.to, (bal.get(d.to) ?? 0n) + stroops);
           }
@@ -46,7 +47,7 @@ describe("Simplification Property Tests", () => {
             const outBals = outputBalances.get(asset) ?? new Map();
             balances.forEach((inBal, name) => {
               const outBal = outBals.get(name) ?? 0n;
-              expect(Number(inBal) / 1e7).toBeCloseTo(Number(outBal) / 1e7, 5);
+              expect(inBal).toBe(outBal);
             });
           });
         }

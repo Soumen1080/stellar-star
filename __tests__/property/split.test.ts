@@ -14,11 +14,14 @@ import {
   invalidAmountArb,
 } from "./generators";
 
+import { Money } from "@/lib/money";
+import { getPayerShare } from "@/lib/split/calculator";
+
 describe("Split Property Tests", () => {
-  it("conserves total XLM in equal split", () => {
+  it("conserves total XLM in equal split exactly down to the stroop", () => {
     fc.assert(
       fc.property(
-        validAmountFloatArb,
+        validAmountStringArb,
         makeMembersArb({ forceUniqueWallets: true }).filter((m) => m.length >= 2),
         fc.nat(),
         (totalXLM, members, paidIdx) => {
@@ -32,23 +35,25 @@ describe("Split Property Tests", () => {
             expect(s.amount).toMatch(/^\d+\.\d{7}$/);
           });
 
-          // Conservation: Payer's share is the remainder. The actual payer's share (total - sumNonPayers)
-          // must be within rounding tolerance of expected perHead share.
-          const sumNonPayers = shares.reduce((acc, s) => acc + parseFloat(s.amount), 0);
-          const actualPayerShare = totalXLM - sumNonPayers;
-          const expectedPayerShare = totalXLM / members.length;
-          const maxRoundingError = members.length * 1e-7;
-          expect(Math.abs(actualPayerShare - expectedPayerShare)).toBeLessThanOrEqual(maxRoundingError + 1e-9);
+          // Exact conservation: sum(nonPayerShares) + payerShare === totalMoney
+          const totalMoney = Money.parse(totalXLM);
+          const sumNonPayers = shares.reduce(
+            (acc, s) => acc.plus(Money.parse(s.amount)),
+            Money.zero(),
+          );
+          const payerShare = getPayerShare(totalXLM, members, payer.id, "equal");
+
+          expect(sumNonPayers.plus(payerShare).equals(totalMoney)).toBe(true);
         }
       ),
       { numRuns: 100 }
     );
   });
 
-  it("conserves total XLM in custom split", () => {
+  it("conserves total XLM in custom split exactly down to the stroop", () => {
     fc.assert(
       fc.property(
-        validAmountFloatArb,
+        validAmountStringArb,
         makeMembersArb({ forceUniqueWallets: true }).filter((m) => {
           if (m.length < 2) return false;
           // Ensure total weight is positive
@@ -67,21 +72,20 @@ describe("Split Property Tests", () => {
             expect(s.amount).toMatch(/^\d+\.\d{7}$/);
           });
 
-          // Conservation: Payer's share is the remainder. The actual payer's share (total - sumNonPayers)
-          // must be within rounding tolerance of expected custom share.
-          const sumNonPayers = shares.reduce((acc, s) => acc + parseFloat(s.amount), 0);
-          const totalWeight = members.reduce((s, m) => s + (m.weight ?? 1), 0);
-          const payerWeight = payer.weight ?? 1;
-          const expectedPayerShare = (totalXLM * payerWeight) / totalWeight;
-          const actualPayerShare = totalXLM - sumNonPayers;
-          const maxRoundingError = members.length * 1e-7;
-          expect(Math.abs(actualPayerShare - expectedPayerShare)).toBeLessThanOrEqual(maxRoundingError + 1e-9);
+          // Exact conservation: sum(nonPayerShares) + payerShare === totalMoney
+          const totalMoney = Money.parse(totalXLM);
+          const sumNonPayers = shares.reduce(
+            (acc, s) => acc.plus(Money.parse(s.amount)),
+            Money.zero(),
+          );
+          const payerShare = getPayerShare(totalXLM, members, payer.id, "custom");
 
-          // Zero-weight members should receive 0.0000000 (except the last non-payer who absorbs remainder)
-          shares.forEach((s, idx) => {
-            const isLast = idx === shares.length - 1;
+          expect(sumNonPayers.plus(payerShare).equals(totalMoney)).toBe(true);
+
+          // Zero-weight members should receive 0.0000000
+          shares.forEach((s) => {
             const m = members.find((x) => x.id === s.memberId);
-            if (m && m.weight === 0 && !isLast) {
+            if (m && m.weight === 0) {
               expect(s.amount).toBe("0.0000000");
             }
           });

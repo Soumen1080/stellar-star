@@ -7,6 +7,7 @@
  * each participant's net position.
  */
 
+import { Money } from "@/lib/money";
 import type { RawDebt, NetPayment } from "./netBalance";
 
 /**
@@ -22,7 +23,11 @@ import type { RawDebt, NetPayment } from "./netBalance";
  */
 export function simplifyDebts(debts: RawDebt[]): NetPayment[] {
   // Filter out zero or negative debts
-  const activeDebts = debts.filter((d) => d.amount > 0.0000001);
+  const activeDebts = debts.filter((d) => {
+    if (d.paid) return false;
+    const m = d.amount instanceof Money ? d.amount : Money.tryParse(d.amount);
+    return m ? m.isPositive() : false;
+  });
   if (activeDebts.length === 0) return [];
 
   // Group debts by asset
@@ -92,10 +97,11 @@ export function simplifyDebts(debts: RawDebt[]): NetPayment[] {
         netPositions.set(memberId, 0n);
       }
 
-      // Sum debts belonging to this component
+      // Sum debts belonging to this component using exact Money stroops
       for (const debt of assetDebts) {
         if (netPositions.has(debt.fromId) && netPositions.has(debt.toId)) {
-          const amountStroops = BigInt(Math.round(debt.amount * 1e7));
+          const debtMoney = debt.amount instanceof Money ? debt.amount : Money.parse(debt.amount);
+          const amountStroops = debtMoney.toStroops();
           netPositions.set(debt.fromId, netPositions.get(debt.fromId)! - amountStroops);
           netPositions.set(debt.toId, netPositions.get(debt.toId)! + amountStroops);
         }
@@ -130,10 +136,11 @@ export function simplifyDebts(debts: RawDebt[]): NetPayment[] {
         const debtor = debtorBalances[dIdx];
         const creditor = creditorBalances[cIdx];
 
-        const settledAmount = debtor.remaining < creditor.remaining ? debtor.remaining : creditor.remaining;
+        const settledAmount =
+          debtor.remaining < creditor.remaining ? debtor.remaining : creditor.remaining;
 
         if (settledAmount > 0n) {
-          const amountXlm = (Number(settledAmount) / 1e7).toFixed(7);
+          const amountXlm = Money.fromStroops(settledAmount).format(7);
 
           assetPayments.push({
             from: memberNames.get(debtor.id) ?? debtor.id,
@@ -161,7 +168,7 @@ export function simplifyDebts(debts: RawDebt[]): NetPayment[] {
           (debt.fromWallet && p.fromWallet === debt.fromWallet) ||
           (debt.toWallet && p.toWallet === debt.toWallet) ||
           p.from === debt.from ||
-          p.to === debt.to
+          p.to === debt.to,
       );
 
       const targets = matches.length > 0 ? matches : assetPayments;
