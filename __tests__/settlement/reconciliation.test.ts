@@ -49,6 +49,7 @@ describe("On-chain Reconciliation Engine", () => {
       title: "Dinner XLM",
       totalAmount: "20.0000000",
       currency: "XLM",
+      settlementAsset: "native",
       splitMode: "equal",
       paidByMemberId: "m-b",
       members: [
@@ -71,7 +72,10 @@ describe("On-chain Reconciliation Engine", () => {
       id: "exp-usdc-1",
       title: "Hotel USDC",
       totalAmount: "20.0000000",
-      currency: usdcAsset,
+      // `currency` is the typed-in fiat; the settlement asset is what matches
+      // on-chain payments.
+      currency: "USD",
+      settlementAsset: usdcAsset,
       splitMode: "equal",
       paidByMemberId: "m-b",
       members: [

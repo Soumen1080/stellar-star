@@ -8,6 +8,7 @@ import type { Trip } from "@/types/trip";
 import type { ContractPaymentEvent } from "@/types/contract";
 import type { NetPayment, RawDebt } from "@/lib/settlement/netBalance";
 import { computeNetPayments } from "@/lib/settlement/netBalance";
+import { settlementAssetOf } from "@/lib/settlement/expenseAsset";
 import { buildPaymentTransaction, trimToMemoBytes } from "@/lib/stellar/buildTransaction";
 import { submitSignedTransaction } from "@/lib/stellar/submitTransaction";
 import { signXDR } from "@/lib/freighter";
@@ -51,7 +52,12 @@ function deriveRawDebts(expenses: Expense[]): RawDebt[] {
         from:       share.name,
         to:         payer.name,
         amount:     share.amount,
-        asset:      expense.currency || "XLM",
+        // The SETTLEMENT asset, never `expense.currency` — that is the fiat
+        // the user typed, and `share.amount` was already converted out of it.
+        // Tagging a EUR-entered debt as asset "EUR" put it in its own netting
+        // graph (so offsetting XLM debts never cancelled) and handed "EUR" to
+        // the payment builder as if it were a Stellar asset.
+        asset:      settlementAssetOf(expense),
         fromWallet: share.walletAddress,
         toWallet:   payer.walletAddress,
       });
