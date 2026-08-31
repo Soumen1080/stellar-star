@@ -102,6 +102,17 @@ export interface CircuitBreakerConfig {
   failureThreshold: number;
   /** Milliseconds the circuit stays OPEN before moving to HALF_OPEN. */
   resetTimeoutMs: number;
+  /**
+   * Milliseconds a single provider call may take before it is abandoned and
+   * counted as a failure.
+   *
+   * Without this, a provider that accepts the connection and then never
+   * responds hangs the whole chain forever: the breaker only ever sees
+   * failures it is told about, so a hang never trips it and the next request
+   * hangs too. Bounding the call is what makes "bypassed without repeatedly
+   * paying its timeout" true for hangs as well as errors.
+   */
+  callTimeoutMs: number;
 }
 
 // ── Provider freshness config ─────────────────────────────────────────────────
