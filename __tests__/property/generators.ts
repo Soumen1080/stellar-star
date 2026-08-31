@@ -135,7 +135,7 @@ export function makeRawDebtsArb(options: DebtGraphOptions = {}): fc.Arbitrary<{ 
       expenseId: fc.string({ minLength: 3, maxLength: 8, alphabet: "0123456789abcdef" }),
       fromIdx: fc.integer({ min: 0, max: members.length - 1 }),
       toIdx: fc.integer({ min: 0, max: members.length - 1 }),
-      amount: validAmountFloatArb,
+      amount: validAmountStringArb,
       asset: assetArb,
     });
 

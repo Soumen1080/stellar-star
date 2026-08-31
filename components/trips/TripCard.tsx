@@ -9,11 +9,12 @@ import { cn } from "@/lib/utils";
 import { Modal, ModalFooter } from "@/components/ui/Modal";
 
 import { Money } from "@/components/ui/Money";
+import { type Money as MoneyType } from "@/lib/money";
 
 interface TripCardProps {
   trip: Trip;
   expenseCount?: number;
-  totalsByAsset?: Record<string, number>;
+  totalsByAsset?: Record<string, number | string | MoneyType>;
   onDelete: (id: string) => void;
   index?: number;
   connectedWalletAddress?: string | null;

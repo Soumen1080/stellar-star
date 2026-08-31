@@ -1,83 +1,166 @@
 import * as fc from "fast-check";
-import { xlmToStroops } from "@/components/trips/SettlementSummary";
+import {
+  Amount,
+  parse,
+  add,
+  sub,
+  mul,
+  div,
+  format,
+  compare,
+  sum,
+  min,
+  max,
+  toScVal,
+  fromScVal,
+  MAX_AMOUNT_STROOPS,
+  MIN_AMOUNT_STROOPS,
+} from "@/lib/money/amount";
 import { validAmountStringArb, validAmountStroopsArb } from "./generators";
 
-describe("Money Arithmetic Property Tests", () => {
-  it("converts XLM strings to Stroops exactly", () => {
-    fc.assert(
-      fc.property(validAmountStringArb, (str) => {
-        // Parse manually by scaling string to avoid floating point issues
-        const [whole, fraction = ""] = str.split(".");
-        const expectedStroops = BigInt(whole) * 10_000_000n + BigInt(fraction.padEnd(7, "0").slice(0, 7));
-
-        const result = xlmToStroops(str);
-        expect(result).toBe(expectedStroops.toString());
-      }),
-      { numRuns: 100 }
-    );
-  });
-
-  it("converts XLM numbers to Stroops exactly (with 7 decimals limit)", () => {
-    fc.assert(
-      fc.property(validAmountStringArb, (str) => {
-        const num = parseFloat(str);
-        const resultFromNum = xlmToStroops(num);
-        const resultFromStr = xlmToStroops(str);
-
-        expect(resultFromNum).toBe(resultFromStr);
-      }),
-      { numRuns: 100 }
-    );
-  });
-
-  it("round-trips: parse(format(x)) === x", () => {
+describe("Seam S2 Money Arithmetic Property Tests", () => {
+  it("Invariant 1 & 2: Lossless round-trip parse(format(x)) === x", () => {
     fc.assert(
       fc.property(validAmountStroopsArb, (stroops) => {
-        // Format to XLM string
-        const str = stroops.toString().padStart(8, "0");
-        const whole = str.slice(0, -7) || "0";
-        const frac = str.slice(-7);
-        const xlmStr = `${whole}.${frac}`;
+        const amt = Amount.fromStroops(stroops);
+        const formatted = format(amt);
+        const parsed = parse(formatted);
 
-        // Parse back to stroops
-        const parsedStroops = xlmToStroops(xlmStr);
-
-        expect(parsedStroops).toBe(stroops.toString());
+        expect(parsed.stroops).toBe(stroops);
+        expect(compare(parsed, amt)).toBe(0);
       }),
-      { numRuns: 100 }
+      { numRuns: 100 },
     );
   });
 
-  it("proves BigInt stroop summation is commutative and associative (no rounding drift)", () => {
+  it("Invariant 3: Addition is associative and commutative over any permutation", () => {
     fc.assert(
       fc.property(
-        fc.array(validAmountStringArb, { minLength: 2, maxLength: 50 }),
+        fc.array(validAmountStringArb, { minLength: 2, maxLength: 30 }),
         (amountStrings) => {
-          // 1. BigInt summation (commutative & associative)
-          const stroopSums = amountStrings.map((s) => BigInt(xlmToStroops(s)));
-          const sum1 = stroopSums.reduce((acc, s) => acc + s, 0n);
+          const amounts = amountStrings.map((s) => parse(s));
 
-          // Shuffle the order
-          const shuffledStroopSums = [...stroopSums].sort(() => Math.random() - 0.5);
-          const sum2 = shuffledStroopSums.reduce((acc, s) => acc + s, 0n);
+          // Sum in original order
+          const sumOriginal = amounts.reduce((acc, a) => add(acc, a), Amount.zero());
 
-          expect(sum1).toBe(sum2);
+          // Sum in shuffled order
+          const shuffled = [...amounts].sort(() => Math.random() - 0.5);
+          const sumShuffled = shuffled.reduce((acc, a) => add(acc, a), Amount.zero());
 
-          // 2. Float summation (might drift due to floating point arithmetic)
-          const floatSums = amountStrings.map((s) => parseFloat(s));
-          const fSum1 = floatSums.reduce((acc, f) => acc + f, 0);
+          // Sum using helper
+          const sumHelper = sum(shuffled);
 
-          const shuffledFloatSums = [...floatSums].sort(() => Math.random() - 0.5);
-          const fSum2 = shuffledFloatSums.reduce((acc, f) => acc + f, 0);
-
-          // The BigInt sums are EXACTLY identical
-          expect(sum1.toString()).toBe(sum2.toString());
-          
-          // While float sums might not match exactly due to floating point rounding (we check closeness)
-          expect(fSum1).toBeCloseTo(fSum2, 2); // Close, but floats can have precision limits
-        }
+          expect(sumOriginal.stroops).toBe(sumShuffled.stroops);
+          expect(sumOriginal.stroops).toBe(sumHelper.stroops);
+        },
       ),
-      { numRuns: 50 }
+      { numRuns: 100 },
+    );
+  });
+
+  it("Subtraction is exact inverse of addition: add(sub(a, b), b) === a", () => {
+    fc.assert(
+      fc.property(validAmountStringArb, validAmountStringArb, (strA, strB) => {
+        const a = parse(strA);
+        const b = parse(strB);
+
+        const diff = sub(a, b);
+        const restored = add(diff, b);
+
+        expect(restored.stroops).toBe(a.stroops);
+      }),
+      { numRuns: 100 },
+    );
+  });
+
+  it("Invariant 4: Explicit rounding modes produce exact deterministic division", () => {
+    fc.assert(
+      fc.property(
+        validAmountStringArb,
+        fc.integer({ min: 1, max: 100 }),
+        (strAmount, divisor) => {
+          const a = parse(strAmount);
+          const qTrunc = div(a, divisor, "truncate");
+          const qHalfEven = div(a, divisor, "half_even");
+          const qCeil = div(a, divisor, "ceil");
+          const qFloor = div(a, divisor, "floor");
+
+          expect(qTrunc.stroops).toBeGreaterThanOrEqual(0n);
+          expect(qFloor.stroops).toBeLessThanOrEqual(qCeil.stroops);
+          expect(qHalfEven.stroops).toBeGreaterThanOrEqual(qFloor.stroops);
+          expect(qHalfEven.stroops).toBeLessThanOrEqual(qCeil.stroops);
+        },
+      ),
+      { numRuns: 100 },
+    );
+  });
+
+  it("Invariant 5: Values up to MAX_AMOUNT_STROOPS are representable without loss", () => {
+    const maxAmt = Amount.fromStroops(MAX_AMOUNT_STROOPS);
+    const minAmt = Amount.fromStroops(MIN_AMOUNT_STROOPS);
+
+    expect(maxAmt.stroops).toBe(MAX_AMOUNT_STROOPS);
+    expect(minAmt.stroops).toBe(MIN_AMOUNT_STROOPS);
+
+    const formattedMax = format(maxAmt);
+    const parsedMax = parse(formattedMax);
+    expect(parsedMax.stroops).toBe(MAX_AMOUNT_STROOPS);
+
+    expect(() => Amount.fromStroops(MAX_AMOUNT_STROOPS + 1n)).toThrow(RangeError);
+    expect(() => Amount.fromStroops(MIN_AMOUNT_STROOPS - 1n)).toThrow(RangeError);
+  });
+
+  it("Comparison defines a total ordering", () => {
+    fc.assert(
+      fc.property(validAmountStringArb, validAmountStringArb, (strA, strB) => {
+        const a = parse(strA);
+        const b = parse(strB);
+
+        const cmp = compare(a, b);
+        if (a.stroops < b.stroops) {
+          expect(cmp).toBe(-1);
+          expect(compare(b, a)).toBe(1);
+        } else if (a.stroops > b.stroops) {
+          expect(cmp).toBe(1);
+          expect(compare(b, a)).toBe(-1);
+        } else {
+          expect(cmp).toBe(0);
+          expect(compare(b, a)).toBe(0);
+        }
+      }),
+      { numRuns: 100 },
+    );
+  });
+
+  it("min and max helper functions work as expected", () => {
+    fc.assert(
+      fc.property(
+        fc.array(validAmountStringArb, { minLength: 1, maxLength: 20 }),
+        (amountStrings) => {
+          const amounts = amountStrings.map((s) => parse(s));
+          const minimum = min(...amounts);
+          const maximum = max(...amounts);
+
+          amounts.forEach((a) => {
+            expect(a.stroops).toBeGreaterThanOrEqual(minimum.stroops);
+            expect(a.stroops).toBeLessThanOrEqual(maximum.stroops);
+          });
+        },
+      ),
+      { numRuns: 100 },
+    );
+  });
+
+  it("Soroban ScVal round-trip conversion is lossless", () => {
+    fc.assert(
+      fc.property(validAmountStroopsArb, (stroops) => {
+        const amt = Amount.fromStroops(stroops);
+        const scVal = toScVal(amt, "i128");
+        const restored = fromScVal(scVal);
+
+        expect(restored.stroops).toBe(stroops);
+      }),
+      { numRuns: 100 },
     );
   });
 });

@@ -7,8 +7,9 @@ import { PaymentRow } from "./PaymentRow";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-import { Money } from "@/components/ui/Money";
+import { Money as MoneyDisplay } from "@/components/ui/Money";
 import { adjustAmountsForDisplay } from "@/lib/money/format";
+import { Money } from "@/lib/money";
 
 interface SplitCalculatorProps {
   shares: SplitShare[];
@@ -18,7 +19,7 @@ interface SplitCalculatorProps {
   /** Called when user clicks Pay on a row. */
   onPay?: (share: SplitShare) => void;
   /** ID of the share whose payment is currently in-flight (shows spinner). */
-  payingShareId?: string;
+  payingShareId?: string | null;
   /** Disable pay buttons */
   disablePay?: boolean;
   /** Connected wallet address - Pay button only shows on the matching row. */
@@ -46,8 +47,7 @@ export function SplitCalculator({
   depositLoading,
   onDepositPool,
 }: SplitCalculatorProps) {
-  const total = parseFloat(totalAmount) || 0;
-  const splitTotal = shares.reduce((s, x) => s + parseFloat(x.amount), 0);
+  const totalMoney = Money.tryParse(totalAmount) ?? Money.zero();
   const paidCount = shares.filter((s) => s.paid).length;
 
   if (shares.length === 0) {
@@ -69,7 +69,10 @@ export function SplitCalculator({
     amount: adjustedAmounts[idx],
   }));
 
-  const adjustedSplitTotal = adjustedShares.reduce((s, x) => s + parseFloat(x.amount), 0);
+  const adjustedSplitTotalMoney = adjustedShares.reduce(
+    (s, x) => s.plus(Money.tryParse(x.amount) ?? Money.zero()),
+    Money.zero(),
+  );
 
   return (
     <div className="space-y-3">
@@ -81,7 +84,7 @@ export function SplitCalculator({
             <strong className="text-[#0F0F14]">{payerName}</strong>
             <span>paid</span>
             <strong className="text-[#0F0F14]">
-              <Money amount={totalAmount} asset="XLM" />
+              <MoneyDisplay amount={totalAmount} asset="XLM" />
             </strong>
           </span>
         </div>
@@ -126,10 +129,10 @@ export function SplitCalculator({
         <span>Split total</span>
         <span
           className={
-            Math.abs(adjustedSplitTotal - total) < 0.0001 ? "text-[#134E4A]" : "text-orange-500"
+            adjustedSplitTotalMoney.equals(totalMoney) ? "text-[#134E4A]" : "text-orange-500"
           }
         >
-          <Money amount={adjustedSplitTotal} asset="XLM" showExact />
+          <MoneyDisplay amount={adjustedSplitTotalMoney} asset="XLM" showExact />
         </span>
       </div>
     </div>

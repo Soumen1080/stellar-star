@@ -190,9 +190,15 @@ function simplifySingleAssetGraph(
 
       if (d.amount.equals(c.amount)) {
         const transferAmount = d.amount;
-        const matchingDebts = unsettledRawDebts.filter(
-          (rd) => rd.fromId === d.info.id || rd.toId === c.info.id,
+        const directDebts = unsettledRawDebts.filter(
+          (rd) => rd.fromId === d.info.id && rd.toId === c.info.id,
         );
+        const matchingDebts =
+          directDebts.length > 0
+            ? directDebts
+            : unsettledRawDebts.filter(
+                (rd) => rd.fromId === d.info.id || rd.toId === c.info.id,
+              );
 
         payments.push({
           from: d.info.name,
@@ -228,9 +234,15 @@ function simplifySingleAssetGraph(
       ? debtor.amount
       : creditor.amount;
 
-    const matchingDebts = unsettledRawDebts.filter(
-      (rd) => rd.fromId === debtor.info.id || rd.toId === creditor.info.id,
+    const directDebts = unsettledRawDebts.filter(
+      (rd) => rd.fromId === debtor.info.id && rd.toId === creditor.info.id,
     );
+    const matchingDebts =
+      directDebts.length > 0
+        ? directDebts
+        : unsettledRawDebts.filter(
+            (rd) => rd.fromId === debtor.info.id || rd.toId === creditor.info.id,
+          );
 
     payments.push({
       from: debtor.info.name,
