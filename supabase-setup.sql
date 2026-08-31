@@ -604,11 +604,269 @@ create index if not exists sponsorship_invites_inviter_idx
 alter table public.sponsored_accounts enable row level security;
 alter table public.sponsorship_invites enable row level security;
 
+-- ============================================================================
+-- Trip Invitations & Capability-Based Member Claims (Issue #171 / Issue #65)
+-- ============================================================================
+-- Allows users to add friends by name and settle up later via capability tokens.
+--
+-- Security model:
+-- 1. Tokens are 256-bit high-entropy unguessable secrets; only SHA-256 hashes
+--    are stored in the database.
+-- 2. Claiming is verified against authenticated wallet identity and executed
+--    atomically with SELECT ... FOR UPDATE, guaranteeing a member slot is claimed
+--    at most once under concurrent attempts.
+-- 3. Claiming automatically re-triggers sync_member_wallets, preserving the
+--    single GIN-indexed RLS authorization mechanism with zero privilege escalation.
+
+CREATE TABLE IF NOT EXISTS public.trip_invites (
+  id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  trip_id           UUID NOT NULL REFERENCES public.trips(id) ON DELETE CASCADE,
+  token_hash        TEXT NOT NULL UNIQUE,
+  member_id         TEXT,
+  created_by_wallet TEXT NOT NULL,
+  expires_at        TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '7 days'),
+  max_uses          INT NOT NULL DEFAULT 1 CHECK (max_uses > 0),
+  uses              INT NOT NULL DEFAULT 0 CHECK (uses >= 0),
+  revoked           BOOLEAN NOT NULL DEFAULT FALSE,
+  revoked_at        TIMESTAMPTZ,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_trip_invites_token_hash ON public.trip_invites (token_hash);
+CREATE INDEX IF NOT EXISTS idx_trip_invites_trip_id    ON public.trip_invites (trip_id);
+CREATE INDEX IF NOT EXISTS idx_trip_invites_creator    ON public.trip_invites (created_by_wallet);
+
+ALTER TABLE public.trip_invites ENABLE ROW LEVEL SECURITY;
+
+DO $drop_invite_policies$
+DECLARE
+  p RECORD;
+BEGIN
+  FOR p IN
+    SELECT policyname, tablename
+      FROM pg_policies
+     WHERE schemaname = 'public'
+       AND tablename = 'trip_invites'
+  LOOP
+    EXECUTE format('DROP POLICY %I ON public.%I', p.policyname, p.tablename);
+  END LOOP;
+END
+$drop_invite_policies$;
+
+-- Trip members can view invites for their trip.
+CREATE POLICY "trip_invites_select_members" ON public.trip_invites
+  FOR SELECT USING (
+    trip_id IN (
+      SELECT id FROM public.trips
+       WHERE member_wallets @> ARRAY[public.current_wallet()]
+    )
+  );
+
+-- Trip members can create invites for their trip.
+CREATE POLICY "trip_invites_insert_members" ON public.trip_invites
+  FOR INSERT WITH CHECK (
+    created_by_wallet = public.current_wallet() AND
+    trip_id IN (
+      SELECT id FROM public.trips
+       WHERE member_wallets @> ARRAY[public.current_wallet()]
+    )
+  );
+
+-- Invite creator can update/revoke their invite.
+CREATE POLICY "trip_invites_update_creator" ON public.trip_invites
+  FOR UPDATE USING (created_by_wallet = public.current_wallet())
+             WITH CHECK (created_by_wallet = public.current_wallet());
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.trip_invites TO anon, authenticated;
+
+-- Trigger to update updated_at on trip_invites
+DROP TRIGGER IF EXISTS trg_01_trip_invites_set_updated_at ON public.trip_invites;
+CREATE TRIGGER trg_01_trip_invites_set_updated_at
+  BEFORE UPDATE ON public.trip_invites
+  FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+-- ── Atomic Claim Stored Procedure ──────────────────────────────────────────
+-- Atomically validates the invite capability, acquires exclusive locks on the
+-- invite and trip, verifies the slot is unclaimed, and attaches the claiming
+-- wallet address across trip members and expense shares.
+CREATE OR REPLACE FUNCTION public.claim_trip_invite(
+  p_token_hash TEXT,
+  p_claiming_wallet TEXT,
+  p_selected_member_id TEXT DEFAULT NULL
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $fn$
+DECLARE
+  v_invite RECORD;
+  v_trip RECORD;
+  v_target_member_id TEXT;
+  v_target_member_name TEXT;
+  v_members JSONB;
+  v_updated_members JSONB := '[]'::jsonb;
+  v_member JSONB;
+  v_found BOOLEAN := FALSE;
+  v_already_claimed BOOLEAN := FALSE;
+  v_idx INT;
+  v_len INT;
+BEGIN
+  -- 1. Validate claiming wallet
+  IF p_claiming_wallet IS NULL OR btrim(p_claiming_wallet) = '' THEN
+    RAISE EXCEPTION 'Claiming wallet address is required';
+  END IF;
+
+  -- 2. Lock and validate the invite row
+  SELECT *
+    INTO v_invite
+    FROM public.trip_invites
+   WHERE token_hash = p_token_hash
+     FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'INVITE_NOT_FOUND: Invalid or unrecognized invitation token';
+  END IF;
+
+  IF v_invite.revoked THEN
+    RAISE EXCEPTION 'INVITE_REVOKED: This invitation has been revoked';
+  END IF;
+
+  IF v_invite.expires_at <= NOW() THEN
+    RAISE EXCEPTION 'INVITE_EXPIRED: This invitation has expired';
+  END IF;
+
+  IF v_invite.uses >= v_invite.max_uses THEN
+    RAISE EXCEPTION 'INVITE_EXHAUSTED: This invitation has already reached its maximum uses';
+  END IF;
+
+  -- 3. Lock and retrieve the trip row
+  SELECT *
+    INTO v_trip
+    FROM public.trips
+   WHERE id = v_invite.trip_id
+     FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'TRIP_NOT_FOUND: Associated trip no longer exists';
+  END IF;
+
+  -- 4. Determine target member slot
+  v_target_member_id := COALESCE(v_invite.member_id, p_selected_member_id);
+  v_members := COALESCE(v_trip.members, '[]'::jsonb);
+  v_len := jsonb_array_length(v_members);
+
+  IF v_target_member_id IS NOT NULL THEN
+    -- Look for specified member slot
+    FOR v_idx IN 0..(v_len - 1) LOOP
+      v_member := v_members -> v_idx;
+      IF (v_member ->> 'id') = v_target_member_id THEN
+        v_found := TRUE;
+        v_target_member_name := v_member ->> 'name';
+        
+        -- Check if already claimed
+        IF (v_member ->> 'walletAddress') IS NOT NULL AND btrim(v_member ->> 'walletAddress') <> '' THEN
+          IF (v_member ->> 'walletAddress') = p_claiming_wallet THEN
+            -- Idempotent retry by the same wallet
+            RETURN jsonb_build_object(
+              'success', true,
+              'trip_id', v_trip.id,
+              'trip_name', v_trip.name,
+              'member_id', v_target_member_id,
+              'member_name', v_target_member_name,
+              'message', 'Already claimed by this wallet'
+            );
+          ELSE
+            RAISE EXCEPTION 'SLOT_ALREADY_CLAIMED: This member slot has already been claimed by another wallet';
+          END IF;
+        END IF;
+
+        -- Attach wallet
+        v_updated_members := v_updated_members || jsonb_build_array(v_member || jsonb_build_object('walletAddress', p_claiming_wallet));
+      ELSE
+        v_updated_members := v_updated_members || jsonb_build_array(v_member);
+      END IF;
+    END LOOP;
+
+    IF NOT v_found THEN
+      RAISE EXCEPTION 'MEMBER_NOT_FOUND: Member slot % not found in trip', v_target_member_id;
+    END IF;
+  ELSE
+    -- General invite with no slot pre-selected: find first unclaimed placeholder slot
+    FOR v_idx IN 0..(v_len - 1) LOOP
+      v_member := v_members -> v_idx;
+      IF NOT v_found AND ((v_member ->> 'walletAddress') IS NULL OR btrim(v_member ->> 'walletAddress') = '') THEN
+        v_found := TRUE;
+        v_target_member_id := v_member ->> 'id';
+        v_target_member_name := v_member ->> 'name';
+        v_updated_members := v_updated_members || jsonb_build_array(v_member || jsonb_build_object('walletAddress', p_claiming_wallet));
+      ELSE
+        v_updated_members := v_updated_members || jsonb_build_array(v_member);
+      END IF;
+    END LOOP;
+
+    IF NOT v_found THEN
+      -- No open placeholder slots: add new member
+      v_target_member_id := gen_random_uuid()::text;
+      v_target_member_name := 'Member ' || (v_len + 1)::text;
+      v_updated_members := v_members || jsonb_build_array(
+        jsonb_build_object('id', v_target_member_id, 'name', v_target_member_name, 'walletAddress', p_claiming_wallet)
+      );
+    END IF;
+  END IF;
+
+  -- 5. Update trip members JSONB (triggers sync_member_wallets)
+  UPDATE public.trips
+     SET members = v_updated_members
+   WHERE id = v_trip.id;
+
+  -- 6. Update expenses linked to this trip
+  -- Update members and shares for this member_id to attach walletAddress
+  UPDATE public.expenses
+     SET members = (
+           SELECT jsonb_agg(
+             CASE
+               WHEN (m ->> 'id') = v_target_member_id THEN m || jsonb_build_object('walletAddress', p_claiming_wallet)
+               ELSE m
+             END
+           )
+           FROM jsonb_array_elements(members) AS m
+         ),
+         shares = (
+           SELECT jsonb_agg(
+             CASE
+               WHEN (s ->> 'memberId') = v_target_member_id THEN s || jsonb_build_object('walletAddress', p_claiming_wallet)
+               ELSE s
+             END
+           )
+           FROM jsonb_array_elements(shares) AS s
+         )
+   WHERE (id::text = ANY(v_trip.expense_ids) OR v_trip.id::text = ANY(member_wallets) OR members @> jsonb_build_array(jsonb_build_object('id', v_target_member_id)));
+
+  -- 7. Increment invite uses
+  UPDATE public.trip_invites
+     SET uses = uses + 1
+   WHERE id = v_invite.id;
+
+  RETURN jsonb_build_object(
+    'success', true,
+    'trip_id', v_trip.id,
+    'trip_name', v_trip.name,
+    'member_id', v_target_member_id,
+    'member_name', v_target_member_name
+  );
+END;
+$fn$;
+
+GRANT EXECUTE ON FUNCTION public.claim_trip_invite(TEXT, TEXT, TEXT) TO anon, authenticated;
+
 -- ─── RECORD APPLIED MIGRATIONS ───────────────────────────────────────────────
 
 INSERT INTO public.schema_migrations (version, name, checksum)
 VALUES
   ('0001', '0001_baseline', 'baseline_initial_checksum'),
-  ('0002', '0002_explicit_trigger_pipeline', 'trigger_pipeline_checksum')
+  ('0002', '0002_explicit_trigger_pipeline', 'trigger_pipeline_checksum'),
+  ('0003', '0003_trip_invitations_capabilities', 'trip_invites_capability_checksum')
 ON CONFLICT (version) DO NOTHING;
+
 

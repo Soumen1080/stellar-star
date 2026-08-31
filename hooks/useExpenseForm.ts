@@ -50,9 +50,7 @@ export function validateExpenseFormFields({
     }
 
     const raw = member.walletAddress?.trim() ?? "";
-    if (!raw) {
-      errors[`member_addr_${index}`] = "Stellar address is required to enable payments.";
-    } else if (!isValidStellarAddress(raw)) {
+    if (raw && !isValidStellarAddress(raw)) {
       errors[`member_addr_${index}`] = "Invalid Stellar address (must start with G, 56 chars).";
     }
   });

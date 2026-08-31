@@ -33,7 +33,7 @@ function renderForm(
 /** Fill the nth wallet address input (0-based). */
 function fillWallet(container: HTMLElement, index: number, value: string) {
   const inputs = container.querySelectorAll<HTMLInputElement>(
-    "input[placeholder='G... Stellar address *']",
+    "input[placeholder^='G... Stellar address']",
   );
   fireEvent.change(inputs[index], { target: { value } });
 }

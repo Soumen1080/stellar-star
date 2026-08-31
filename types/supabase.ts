@@ -80,6 +80,21 @@ export type AuthRateLimitRow = {
   updated_at: string;
 };
 
+export type TripInviteRow = {
+  id: string;
+  trip_id: string;
+  token_hash: string;
+  member_id: string | null;
+  created_by_wallet: string;
+  expires_at: string;
+  max_uses: number;
+  uses: number;
+  revoked: boolean;
+  revoked_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export type Database = {
   public: {
     Tables: {
@@ -124,6 +139,25 @@ export type Database = {
           settled?: boolean;
         };
         Update: Partial<Omit<TripRow, ServerManaged | "created_by_wallet">>;
+        Relationships: [];
+      };
+      trip_invites: {
+        Row: TripInviteRow;
+        Insert: {
+          id?: string;
+          trip_id: string;
+          token_hash: string;
+          member_id?: string | null;
+          created_by_wallet: string;
+          expires_at?: string;
+          max_uses?: number;
+          uses?: number;
+          revoked?: boolean;
+          revoked_at?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: Partial<TripInviteRow>;
         Relationships: [];
       };
       auth_challenges: {
@@ -179,6 +213,14 @@ export type Database = {
           p_limit: number;
           p_window_ms: number;
           p_now: number;
+        };
+        Returns: Json;
+      };
+      claim_trip_invite: {
+        Args: {
+          p_token_hash: string;
+          p_claiming_wallet: string;
+          p_selected_member_id?: string;
         };
         Returns: Json;
       };

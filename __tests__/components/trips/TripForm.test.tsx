@@ -53,7 +53,7 @@ function memberNameInputs(container: HTMLElement): NodeListOf<HTMLInputElement> 
 /** Get all wallet-address inputs */
 function walletInputs(container: HTMLElement): NodeListOf<HTMLInputElement> {
   return container.querySelectorAll<HTMLInputElement>(
-    "input[placeholder='G... Stellar address *']"
+    "input[placeholder^='G... Stellar address']"
   );
 }
 
@@ -146,7 +146,7 @@ describe("TripForm — validation errors", () => {
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
-  it("shows an error when a named member's wallet is missing", () => {
+  it("allows a named member without a wallet address (placeholder member)", () => {
     const { container, onSubmit } = renderForm();
     const names = memberNameInputs(container);
     const wallets = walletInputs(container);
@@ -159,8 +159,12 @@ describe("TripForm — validation errors", () => {
 
     clickSubmit(container);
 
-    expect(screen.getByText(/stellar address is required/i)).toBeTruthy();
-    expect(onSubmit).not.toHaveBeenCalled();
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    const data: TripFormData = onSubmit.mock.calls[0][0];
+    expect(data.members[0].name).toBe("Alice");
+    expect(data.members[0].walletAddress).toBeUndefined();
+    expect(data.members[1].name).toBe("Bob");
+    expect(data.members[1].walletAddress).toBe(ADDR_B);
   });
 
   it("shows an error when a wallet address has an invalid format", () => {

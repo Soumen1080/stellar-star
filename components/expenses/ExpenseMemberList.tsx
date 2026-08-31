@@ -123,7 +123,7 @@ function ExpenseMemberRow({
           </div>
 
           <input
-            placeholder="Stellar address G... (required to pay)"
+            placeholder="Stellar address G... (optional - can connect later)"
             value={member.walletAddress ?? ""}
             onChange={(event) => onUpdateMember(member.id, { walletAddress: event.target.value })}
             className={`w-full rounded-lg border px-3 py-2 text-sm bg-white outline-none transition-all font-mono ${
@@ -140,7 +140,11 @@ function ExpenseMemberRow({
           {errors[`member_addr_${index}`] ? (
             <p className="text-xs text-red-500">{errors[`member_addr_${index}`]}</p>
           ) : (
-            <p className="text-[10px] text-[#AAA]">Stellar wallet address - needed to send XLM payment</p>
+            <p className="text-[10px] text-[#AAA]">
+              {member.walletAddress
+                ? "Stellar wallet address - needed to send XLM payment"
+                : "Optional - friend can join via invite link to attach wallet later"}
+            </p>
           )}
         </div>
 

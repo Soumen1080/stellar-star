@@ -14,6 +14,7 @@ import { TripExpensesPanel } from "@/components/trips/TripExpensesPanel";
 import { TripNotFound } from "@/components/trips/TripNotFound";
 import { TripPaymentProgressBanner } from "@/components/trips/TripPaymentProgressBanner";
 import { TripTabs, type TripTab } from "@/components/trips/TripTabs";
+import { InviteMemberModal } from "@/components/trips/InviteMemberModal";
 import { useAuth } from "@/context/AuthContext";
 import { useContractEvents } from "@/hooks/useContractEvents";
 import { useExpense } from "@/hooks/useExpense";
@@ -30,6 +31,7 @@ export default function TripDetailPage() {
   const { user } = useAuth();
   const [activeTab, setActiveTab] = useState<TripTab>("expenses");
   const [showExpenseForm, setShowExpenseForm] = useState(false);
+  const [showInviteModal, setShowInviteModal] = useState(false);
   const { error: toastError } = useToast();
 
   // The expense itself saved successfully; only the link to this trip failed.
@@ -70,7 +72,11 @@ export default function TripDetailPage() {
         <TripDetailNav tripName={trip.name} />
 
         <main className="max-w-2xl mx-auto px-4 sm:px-6 py-8">
-          <TripDetailHeader trip={trip} expenses={tripExpenses} />
+          <TripDetailHeader
+            trip={trip}
+            expenses={tripExpenses}
+            onOpenInvite={() => setShowInviteModal(true)}
+          />
           {publicKey && <TripPaymentProgressBanner shares={myShares} />}
           <TripTabs activeTab={activeTab} onChange={setActiveTab} />
 
@@ -115,6 +121,12 @@ export default function TripDetailPage() {
           onCancel={() => setShowExpenseForm(false)}
         />
       </Modal>
+
+      <InviteMemberModal
+        trip={trip}
+        isOpen={showInviteModal}
+        onClose={() => setShowInviteModal(false)}
+      />
     </AuthGuard>
   );
 }
