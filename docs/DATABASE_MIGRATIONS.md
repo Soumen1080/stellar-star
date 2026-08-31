@@ -104,3 +104,48 @@ If an emergency reversion of a specific migration is required in staging/develop
    DELETE FROM public.schema_migrations WHERE version = '0002';
    ```
 3. Run `npm run db:check` to verify consistency.
+
+## 8. Schema drift between the two provisioning paths
+
+There are two ways a database gets created:
+
+1. An operator pastes `supabase-setup.sql` into the Supabase SQL Editor.
+2. The migrations in `migrations/*.sql` are applied in order.
+
+**Both must produce the same schema.** When they diverge, the version number
+stops meaning anything: a database can report `0002` and still be missing
+functions the application calls.
+
+This is not hypothetical. Commits `0823a9e` and `dad56b6` added auth challenge
+storage, auth rate limiting, trip invites and the optimistic-concurrency RPCs
+directly to `supabase-setup.sql` with no accompanying migration. A database
+provisioned by running migrations was missing RPCs that authentication and
+expense editing call at runtime — and nothing failed until they were called.
+`migrations/0003_reconcile_drifted_schema.sql` carried those objects into the
+versioned track.
+
+### The rule
+
+> Any change to `supabase-setup.sql` requires a matching migration, and any new
+> migration requires the same objects in `supabase-setup.sql`.
+
+`__tests__/database/schemaDrift.test.ts` enforces this statically in CI: it
+extracts every table, function and index from both paths and fails if either
+side has an object the other lacks. It runs on every PR, so drift is caught
+before deployment rather than at runtime.
+
+It deliberately ignores policies and triggers — the setup file drops and
+recreates those wholesale, so their text legitimately differs. Trigger
+execution order has its own test (`triggerOrder.test.ts`).
+
+### Adding a migration
+
+1. Add the objects to `supabase-setup.sql`.
+2. Create `migrations/000N_description.sql` with the same objects, written
+   idempotently (`IF NOT EXISTS`, `CREATE OR REPLACE`, `DROP POLICY IF EXISTS`
+   before `CREATE POLICY`).
+3. End it with the tracking insert, using `ON CONFLICT (version) DO NOTHING`.
+4. Run `npm test -- schemaDrift` to confirm the two paths still agree.
+
+Two contributors both claiming `0004` produce a filename collision in git
+rather than a silent divergence — which is the point.

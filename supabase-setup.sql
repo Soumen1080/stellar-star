@@ -106,6 +106,11 @@ CREATE TABLE IF NOT EXISTS public.auth_challenges (
 );
 
 CREATE INDEX IF NOT EXISTS auth_challenges_address_idx ON public.auth_challenges (address);
+-- Expiry sweeps scan by expiration; rate-limit windows by window_start.
+-- These exist in migrations/0001_baseline.sql and are mirrored here so both
+-- provisioning paths converge on the same indexes.
+CREATE INDEX IF NOT EXISTS auth_challenges_expiration_idx ON public.auth_challenges (expiration);
+CREATE INDEX IF NOT EXISTS auth_rate_limits_window_idx ON public.auth_rate_limits (window_start);
 
 CREATE TABLE IF NOT EXISTS public.auth_rate_limits (
   key            TEXT PRIMARY KEY,
