@@ -16,7 +16,7 @@ const validMembers: Member[] = [
 // ─── Existing tests ────────────────────────────────────────────────────────────
 
 describe("validateExpenseFormFields", () => {
-  it("requires a title, valid amount, member names, and Stellar addresses", () => {
+  it("requires a title, valid amount, and member names, and validates Stellar addresses when present", () => {
     const errors = validateExpenseFormFields({
       title: "",
       totalAmount: "0",
@@ -30,7 +30,7 @@ describe("validateExpenseFormFields", () => {
     expect(errors.title).toBe("Title is required.");
     expect(errors.totalAmount).toMatch(/valid XLM amount/);
     expect(errors.member_name_0).toBe("Name is required.");
-    expect(errors.member_addr_0).toMatch(/required/);
+    expect(errors.member_addr_0).toBeUndefined();
     expect(errors.member_addr_1).toMatch(/Invalid Stellar address/);
   });
 

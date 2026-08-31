@@ -239,16 +239,17 @@ describe("ExpenseForm — member-level validation", () => {
     expect(screen.getByText(/invalid stellar address/i)).toBeTruthy();
   });
 
-  it("shows an error when a named member has no wallet address", () => {
+  it("allows a named member without a wallet address (placeholder member)", async () => {
     const noAddrMembers = [
       { id: "m1", name: "Alice", walletAddress: "", weight: 1 },
       { id: "m2", name: "Bob",   walletAddress: VALID_ADDR_B, weight: 1 },
     ];
-    const { container } = renderForm({ defaultMembers: noAddrMembers });
+    const { container, onSuccess } = renderForm({ defaultMembers: noAddrMembers });
     fillTitle("Trip");
     fillAmount("20");
     clickSubmit(container);
-    expect(screen.getByText(/stellar address is required/i)).toBeTruthy();
+    await waitFor(() => expect(mockAddExpense).toHaveBeenCalledTimes(1));
+    expect(onSuccess).toHaveBeenCalledTimes(1);
   });
 
   it("shows a members error when fewer than 2 named members exist", () => {

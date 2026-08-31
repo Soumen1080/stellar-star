@@ -905,3 +905,19 @@ export async function checkConnection(): Promise<ConnectionStatus> {
   }
   return { ok: false, needsSetup: false, message: error.message };
 }
+
+// ─── Invitations ─────────────────────────────────────────────────────────────
+
+export {
+  createTripInvite,
+  verifyTripInvite,
+  claimTripInvite,
+  revokeTripInvite,
+  fetchTripInvites,
+  type CreateInviteParams,
+  type CreateInviteResult,
+  type ClaimInviteResult,
+} from "@/lib/invitations/claim";
+export { generateInviteToken, hashToken, buildInviteUrl } from "@/lib/invitations/tokens";
+
+

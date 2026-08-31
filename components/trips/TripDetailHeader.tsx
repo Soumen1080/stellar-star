@@ -10,9 +10,10 @@ import { Money } from "@/components/ui/Money";
 interface TripDetailHeaderProps {
   trip: Trip;
   expenses: Expense[];
+  onOpenInvite?: () => void;
 }
 
-export function TripDetailHeader({ trip, expenses }: TripDetailHeaderProps) {
+export function TripDetailHeader({ trip, expenses, onOpenInvite }: TripDetailHeaderProps) {
   const totalsByAsset = expenses.reduce((acc, expense) => {
     const asset = expense.currency || "XLM";
     acc[asset] = (acc[asset] || 0) + parseFloat(expense.totalAmount);
@@ -71,7 +72,7 @@ export function TripDetailHeader({ trip, expenses }: TripDetailHeaderProps) {
         </div>
       </div>
 
-      <TripMembersList members={trip.members} />
+      <TripMembersList members={trip.members} onOpenInvite={onOpenInvite} />
     </div>
   );
 }

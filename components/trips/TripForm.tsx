@@ -73,9 +73,7 @@ export function TripForm({ onSubmit, onCancel, initialData, currentUserPublicKey
       if (!m.name.trim()) return;
 
       const raw = m.walletAddress?.trim() ?? "";
-      if (!raw) {
-        errs[`member_addr_${i}`] = "Stellar address is required.";
-      } else if (!isValidStellarAddress(raw)) {
+      if (raw && !isValidStellarAddress(raw)) {
         errs[`member_addr_${i}`] = "Invalid Stellar address (must start with G, 56 chars).";
       }
     });
@@ -103,7 +101,7 @@ export function TripForm({ onSubmit, onCancel, initialData, currentUserPublicKey
         .map((m) => ({
           ...m,
           name: m.name.trim(),
-          walletAddress: m.walletAddress?.trim(),
+          walletAddress: m.walletAddress?.trim() || undefined,
         })),
     });
   };
@@ -160,7 +158,7 @@ export function TripForm({ onSubmit, onCancel, initialData, currentUserPublicKey
                 />
                 <div className="flex flex-col gap-0.5">
                   <Input
-                    placeholder="G... Stellar address *"
+                    placeholder="G... Stellar address (optional)"
                     value={member.walletAddress ?? ""}
                     onChange={(e) =>
                       updateMember(member.id, "walletAddress", e.target.value)
@@ -168,7 +166,11 @@ export function TripForm({ onSubmit, onCancel, initialData, currentUserPublicKey
                     error={errors[`member_addr_${i}`]}
                   />
                   {!errors[`member_addr_${i}`] && (
-                    <p className="text-[10px] text-[#AAA] px-1">Required - used to send XLM payment</p>
+                    <p className="text-[10px] text-[#AAA] px-1">
+                      {member.walletAddress
+                        ? "Used to send XLM payment"
+                        : "Optional - can invite friend by link to connect wallet later"}
+                    </p>
                   )}
                 </div>
               </div>
