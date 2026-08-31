@@ -18,7 +18,7 @@
 
 import { useCallback, useState } from "react";
 import { getAccountState, type AccountState, type OnboardingNeed } from "@/lib/stellar/accountState";
-import { describeOnboardingNeed } from "@/lib/stellar/accountState";
+import { describeOnboardingNeed, isBlockingNeed } from "@/lib/stellar/accountState";
 import { assetKey, NATIVE_ASSET, type AssetRef } from "@/lib/stellar/assets";
 import { signXDR } from "@/lib/freighter";
 import { submitSignedTransaction } from "@/lib/stellar/submitTransaction";
@@ -80,7 +80,10 @@ export function useAccountOnboarding(asset: AssetRef = NATIVE_ASSET) {
 
         setState((s) => ({
           ...s,
-          phase: need.kind === "none" ? "done" : "idle",
+          // A sponsored trustline is informational, not a blocker: the user can
+          // already receive the asset, so the flow is done even though `need`
+          // is not "none".
+          phase: isBlockingNeed(need) ? "idle" : "done",
           accountState,
           need,
         }));

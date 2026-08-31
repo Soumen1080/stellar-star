@@ -156,7 +156,34 @@ export function TrustlinePrompt({
     );
   }
 
-  // 4. At Limit
+  // 4. Sponsored — not a blocker, but the user should know their reserve is
+  // being paid by someone else and what happens if that stops.
+  if (need.kind === "trustline_sponsored") {
+    return (
+      <div className="space-y-3 rounded-xl border border-white/10 bg-white/[0.02] p-4">
+        <div className="flex items-start gap-3">
+          <Info size={18} className="mt-0.5 shrink-0 text-white/70" />
+          <div className="space-y-1">
+            <p className="text-sm font-semibold text-white">
+              {formatAssetLabel(asset)} reserve is sponsored
+            </p>
+            <p className="text-sm text-white/60">
+              You can receive {formatAssetLabel(asset)} today. The{" "}
+              {stroopsToXlm(need.reserveStroops)} XLM reserve for this trustline is
+              held by{" "}
+              <span className="font-mono text-xs text-white/70">
+                {need.sponsor.slice(0, 4)}…{need.sponsor.slice(-4)}
+              </span>
+              , not by you. If they remove the sponsorship, you will need that
+              amount in your own balance to keep the trustline.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // 5. At Limit
   if (need.kind === "trustline_at_limit") {
     return (
       <div className="space-y-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4">
