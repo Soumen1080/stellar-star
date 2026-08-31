@@ -598,11 +598,18 @@ export async function recordNetSettlementOnChain(
 }
 
 export async function getContractPayments(
-  callerPublicKey: string,
-  tripId: string
+  callerPublicKeyOrTripId: string,
+  maybeTripId?: string
 ): Promise<GetPaymentsResult> {
   if (!contractReady("getContractPayments")) {
     return { payments: [], success: false, error: "Contract not configured." };
+  }
+
+  const callerPublicKey = maybeTripId ? callerPublicKeyOrTripId : "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
+  const tripId = maybeTripId ?? callerPublicKeyOrTripId;
+
+  if (!tripId) {
+    return { payments: [], success: true };
   }
 
   try {
@@ -621,10 +628,16 @@ export async function getContractPayments(
 
     const simResult = await sorobanServer.simulateTransaction(tx);
 
-    if (
-      rpc.Api.isSimulationError(simResult) ||
-      !rpc.Api.isSimulationSuccess(simResult)
-    ) {
+    if (rpc.Api.isSimulationError(simResult)) {
+      const errStr = String(simResult.error ?? "");
+      const isArchived = /archived|expired|not\s*found|ttl/i.test(errStr);
+      if (isArchived) {
+        return { payments: [], success: true, isArchived: true };
+      }
+      throw new Error(decodeContractError(errStr) || "Simulation failed when reading trip payments.");
+    }
+
+    if (!rpc.Api.isSimulationSuccess(simResult)) {
       throw new Error("Simulation failed when reading trip payments.");
     }
 
@@ -632,27 +645,42 @@ export async function getContractPayments(
     if (!retval) return { payments: [], success: true };
 
     const rawPayments = scValToNative(retval) as Array<{
-      expense_id: string;
-      payer: string;
-      member: string;
-      amount: bigint;
-      tx_hash: string;
-      timestamp: bigint;
+      expense_id?: string;
+      expenseId?: string;
+      payer?: string;
+      member?: string;
+      amount?: bigint | number | string;
+      amount_stroops?: bigint | number | string;
+      asset?: string;
+      tx_hash?: string;
+      txHash?: string;
+      timestamp?: bigint | number;
     }>;
 
-    const payments: ContractPaymentRecord[] = rawPayments.map((r) => ({
-      tripId:        tripId,
-      expenseId:     r.expense_id,
-      payer:         r.payer,
-      member:        r.member,
-      amountStroops: r.amount,
-      txHash:        r.tx_hash,
-      timestamp:     Number(r.timestamp),
-    }));
+    const defaultAsset = SETTLEMENT_ASSET_ID || "native";
+
+    const payments: ContractPaymentRecord[] = Array.isArray(rawPayments)
+      ? rawPayments.map((r) => ({
+          tripId:        tripId,
+          expenseId:     String(r.expense_id ?? r.expenseId ?? ""),
+          payer:         String(r.payer ?? ""),
+          member:        String(r.member ?? ""),
+          amountStroops: typeof r.amount === "bigint"
+            ? r.amount
+            : BigInt(r.amount ?? r.amount_stroops ?? 0),
+          asset:         r.asset ? String(r.asset) : defaultAsset,
+          txHash:        String(r.tx_hash ?? r.txHash ?? ""),
+          timestamp:     Number(r.timestamp ?? 0),
+        }))
+      : [];
 
     return { payments, success: true };
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to read contract payments.";
+    const isArchived = /archived|expired|ttl/i.test(message);
+    if (isArchived) {
+      return { payments: [], success: true, isArchived: true };
+    }
     console.warn("[StellarStar:contract] getContractPayments:", message);
     return { payments: [], success: false, error: message };
   }

@@ -66,12 +66,17 @@ export function xlmToStroops(amount: string | number): string {
   return `${BigInt(normalizedWhole) * 10_000_000n + BigInt(normalizedFraction)}`;
 }
 
-// Builds a lookup key for a debt row in the UI to match against on-chain payment keys using the exact trip, expense, debtor wallet, and amount in stroops.
+// Builds a lookup key for a debt row in the UI to match against on-chain payment keys using the exact trip, expense, debtor wallet, amount in stroops, and canonical asset.
 function buildDebtKey(tripId: string, debt: RawDebt) {
   if (!debt.fromWallet) return null;
   const amountStroops = xlmToStroops(debt.amount);
-  const canonicalAsset = assetKey(parseAssetKey(debt.asset));
-  return `${tripId}:${debt.expenseId}:${debt.fromWallet.toLowerCase()}:${amountStroops}:${canonicalAsset}`;
+  return buildPaymentEventKey({
+    tripId,
+    expenseId: debt.expenseId,
+    member: debt.fromWallet,
+    amountStroops,
+    asset: debt.asset,
+  });
 }
 
 function NetPaymentRow({

@@ -22,11 +22,38 @@ import {
 } from "@/lib/supabase/queries";
 import { verifyPaymentByHash } from "@/lib/settlement/horizonVerify";
 import { fetchAttestation } from "@/lib/settlement/settleOnChain";
-import { recordPaymentOnChain, checkIsPaid } from "@/lib/stellar/contract";
+import { recordPaymentOnChain, checkIsPaid, getContractPayments } from "@/lib/stellar/contract";
+import { fetchContractEvents, buildPaymentEventKey } from "@/lib/stellar/events";
 import { CONTRACT_ID } from "@/lib/utils/constants";
+import { Money } from "@/lib/money";
+import {
+  assetKey,
+  parseAssetKey,
+  tryParseAssetKey,
+  NATIVE_ASSET_KEY,
+} from "@/lib/stellar/assets";
 import type { Expense } from "@/types/expense";
-import type { ContractPaymentEvent } from "@/types/contract";
+import type { ContractPaymentEvent, ContractPaymentRecord } from "@/types/contract";
 import type { StellarStarClient } from "@/lib/supabase/client";
+
+function normalizeAssetKey(assetStr?: string | null): string {
+  if (!assetStr) return NATIVE_ASSET_KEY;
+  const trimmed = assetStr.trim();
+  if (trimmed === "" || trimmed === "native" || trimmed.toUpperCase() === "XLM") {
+    return NATIVE_ASSET_KEY;
+  }
+  const parsed = tryParseAssetKey(trimmed);
+  return parsed ? assetKey(parsed) : trimmed;
+}
+
+function parseAmountToStroops(amountStr: string | number): bigint {
+  try {
+    return Money.parse(String(amountStr)).toStroops();
+  } catch {
+    const num = Number(amountStr);
+    return isNaN(num) ? 0n : BigInt(Math.round(num * 10_000_000));
+  }
+}
 
 export interface ReconcileIntentResult {
   intentId: string;
@@ -188,46 +215,76 @@ export interface ReconcileTripResult {
   repairedExpenseIds: string[];
 }
 
+export type PaymentRecordOrEvent =
+  | ContractPaymentEvent
+  | ContractPaymentRecord
+  | {
+      tripId: string;
+      expenseId: string;
+      member: string;
+      amountStroops: bigint | string | number;
+      asset?: string;
+      txHash: string;
+    };
+
 /**
- * Reconciles a trip's expense shares against on-chain contract payment events.
+ * Reconciles a trip's expense shares against on-chain contract payment records / events.
  *
- * If a payment exists on Soroban / Horizon but Supabase shares show unpaid,
- * this repairs Supabase state to believe the chain (Invariant 1 & 2).
+ * Invariant 1: Matching is exact on (tripId, expenseId, member wallet, amount in stroops, asset).
+ * Invariant 2: Deduplication and reconciliation are idempotent and order-independent.
  */
 export async function reconcileTripWithChainState(
   tripId: string,
   expenses: Expense[],
-  onChainEvents: ContractPaymentEvent[],
+  onChainPayments: PaymentRecordOrEvent[],
   client?: StellarStarClient,
 ): Promise<ReconcileTripResult> {
   let reconciledCount = 0;
   const repairedExpenseIds: string[] = [];
 
-  if (!tripId || onChainEvents.length === 0 || expenses.length === 0) {
+  if (!tripId || onChainPayments.length === 0 || expenses.length === 0) {
     return { reconciledCount, repairedExpenseIds };
   }
 
-  for (const event of onChainEvents) {
-    if (event.tripId !== tripId) continue;
+  for (const payment of onChainPayments) {
+    if (payment.tripId && payment.tripId !== tripId) continue;
 
-    const expense = expenses.find((e) => e.id === event.expenseId);
+    const expense = expenses.find((e) => e.id === payment.expenseId);
     if (!expense) continue;
 
-    // Find the share that corresponds to this on-chain event's debtor member
-    const memberLower = event.member.toLowerCase();
-    const share = expense.shares.find(
-      (s) =>
-        !s.paid &&
-        ((s.walletAddress && s.walletAddress.toLowerCase() === memberLower) ||
-          expense.members.find((m) => m.id === s.memberId)?.walletAddress?.toLowerCase() ===
-            memberLower),
-    );
+    const expenseAsset = normalizeAssetKey(expense.currency);
+    const paymentAsset = normalizeAssetKey(payment.asset);
+    if (expenseAsset !== paymentAsset) {
+      // Invariant 1: Never match payments across different assets (e.g. 10 USDC vs 10 XLM)
+      continue;
+    }
+
+    const paymentAmountStroops = typeof payment.amountStroops === "bigint"
+      ? payment.amountStroops
+      : BigInt(payment.amountStroops ?? 0);
+
+    const memberLower = (payment.member ?? "").trim().toLowerCase();
+    const share = expense.shares.find((s) => {
+      if (s.paid) return false;
+      const shareWallet = (
+        s.walletAddress ||
+        expense.members.find((m) => m.id === s.memberId)?.walletAddress ||
+        ""
+      ).trim().toLowerCase();
+
+      if (shareWallet !== memberLower) return false;
+
+      const shareStroops = parseAmountToStroops(s.amount);
+      return shareStroops === paymentAmountStroops;
+    });
 
     if (share && !share.paid) {
       try {
-        await markSharePaidRow(expense.id, share.memberId, event.txHash, client);
+        await markSharePaidRow(expense.id, share.memberId, payment.txHash, client);
         reconciledCount++;
-        repairedExpenseIds.push(expense.id);
+        if (!repairedExpenseIds.includes(expense.id)) {
+          repairedExpenseIds.push(expense.id);
+        }
       } catch (err) {
         console.warn(`[reconcile] Failed to repair share for expense ${expense.id}:`, err);
       }
@@ -235,4 +292,97 @@ export async function reconcileTripWithChainState(
   }
 
   return { reconciledCount, repairedExpenseIds };
+}
+
+export interface ReconcileTripFromChainResult extends ReconcileTripResult {
+  payments: ContractPaymentRecord[];
+  events: ContractPaymentEvent[];
+  source: "state" | "events" | "merged" | "none";
+}
+
+/**
+ * Reconciles a trip completely against both durable contract state (`get_payments`)
+ * and live RPC streaming events (`fetchContractEvents`).
+ *
+ * Solves the RPC retention window problem: trips older than ~24 hours reconcile
+ * reliably from contract state even if event history was pruned.
+ */
+export async function reconcileTripFromChain(
+  tripId: string,
+  expenses: Expense[],
+  callerPublicKey?: string,
+  client?: StellarStarClient,
+): Promise<ReconcileTripFromChainResult> {
+  let payments: ContractPaymentRecord[] = [];
+  let events: ContractPaymentEvent[] = [];
+
+  if (CONTRACT_ID && tripId) {
+    // 1. Read durable contract storage (survives event retention expiry)
+    try {
+      const stateResult = await getContractPayments(callerPublicKey || "", tripId);
+      if (stateResult.success && stateResult.payments.length > 0) {
+        payments = stateResult.payments;
+      }
+    } catch (err) {
+      console.warn("[reconcile] Contract state read error:", err);
+    }
+
+    // 2. Read live RPC event stream (real-time notifications)
+    try {
+      const eventsResult = await fetchContractEvents(0, tripId);
+      if (eventsResult.events.length > 0) {
+        events = eventsResult.events;
+      }
+    } catch (err) {
+      console.warn("[reconcile] Contract events fetch error:", err);
+    }
+  }
+
+  // Deduplicate union using buildPaymentEventKey
+  const combinedMap = new Map<string, PaymentRecordOrEvent>();
+
+  for (const p of payments) {
+    const key = buildPaymentEventKey({
+      tripId: p.tripId,
+      expenseId: p.expenseId,
+      member: p.member,
+      amountStroops: p.amountStroops,
+      asset: p.asset,
+    });
+    combinedMap.set(key, p);
+  }
+
+  for (const e of events) {
+    const key = buildPaymentEventKey({
+      tripId: e.tripId,
+      expenseId: e.expenseId,
+      member: e.member,
+      amountStroops: e.amountStroops,
+      asset: e.asset,
+    });
+    if (!combinedMap.has(key)) {
+      combinedMap.set(key, e);
+    }
+  }
+
+  const allPayments = Array.from(combinedMap.values());
+  const { reconciledCount, repairedExpenseIds } = await reconcileTripWithChainState(
+    tripId,
+    expenses,
+    allPayments,
+    client,
+  );
+
+  let source: "state" | "events" | "merged" | "none" = "none";
+  if (payments.length > 0 && events.length > 0) source = "merged";
+  else if (payments.length > 0) source = "state";
+  else if (events.length > 0) source = "events";
+
+  return {
+    reconciledCount,
+    repairedExpenseIds,
+    payments,
+    events,
+    source,
+  };
 }

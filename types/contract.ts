@@ -4,6 +4,7 @@ export interface ContractPaymentRecord {
   payer: string;
   member: string;
   amountStroops: bigint;
+  asset?: string;
   txHash: string;
   timestamp: number;
 }
@@ -65,14 +66,18 @@ export interface ContractPaymentEvent {
   ledgerClosedAt: string;
   tripId: string;
   expenseId: string;
+  payer?: string;
   member: string;
   amountStroops: string;
+  asset?: string;
   txHash: string;
+  timestamp?: number;
 }
 
 export interface GetPaymentsResult {
   payments: ContractPaymentRecord[];
   success: boolean;
+  isArchived?: boolean;
   error?: string;
 }
 
