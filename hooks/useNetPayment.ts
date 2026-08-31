@@ -1,8 +1,10 @@
 "use client";
 
 import { useCallback, useState, useEffect } from "react";
-import { buildPaymentTransaction } from "@/lib/stellar/buildTransaction";
+import { buildPaymentTransaction, buildPathPaymentTransaction } from "@/lib/stellar/buildTransaction";
 import { submitSignedTransaction } from "@/lib/stellar/submitTransaction";
+import { isQuoteFresh, type PricedPath } from "@/lib/stellar/pathPayment";
+import { formatAssetLabel } from "@/lib/stellar/assets";
 import {
   recordNetSettlementOnChain,
   precheckPoolBalance,
@@ -74,6 +76,13 @@ interface PayNetParams {
   asset: string;
   payerWalletAddress: string;
   tripName: string;
+}
+
+export interface PayNetPathParams {
+  debts: RawDebt[];
+  tripName: string;
+  payerWalletAddress: string;
+  path: PricedPath;
 }
 
 export function useNetPayment({ tripId }: UseNetPaymentOpts) {
@@ -498,9 +507,125 @@ export function useNetPayment({ tripId }: UseNetPaymentOpts) {
     ],
   );
 
+  const payNetPathSettlement = useCallback(
+    async ({ debts, tripName, payerWalletAddress, path }: PayNetPathParams) => {
+      if (!publicKey) {
+        toastError("Wallet not connected", "Please connect your Freighter wallet first.");
+        return;
+      }
+
+      const mismatchMsg = networkMismatchMessage(network);
+      if (mismatchMsg) {
+        setPaymentState({ status: "blocked", message: mismatchMsg });
+        toastError("Network mismatch", mismatchMsg);
+        return;
+      }
+
+      if (!payerWalletAddress) {
+        toastError("No wallet address", "The recipient doesn't have a Stellar address.");
+        return;
+      }
+
+      if (!isQuoteFresh(path)) {
+        toastError("Quote expired", "The exchange rate quote has expired. Refresh quote before confirming.");
+        return;
+      }
+
+      const acquiredIntents: SettlementIntent[] = [];
+      for (const debt of debts) {
+        try {
+          const res = await acquireSettlementIntent({
+            tripId,
+            expenseId: debt.expenseId,
+            memberId: debt.fromId,
+            payerWallet: payerWalletAddress,
+            memberWallet: publicKey,
+            amount: debt.amount.toString(),
+          });
+          if (res.ok) {
+            acquiredIntents.push(res.intent);
+          } else if (res.code === "IN_PROGRESS") {
+            setPaymentState({ status: "blocked", message: res.message });
+            toastError("Settlement in progress", res.message);
+            return;
+          }
+        } catch {
+          // non-fatal
+        }
+      }
+
+      try {
+        setPaymentState({ status: "building" });
+        const memoText = tripName;
+        const { xdr } = await buildPathPaymentTransaction({
+          sourcePublicKey: publicKey,
+          destinationPublicKey: payerWalletAddress,
+          path,
+          memoText,
+        });
+
+        setPaymentState({ status: "signing" });
+        toastInfo("Waiting for wallet signature...", "Confirm path payment in Freighter.");
+        const signedXDR = await signXDR(xdr, NETWORK_PASSPHRASE);
+
+        setPaymentState({ status: "submitting" });
+        const result = await submitSignedTransaction(signedXDR);
+
+        for (const intent of acquiredIntents) {
+          markIntentSubmitted(intent.id, result.hash, result.ledger).catch(() => {});
+        }
+
+        for (const debt of debts) {
+          try {
+            await markSharePaid(debt.expenseId, debt.fromId, result.hash);
+          } catch {
+            // non-fatal
+          }
+        }
+
+        for (const intent of acquiredIntents) {
+          markIntentRecorded(intent.id, result.ledger, false).catch(() => {});
+        }
+
+        setPaymentState({ status: "success", hash: result.hash, ledger: result.ledger, onChain: false });
+        const destLabel = formatAssetLabel(path.destinationAsset);
+        const srcLabel = formatAssetLabel(path.sourceAsset);
+        toastSuccess(
+          "Path payment sent!",
+          `Spent up to ${path.sendMax} ${srcLabel} -> recipient received exact ${path.destinationAmount} ${destLabel}.`,
+        );
+
+        setTimeout(() => refreshBalance(), 3000);
+        setTimeout(() => refreshBalance(), 8000);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Path payment failed.";
+        const isRejected = /reject|denied|cancel/i.test(message.toLowerCase());
+        const display = isRejected ? "Transaction cancelled in wallet." : message;
+
+        setPaymentState({ status: "error", message: display });
+        reportError("payment.path-failed", err, {
+          stage: "payNetPathSettlement",
+          tripId,
+        });
+        toastError("Payment failed", display);
+      }
+    },
+    [
+      publicKey,
+      tripId,
+      markSharePaid,
+      refreshBalance,
+      toastSuccess,
+      toastError,
+      toastInfo,
+      network,
+    ],
+  );
+
   return {
     paymentState,
     payNetSettlement,
+    payNetPathSettlement,
     reset,
     retryOnChainRecord,
     loadPendingForPayer,

@@ -2,7 +2,7 @@
 
 import React, { useMemo, useState } from "react";
 import { motion } from "framer-motion";
-import { ArrowRight, Scale, CheckCircle2, Database } from "lucide-react";
+import { ArrowRight, Scale, CheckCircle2, Database, ArrowRightLeft } from "lucide-react";
 import type { Expense } from "@/types/expense";
 import type { Trip } from "@/types/trip";
 import type { ContractPaymentEvent } from "@/types/contract";
@@ -14,12 +14,14 @@ import { signXDR } from "@/lib/freighter";
 import { useWallet } from "@/hooks/useWallet";
 import { useExpense } from "@/hooks/useExpense";
 import { useToast } from "@/components/ui/Toast";
-import { parseAssetKey, assetKey } from "@/lib/stellar/assets";
+import { parseAssetKey, assetKey, isNative } from "@/lib/stellar/assets";
 import { NETWORK_PASSPHRASE } from "@/lib/utils/constants";
 import { PayButton } from "@/components/payment/PayButton";
 import { TransactionHash } from "@/components/payment/TransactionHash";
+import { PathPaymentConfirm } from "@/components/payment/PathPaymentConfirm";
 import { cn } from "@/lib/utils";
 import { useNetPayment } from "@/hooks/useNetPayment";
+import { usePathPayment } from "@/hooks/usePathPayment";
 import { buildPaymentEventKey } from "@/lib/stellar/events";
 import { Money as MoneyDisplay } from "@/components/ui/Money";
 import { Money } from "@/lib/money";
@@ -95,6 +97,7 @@ function NetPaymentRow({
   const {
     paymentState,
     payNetSettlement,
+    payNetPathSettlement,
     retryOnChainRecord,
     loadPendingForPayer,
     hasPendingRetry,
@@ -104,6 +107,24 @@ function NetPaymentRow({
     isLoading,
     isSuccess,
   } = useNetPayment({ tripId });
+
+  const [showPathConfirm, setShowPathConfirm] = useState(false);
+  const destinationAssetRef = useMemo(() => parseAssetKey(payment.asset), [payment.asset]);
+
+  const {
+    path,
+    loading: pathLoading,
+    failure: pathFailure,
+    slippageBps,
+    setSlippageBps,
+    refreshQuote,
+    clear: clearPathQuote,
+  } = usePathPayment({
+    sourceAccount: publicKey,
+    destinationAccount: payment.toWallet || null,
+    destinationAsset: destinationAssetRef,
+    destinationAmount: payment.amount,
+  });
 
   React.useEffect(() => {
     if (payment.toWallet) {
@@ -125,6 +146,22 @@ function NetPaymentRow({
       asset: payment.asset,
       payerWalletAddress: payment.toWallet,
       tripName,
+    });
+  };
+
+  const handleOpenPathPayment = () => {
+    setShowPathConfirm(true);
+    refreshQuote();
+  };
+
+  const handleConfirmPathPayment = async () => {
+    if (!path || !payment.toWallet) return;
+    setShowPathConfirm(false);
+    await payNetPathSettlement({
+      debts: payment.settledDebts,
+      tripName,
+      payerWalletAddress: payment.toWallet,
+      path,
     });
   };
 
@@ -175,14 +212,27 @@ function NetPaymentRow({
               )}
             </span>
           ) : (
-            <PayButton
-              amount={payment.amount}
-              recipientName={payment.to}
-              onClick={handlePay}
-              isLoading={isLoading}
-              disabled={!canPay}
-              size="sm"
-            />
+            <div className="flex items-center gap-1.5">
+              <PayButton
+                amount={payment.amount}
+                asset={payment.asset}
+                recipientName={payment.to}
+                onClick={handlePay}
+                isLoading={isLoading}
+                disabled={!canPay}
+                size="sm"
+              />
+              <button
+                type="button"
+                onClick={handleOpenPathPayment}
+                disabled={!canPay || isLoading}
+                title="Convert & pay using an asset you already hold (Stellar DEX path payment)"
+                className="inline-flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-xl border border-[#E5E5E5] text-[#555] hover:border-[#2DD4BF] hover:text-[#0F0F14] disabled:opacity-40 disabled:cursor-not-allowed transition-all font-semibold"
+              >
+                <ArrowRightLeft size={11} className="text-[#2DD4BF]" />
+                <span>Convert</span>
+              </button>
+            </div>
           )}
         </div>
       </div>
@@ -205,6 +255,22 @@ function NetPaymentRow({
           Connect {payment.from}&apos;s wallet to pay
         </p>
       )}
+
+      <PathPaymentConfirm
+        open={showPathConfirm}
+        onClose={() => {
+          setShowPathConfirm(false);
+          clearPathQuote();
+        }}
+        recipientName={payment.to}
+        path={path}
+        loading={pathLoading}
+        failure={pathFailure}
+        slippageBps={slippageBps}
+        onSlippageChange={setSlippageBps}
+        onRefreshQuote={refreshQuote}
+        onConfirm={handleConfirmPathPayment}
+      />
     </motion.div>
   );
 }

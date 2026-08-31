@@ -60,6 +60,12 @@ describe("PayButton — rendering", () => {
     expect(cleanText).toContain("Pay XLM 1.2346");
   });
 
+  it("formats non-XLM asset such as USDC correctly", () => {
+    const { container } = renderButton({ amount: "15", asset: "USDC" });
+    const cleanText = container.textContent?.replace(/\u00a0/g, " ");
+    expect(cleanText).toContain("Pay USDC 15.0000");
+  });
+
   it("includes the recipient name in the title attribute", () => {
     const { container } = renderButton({ amount: "10", recipientName: "Bob" });
     const btn = container.querySelector("button")!;
