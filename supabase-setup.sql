@@ -98,6 +98,25 @@ CREATE TABLE IF NOT EXISTS public.trips (
   updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS public.auth_challenges (
+  nonce          TEXT PRIMARY KEY,
+  address        TEXT NOT NULL,
+  expiration     BIGINT NOT NULL,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS auth_challenges_address_idx ON public.auth_challenges (address);
+
+CREATE TABLE IF NOT EXISTS public.auth_rate_limits (
+  key            TEXT PRIMARY KEY,
+  count          INT NOT NULL DEFAULT 1,
+  window_start   BIGINT NOT NULL,
+  updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE public.auth_challenges ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.auth_rate_limits ENABLE ROW LEVEL SECURITY;
+
 
 -- ============================================================================
 -- 3. MIGRATE PRE-EXISTING INSTALLS
@@ -1270,6 +1289,139 @@ $fn$;
 GRANT EXECUTE ON FUNCTION public.update_expense_versioned(UUID, INT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, JSONB, JSONB, BOOLEAN) TO anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.mark_share_paid(UUID, TEXT, TEXT, BOOLEAN) TO anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.mark_shares_paid_batch(JSONB, TEXT) TO anon, authenticated;
+
+-- ============================================================================
+-- 13. MULTI-INSTANCE AUTH & RATE LIMITING (ISSUE #204)
+-- ============================================================================
+
+CREATE OR REPLACE FUNCTION public.record_auth_challenge(
+  p_address TEXT,
+  p_nonce TEXT,
+  p_expiration BIGINT,
+  p_max_pending INT DEFAULT 5
+)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $fn$
+DECLARE
+  v_count INT;
+  v_oldest_nonce TEXT;
+BEGIN
+  -- 1. Delete expired challenges globally for this address
+  DELETE FROM public.auth_challenges
+   WHERE address = p_address AND expiration <= (extract(epoch from now()) * 1000)::bigint;
+
+  -- 2. Enforce max pending per address
+  SELECT count(*) INTO v_count FROM public.auth_challenges WHERE address = p_address;
+  
+  WHILE v_count >= p_max_pending LOOP
+    SELECT nonce INTO v_oldest_nonce 
+      FROM public.auth_challenges 
+     WHERE address = p_address 
+     ORDER BY created_at ASC 
+     LIMIT 1;
+     
+    IF v_oldest_nonce IS NOT NULL THEN
+      DELETE FROM public.auth_challenges WHERE nonce = v_oldest_nonce;
+      v_count := v_count - 1;
+    ELSE
+      EXIT;
+    END IF;
+  END LOOP;
+
+  -- 3. Insert new challenge
+  INSERT INTO public.auth_challenges (nonce, address, expiration)
+  VALUES (p_nonce, p_address, p_expiration);
+  
+  RETURN TRUE;
+END;
+$fn$;
+
+CREATE OR REPLACE FUNCTION public.consume_auth_challenge(
+  p_address TEXT,
+  p_nonce TEXT,
+  p_expiration BIGINT,
+  p_now BIGINT
+)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $fn$
+DECLARE
+  v_deleted_nonce TEXT;
+BEGIN
+  IF p_now > p_expiration THEN
+    RETURN FALSE;
+  END IF;
+
+  DELETE FROM public.auth_challenges
+   WHERE nonce = p_nonce
+     AND address = p_address
+     AND expiration = p_expiration
+     AND expiration > p_now
+  RETURNING nonce INTO v_deleted_nonce;
+
+  RETURN v_deleted_nonce IS NOT NULL;
+END;
+$fn$;
+
+CREATE OR REPLACE FUNCTION public.check_auth_rate_limit(
+  p_key TEXT,
+  p_limit INT,
+  p_window_ms BIGINT,
+  p_now BIGINT
+)
+RETURNS JSON
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $fn$
+DECLARE
+  v_row public.auth_rate_limits;
+  v_allowed BOOLEAN;
+  v_remaining INT;
+  v_reset_ms BIGINT;
+BEGIN
+  -- Attempt to select for update
+  SELECT * INTO v_row FROM public.auth_rate_limits WHERE key = p_key FOR UPDATE;
+
+  IF NOT FOUND OR (p_now - v_row.window_start) >= p_window_ms THEN
+    -- Upsert new window
+    INSERT INTO public.auth_rate_limits (key, count, window_start, updated_at)
+    VALUES (p_key, 1, p_now, NOW())
+    ON CONFLICT (key) DO UPDATE 
+       SET count = 1, window_start = p_now, updated_at = NOW();
+       
+    v_allowed := true;
+    v_remaining := GREATEST(0, p_limit - 1);
+    v_reset_ms := p_window_ms;
+  ELSE
+    IF v_row.count < p_limit THEN
+      UPDATE public.auth_rate_limits
+         SET count = v_row.count + 1, updated_at = NOW()
+       WHERE key = p_key;
+       
+      v_allowed := true;
+      v_remaining := GREATEST(0, p_limit - (v_row.count + 1));
+      v_reset_ms := GREATEST(0::bigint, p_window_ms - (p_now - v_row.window_start));
+    ELSE
+      v_allowed := false;
+      v_remaining := 0;
+      v_reset_ms := GREATEST(0::bigint, p_window_ms - (p_now - v_row.window_start));
+    END IF;
+  END IF;
+
+  RETURN json_build_object(
+    'allowed', v_allowed,
+    'remaining', v_remaining,
+    'reset_ms', v_reset_ms
+  );
+END;
+$fn$;
+
+GRANT EXECUTE ON FUNCTION public.record_auth_challenge(TEXT, TEXT, BIGINT, INT) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.consume_auth_challenge(TEXT, TEXT, BIGINT, BIGINT) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.check_auth_rate_limit(TEXT, INT, BIGINT, BIGINT) TO anon, authenticated;
 
 -- ─── RECORD APPLIED MIGRATIONS ───────────────────────────────────────────────
 
