@@ -1,6 +1,6 @@
 # Design Note: Multi-Asset Settlement Pool
 
-Issue #145 (epic #43). Builds on the attestation work in #144.
+Issue #197 / #145 (epic #43). Builds on the attestation work in #144.
 
 ## The problem
 
