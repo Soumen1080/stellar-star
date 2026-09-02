@@ -113,7 +113,6 @@ export async function assertAccountLive(publicKey: string): Promise<void> {
 // ── Fixture extension ──────────────────────────────────────────────────────────
 
 export const test = base.extend<TestnetFixtures>({
-  // eslint-disable-next-line no-empty-pattern
   payerKeypair: async ({}, use, testInfo) => {
     const file = loadFixtureFile();
     const envSecret = process.env.TESTNET_PAYER_SECRET;
@@ -158,7 +157,6 @@ export const test = base.extend<TestnetFixtures>({
     await use(keypair);
   },
 
-  // eslint-disable-next-line no-empty-pattern
   recipientKeypair: async ({}, use, testInfo) => {
     const file = loadFixtureFile();
     const envSecret = process.env.TESTNET_RECIPIENT_SECRET;
@@ -183,7 +181,6 @@ export const test = base.extend<TestnetFixtures>({
     await use(keypair);
   },
 
-  // eslint-disable-next-line no-empty-pattern
   horizonUrl: async ({}, use) => {
     await use(TESTNET_HORIZON_URL);
   },

@@ -186,10 +186,13 @@ describe("fetchContractEvents", () => {
         latestLedger: 500,
         cursor: "page-1",
       } as any)
+      // No cursor on the final page: that, not a short page, is what tells
+      // fetchContractEvents the stream is drained. RPC may return fewer than
+      // `limit` records and still have more behind the cursor, so handing back
+      // "page-2" here would correctly provoke a third request.
       .mockResolvedValueOnce({
         events: secondPage,
         latestLedger: 501,
-        cursor: "page-2",
       } as any);
 
     const result = await fetchContractEvents(42, "trip-1");

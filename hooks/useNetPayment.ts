@@ -59,16 +59,16 @@ interface UseNetPaymentOpts {
   tripId: string;
 }
 
-export interface RawDebt {
-  expenseId: string;
-  fromId: string;
-  toId: string;
-  from: string;
-  to: string;
-  amount: number;
-  fromWallet?: string;
-  toWallet?: string;
-}
+/**
+ * Re-exported from the settlement engine rather than redeclared.
+ *
+ * A second, narrower copy lived here with `amount: number`, which silently
+ * excluded the `string | Money` amounts the simplifier actually produces and
+ * made callers unable to hand this hook the debts it is meant to settle. Only
+ * `.toString()` is used on the amount here, so the canonical type fits as-is.
+ */
+import type { RawDebt } from "@/lib/settlement/simplify";
+export type { RawDebt };
 
 interface PayNetParams {
   debts: RawDebt[];

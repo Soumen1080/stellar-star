@@ -5,7 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import { Users, CheckCircle2, AlertCircle, ArrowRight, ShieldCheck, Loader2, Sparkles } from "lucide-react";
 import { useWallet } from "@/hooks/useWallet";
-import { useSession } from "@/lib/supabase/useSession";
+import { useAccessToken } from "@/lib/supabase/useSession";
 import { useToast } from "@/components/ui/Toast";
 import type { TripInviteSummary } from "@/types/trip";
 
@@ -15,7 +15,7 @@ export default function JoinTripPage() {
   const token = typeof params?.token === "string" ? params.token : "";
 
   const { isConnected, publicKey, connect } = useWallet();
-  const { sessionToken } = useSession();
+  const sessionToken = useAccessToken();
   const { success: toastSuccess, error: toastError } = useToast();
 
   const [loading, setLoading] = useState(true);

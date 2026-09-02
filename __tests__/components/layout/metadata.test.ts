@@ -33,8 +33,11 @@ describe("Root Layout Metadata & Open Graph Image", () => {
 
   it("exports metadata with Twitter card configuration referencing /og-image.png", () => {
     expect(metadata.twitter).toBeDefined();
-    expect(metadata.twitter?.card).toBe("summary_large_image");
-    expect(metadata.twitter?.images).toEqual(["/og-image.png"]);
+    // `Metadata["twitter"]` is a union and only some members declare `card`,
+    // so read it through a narrowed view rather than off the union directly.
+    const twitter = metadata.twitter as { card?: string; images?: unknown } | null | undefined;
+    expect(twitter?.card).toBe("summary_large_image");
+    expect(twitter?.images).toEqual(["/og-image.png"]);
   });
 
   it("verifies public/og-image.png exists with valid PNG signature and 1200x630 dimensions", () => {

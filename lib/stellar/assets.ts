@@ -100,8 +100,8 @@ export function isValidAssetCode(code: string): boolean {
 }
 
 /** True if issuer is a valid Ed25519 public key (or null for native). */
-export function isValidIssuer(issuer: string | null, isNative = false): boolean {
-  if (isNative) return issuer === null;
+export function isValidIssuer(issuer: string | null | undefined, isNative = false): boolean {
+  if (isNative) return issuer === null || issuer === undefined;
   if (!issuer || typeof issuer !== "string") return false;
   return StrKey.isValidEd25519PublicKey(issuer);
 }

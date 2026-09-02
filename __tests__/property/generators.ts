@@ -3,6 +3,17 @@ import { StrKey } from "@stellar/stellar-sdk";
 import type { Member } from "@/types/expense";
 import type { RawDebt } from "@/lib/settlement/netBalance";
 
+/**
+ * A `unit` arbitrary drawing single characters from `chars`.
+ *
+ * fast-check v4 replaced `fc.string`'s `alphabet` option with `unit`; passing
+ * `alphabet` is a type error and, before that, was silently ignored — which let
+ * these generators emit values outside the alphabet they name.
+ */
+function charsFrom(chars: string): fc.Arbitrary<string> {
+  return fc.constantFrom(...chars.split(""));
+}
+
 // ─── Deterministic valid Stellar Address Generator ────────────────────────────
 export const validAddressArb = fc
   .uint8Array({ minLength: 32, maxLength: 32 })
@@ -42,7 +53,7 @@ export function makeMemberArb(index: number, options: GeneratorMemberOptions = {
     id: fc.constant(`m-${index}`),
     name: fc.oneof(
       fc.constant(`Member ${index}`),
-      fc.string({ minLength: 3, maxLength: 12, alphabet: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ" })
+      fc.string({ minLength: 3, maxLength: 12, unit: charsFrom("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ") })
     ),
     walletAddress: walletArb,
     weight: weightArb,
@@ -110,7 +121,7 @@ export const assetArb = fc.oneof(
   fc.constant("native"),
   fc.constant("USDC"),
   fc.tuple(
-    fc.string({ minLength: 3, maxLength: 4, alphabet: "ABCDEFGHIJKLMNOPQRSTUVWXYZ" }),
+    fc.string({ minLength: 3, maxLength: 4, unit: charsFrom("ABCDEFGHIJKLMNOPQRSTUVWXYZ") }),
     validAddressArb
   ).map(([code, issuer]) => `${code}:${issuer}`)
 );
@@ -132,7 +143,7 @@ export function makeRawDebtsArb(options: DebtGraphOptions = {}): fc.Arbitrary<{ 
     const memberIds = members.map((m) => m.id);
 
     const debtArb = fc.record({
-      expenseId: fc.string({ minLength: 3, maxLength: 8, alphabet: "0123456789abcdef" }),
+      expenseId: fc.string({ minLength: 3, maxLength: 8, unit: charsFrom("0123456789abcdef") }),
       fromIdx: fc.integer({ min: 0, max: members.length - 1 }),
       toIdx: fc.integer({ min: 0, max: members.length - 1 }),
       amount: validAmountStringArb,

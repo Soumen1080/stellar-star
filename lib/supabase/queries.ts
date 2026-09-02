@@ -10,6 +10,7 @@ import type { PostgrestError } from "@supabase/supabase-js";
 import type { Expense, Member, SplitShare } from "@/types/expense";
 import type { Trip } from "@/types/trip";
 import type {
+  Json,
   ExpenseInsert,
   ExpenseRow,
   ExpenseUpdate,
@@ -481,7 +482,11 @@ export async function updateExpenseRow(
       });
 
       if (!rpcError && rpcData) {
-        return rowToExpense(rpcData as ExpenseRow);
+        // SETOF-returning RPC: PostgREST sends an array of rows.
+        const updatedRow = Array.isArray(rpcData) ? rpcData[0] : rpcData;
+        if (updatedRow) {
+          return rowToExpense(updatedRow as ExpenseRow);
+        }
       }
 
       // Check if it was a version conflict
@@ -577,7 +582,11 @@ export async function markSharePaidRow(
     });
 
     if (!rpcError && rpcData) {
-      return rowToExpense(rpcData as ExpenseRow);
+      // SETOF-returning RPC: PostgREST sends an array of rows.
+      const paidRow = Array.isArray(rpcData) ? rpcData[0] : rpcData;
+      if (paidRow) {
+        return rowToExpense(paidRow as ExpenseRow);
+      }
     }
   } catch {
     // Fall back to client-side optimistic atomic write

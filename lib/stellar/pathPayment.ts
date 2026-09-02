@@ -138,7 +138,20 @@ export type PathFailureReason =
   /** Horizon could not be reached or errored. Retryable. */
   | "unavailable"
   /** The sender does not hold enough of anything to fund the receive amount. */
-  | "insufficient_balance";
+  | "insufficient_balance"
+  /**
+   * A route exists but the order books along it are too thin to fill the
+   * amount at an acceptable price. Distinct from `no_path`: retrying with a
+   * different source asset can succeed, so the UI offers that rather than
+   * telling the user the payment is impossible.
+   */
+  | "insufficient_liquidity"
+  /**
+   * The quote aged past `QUOTE_FRESHNESS_MS` before it was signed. Retryable
+   * by refreshing — see `isQuoteFresh`, which gates signing in
+   * `buildPathPaymentTransaction` and `useNetPayment`.
+   */
+  | "stale";
 
 export class PathPaymentError extends Error {
   readonly reason: PathFailureReason;

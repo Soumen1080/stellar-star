@@ -134,6 +134,18 @@ class MockDatabase {
       return { data: null, error: { message: "TRIP_NOT_FOUND: Associated trip no longer exists" } };
     }
 
+    // Mirrors claim_trip_invite: a pinned invite rejects a caller-supplied
+    // member id that names a different slot, rather than silently granting the
+    // pinned one.
+    if (invite.member_id && selectedMemberId && selectedMemberId !== invite.member_id) {
+      return {
+        data: null,
+        error: {
+          message: `MEMBER_NOT_FOUND: Member ${selectedMemberId} is not the slot this invitation is for`,
+        },
+      };
+    }
+
     const targetMemberId = invite.member_id || selectedMemberId;
     let targetMember: Member | undefined;
 

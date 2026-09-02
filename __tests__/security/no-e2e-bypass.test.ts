@@ -22,7 +22,9 @@ import { join } from "node:path";
 const shouldRun =
   process.env.RUN_SECURITY_BUILD === "1" || process.env.CI_SECURITY_GATE === "1";
 
-// eslint-disable-next-line jest/no-disabled-tests
+// NOTE: no eslint-disable for jest/no-disabled-tests here — eslint-plugin-jest
+// is not installed, so naming that rule is itself an "unknown rule" error.
+// `test.skip` is conditional infrastructure gating, not a disabled test.
 (shouldRun ? test : test.skip)(
   "production build contains no E2E wallet bypass",
   () => {

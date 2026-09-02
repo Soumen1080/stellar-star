@@ -84,44 +84,48 @@ export function recomputeSharesWithSettled(
     return settledShares;
   }
 
-  // 3. Compute unpaid split for unpaid non-payers
-  const unpaidNonPayers = unpaidMembers.filter((m) => m.id !== paidByMemberId);
-  if (unpaidNonPayers.length === 0) {
+  // 3. Apportion the unpaid remainder.
+  //
+  // The remainder is divided across every unpaid member *including the payer*,
+  // and the payer's own row is then dropped — the payer covers their share by
+  // having fronted the money, exactly as `calculateEqualSplit` does for a fresh
+  // split. Dividing across non-payers only (the previous behaviour) handed the
+  // payer's portion to everybody else: with a 110 total, 50 settled and members
+  // {Alice (payer), Bob (settled), Charlie}, Charlie was billed the whole 60
+  // remainder instead of 30.
+  if (unpaidMembers.every((m) => m.id === paidByMemberId)) {
     return settledShares;
   }
 
+  const isNotPayer = (share: SplitShare) => share.memberId !== paidByMemberId;
+
   let newUnpaidShares: SplitShare[] = [];
   if (unpaidTarget.isPositive()) {
-    if (splitMode === "custom") {
-      const customShares = unpaidTarget.splitByWeights(
-        unpaidNonPayers.map((m) => m.weight ?? 1),
-      );
-      newUnpaidShares = unpaidNonPayers.map((m, i) => ({
+    const portions =
+      splitMode === "custom"
+        ? unpaidTarget.splitByWeights(unpaidMembers.map((m) => m.weight ?? 1))
+        : unpaidTarget.split(unpaidMembers.length);
+
+    newUnpaidShares = unpaidMembers
+      .map((m, i) => ({
         memberId: m.id,
         name: m.name,
         walletAddress: m.walletAddress,
-        amount: customShares[i].format(7),
+        amount: portions[i].format(7),
         paid: false,
-      }));
-    } else {
-      const equalShares = unpaidTarget.split(unpaidNonPayers.length);
-      newUnpaidShares = unpaidNonPayers.map((m, i) => ({
-        memberId: m.id,
-        name: m.name,
-        walletAddress: m.walletAddress,
-        amount: equalShares[i].format(7),
-        paid: false,
-      }));
-    }
+      }))
+      .filter(isNotPayer);
   } else {
     // Zero unpaid amount: create 0-amount shares for non-payers
-    newUnpaidShares = unpaidNonPayers.map((m) => ({
-      memberId: m.id,
-      name: m.name,
-      walletAddress: m.walletAddress,
-      amount: Money.zero().format(7),
-      paid: false,
-    }));
+    newUnpaidShares = unpaidMembers
+      .map((m) => ({
+        memberId: m.id,
+        name: m.name,
+        walletAddress: m.walletAddress,
+        amount: Money.zero().format(7),
+        paid: false,
+      }))
+      .filter(isNotPayer);
   }
 
   // 4. Combine settled shares and new unpaid shares

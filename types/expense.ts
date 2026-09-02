@@ -33,6 +33,18 @@ export interface Expense {
    */
   currency: string;
   /**
+   * Units of `currency` per one unit of the settlement asset, captured when the
+   * expense was created. `totalAmount` was converted through it, so it is the
+   * only way back to the fiat figure the user actually typed — the receipt
+   * views divide by it to show provenance.
+   *
+   * Absent when `currency` is already the settlement asset (no conversion
+   * happened) and on rows created before FX capture existed.
+   */
+  exchangeRate?: string;
+  /** ISO timestamp the `exchangeRate` above was quoted at. */
+  exchangeRateTimestamp?: string;
+  /**
    * Canonical Stellar asset this expense settles in ("native", "USDC:GA5Z…").
    * Absent on rows created before multi-asset support, which all settle native.
    */

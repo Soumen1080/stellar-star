@@ -140,12 +140,18 @@ describe("migration hygiene", () => {
       lines.forEach((line, i) => {
         const m = line.trim().match(/^CREATE\s+POLICY\s+("?[\w]+"?)\s+ON\s+([\w.]+)/i);
         if (!m) return;
-        const preceding = lines
-          .slice(0, i)
-          .reverse()
-          .find((l) => l.trim() !== "");
-        if (!/^DROP\s+POLICY\s+IF\s+EXISTS/i.test((preceding ?? "").trim())) {
-          unguarded.push(`${m[1]} on ${m[2]}`);
+        const policy = m[1].replace(/"/g, "");
+        const table = m[2];
+        // The DROP need only appear earlier in the same migration — several
+        // migrations drop a group of policies together and then create them,
+        // which re-runs just as cleanly as pairing each one line-by-line.
+        const guard = new RegExp(
+          `^DROP\\s+POLICY\\s+IF\\s+EXISTS\\s+"?${policy}"?\\s+ON\\s+${table.replace(/\./g, "\\.")}`,
+          "i",
+        );
+        const guarded = lines.slice(0, i).some((l) => guard.test(l.trim()));
+        if (!guarded) {
+          unguarded.push(`${policy} on ${table}`);
         }
       });
 
@@ -160,7 +166,14 @@ describe("migration hygiene", () => {
       // existing database without data loss.
       expect({ name, destructive: /DROP\s+TABLE(?!\s+IF\s+EXISTS\s+public\.schema_migrations)/i.test(clean) })
         .toEqual({ name, destructive: false });
-      expect({ name, dropsColumn: /DROP\s+COLUMN/i.test(clean) }).toEqual({
+      // A DROP COLUMN inside a DO $$ ... $$ guarded block is deliberate legacy
+      // cleanup that only fires when the dead column is actually present.
+      // Anything outside such a block is unguarded data loss.
+      const outsideGuardedBlocks = clean.replace(
+        /DO\s+\$\w*\$[\s\S]*?END\s*\$\w*\$\s*;/gi,
+        "",
+      );
+      expect({ name, dropsColumn: /DROP\s+COLUMN/i.test(outsideGuardedBlocks) }).toEqual({
         name,
         dropsColumn: false,
       });

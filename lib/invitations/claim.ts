@@ -35,7 +35,7 @@ export async function createTripInvite(
   params: CreateInviteParams,
   client?: StellarStarClient,
 ): Promise<CreateInviteResult> {
-  const db = client ?? requireAuthenticatedClient(params.createdByWallet);
+  const db = client ?? requireAuthenticatedClient();
   const token = generateInviteToken();
   const tokenHash = hashToken(token);
 
@@ -133,7 +133,7 @@ export async function verifyTripInvite(
     throw new Error("The trip associated with this invite no longer exists.");
   }
 
-  const members = (Array.isArray(tripData.members) ? tripData.members : []) as Member[];
+  const members = (Array.isArray(tripData.members) ? tripData.members : []) as unknown as Member[];
   const unclaimedMembers = members
     .filter((m) => !m.walletAddress || m.walletAddress.trim() === "")
     .map((m) => ({ id: m.id, name: m.name }));
@@ -181,7 +181,7 @@ export async function claimTripInvite(
   }
 
   const tokenHash = hashToken(cleanToken);
-  const db = client ?? requireAuthenticatedClient(cleanWallet);
+  const db = client ?? requireAuthenticatedClient();
 
   // Invoke atomic stored procedure in PostgreSQL
   const { data, error } = await db.rpc("claim_trip_invite", {
@@ -232,7 +232,7 @@ export async function revokeTripInvite(
   callerWallet: string,
   client?: StellarStarClient,
 ): Promise<boolean> {
-  const db = client ?? requireAuthenticatedClient(callerWallet);
+  const db = client ?? requireAuthenticatedClient();
 
   const { error } = await db
     .from("trip_invites")
@@ -258,7 +258,7 @@ export async function fetchTripInvites(
   callerWallet: string,
   client?: StellarStarClient,
 ): Promise<TripInvite[]> {
-  const db = client ?? requireAuthenticatedClient(callerWallet);
+  const db = client ?? requireAuthenticatedClient();
 
   const { data, error } = await db
     .from("trip_invites")

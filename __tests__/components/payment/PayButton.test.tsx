@@ -63,7 +63,9 @@ describe("PayButton — rendering", () => {
   it("formats non-XLM asset such as USDC correctly", () => {
     const { container } = renderButton({ amount: "15", asset: "USDC" });
     const cleanText = container.textContent?.replace(/\u00a0/g, " ");
-    expect(cleanText).toContain("Pay USDC 15.0000");
+    // USDC displays at 2 decimals, not XLM's 4 \u2014 see getAssetConfig, whose
+    // per-asset precision money.test.ts pins down.
+    expect(cleanText).toContain("Pay USDC 15.00");
   });
 
   it("includes the recipient name in the title attribute", () => {

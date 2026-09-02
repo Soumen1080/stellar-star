@@ -15,6 +15,8 @@ CREATE TABLE IF NOT EXISTS public.schema_migrations (
 
 ALTER TABLE public.schema_migrations ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS schema_migrations_read ON public.schema_migrations;
+
 CREATE POLICY schema_migrations_read ON public.schema_migrations
   FOR SELECT TO authenticated, anon USING (true);
 

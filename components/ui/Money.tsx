@@ -5,8 +5,20 @@ import { formatMoney } from "@/lib/money/format";
 import { useLocale } from "@/context/LocaleContext";
 import { cn } from "@/lib/utils";
 
+/**
+ * Anything `formatMoney` can render exactly: a primitive, or a value object
+ * from `@/lib/money` (`Money`/`Amount`) that carries its own stroop scale.
+ * Narrowing this to primitives is what forced callers holding a `Money` to
+ * pre-format it back down to a float and lose exactness before display.
+ */
+export type MoneyDisplayValue =
+  | number
+  | string
+  | bigint
+  | { stroops: bigint; format?: (decimals?: number) => string };
+
 export interface MoneyProps {
-  amount: number | string | bigint;
+  amount: MoneyDisplayValue;
   asset: string;
   showExact?: boolean;
   direction?: "owe" | "owed" | "none";

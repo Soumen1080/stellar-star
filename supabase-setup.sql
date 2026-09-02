@@ -788,7 +788,19 @@ BEGIN
     RAISE EXCEPTION 'TRIP_NOT_FOUND: Associated trip no longer exists';
   END IF;
 
-  -- 4. Determine target member slot
+  -- 4. Determine target member slot.
+  --
+  -- When the invite is pinned to a member, a caller-supplied p_selected_member_id
+  -- that names a different slot is a cross-trip claim attempt, not a preference:
+  -- the old COALESCE silently ignored it and granted the pinned slot instead, so
+  -- the caller was told the claim succeeded for a member they never asked for.
+  -- Reject the mismatch outright and let the pinned id stand otherwise.
+  IF v_invite.member_id IS NOT NULL
+     AND p_selected_member_id IS NOT NULL
+     AND p_selected_member_id <> v_invite.member_id THEN
+    RAISE EXCEPTION 'MEMBER_NOT_FOUND: Member % is not the slot this invitation is for', p_selected_member_id;
+  END IF;
+
   v_target_member_id := COALESCE(v_invite.member_id, p_selected_member_id);
   v_members := COALESCE(v_trip.members, '[]'::jsonb);
   v_len := jsonb_array_length(v_members);
@@ -1438,3 +1450,84 @@ VALUES
 ON CONFLICT (version) DO NOTHING;
 
 
+
+-- ============================================================================
+-- Settlement intents  (durable idempotency for share settlement)
+-- ============================================================================
+-- lib/settlement/intent.ts records an intent here *before* submitting a payment
+-- to Horizon, so that:
+--   1. two clients cannot settle the same share concurrently,
+--   2. a crash mid-flow leaves a record any device can reconcile against,
+--   3. a retry after a dropped response never moves money twice.
+--
+-- The table was queried by application code but created by neither provisioning
+-- path, so every write failed at runtime and the reads silently degraded to
+-- "no intent" — which is exactly the state that permits a double payment.
+
+CREATE TABLE IF NOT EXISTS public.settlement_intents (
+  id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  -- Derived deterministically from (trip, expense, member); the unique
+  -- constraint is what makes concurrent settlement attempts collide here
+  -- rather than each submitting its own payment.
+  idempotency_key   TEXT        NOT NULL UNIQUE,
+  trip_id           TEXT        NOT NULL,
+  expense_id        TEXT        NOT NULL,
+  member_id         TEXT        NOT NULL,
+  payer_wallet      TEXT        NOT NULL,
+  member_wallet     TEXT        NOT NULL,
+  -- TEXT, matching expenses.total_amount: the application holds these as exact
+  -- decimal strings and reads this column straight back into one. NUMERIC would
+  -- re-render the value on the way out (trailing-zero and notation changes),
+  -- which is exactly the drift the money layer exists to prevent.
+  amount            TEXT        NOT NULL,
+  currency          TEXT        NOT NULL DEFAULT 'XLM',
+  status            TEXT        NOT NULL DEFAULT 'pending'
+                                CHECK (status IN ('pending', 'submitting', 'submitted',
+                                                  'recorded', 'failed', 'cancelled')),
+  tx_hash           TEXT,
+  ledger            BIGINT,
+  on_chain          BOOLEAN     NOT NULL DEFAULT FALSE,
+  error_message     TEXT,
+  created_by_wallet TEXT        NOT NULL,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  expires_at        TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS settlement_intents_member_wallet_idx
+  ON public.settlement_intents (member_wallet, status);
+
+CREATE INDEX IF NOT EXISTS settlement_intents_expense_member_idx
+  ON public.settlement_intents (expense_id, member_id);
+
+ALTER TABLE public.settlement_intents ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "settlement_intents_select_party" ON public.settlement_intents;
+DROP POLICY IF EXISTS "settlement_intents_insert_self" ON public.settlement_intents;
+DROP POLICY IF EXISTS "settlement_intents_update_self" ON public.settlement_intents;
+DROP POLICY IF EXISTS "settlement_intents_delete_self" ON public.settlement_intents;
+
+-- Either side of the payment can see the intent: the payer needs it to resume a
+-- crashed flow, the recipient to see that a payment is already in flight.
+CREATE POLICY "settlement_intents_select_party" ON public.settlement_intents
+  FOR SELECT USING (
+    member_wallet = public.current_wallet() OR
+    payer_wallet = public.current_wallet()
+  );
+
+CREATE POLICY "settlement_intents_insert_self" ON public.settlement_intents
+  FOR INSERT WITH CHECK (created_by_wallet = public.current_wallet());
+
+CREATE POLICY "settlement_intents_update_self" ON public.settlement_intents
+  FOR UPDATE USING (created_by_wallet = public.current_wallet())
+             WITH CHECK (created_by_wallet = public.current_wallet());
+
+CREATE POLICY "settlement_intents_delete_self" ON public.settlement_intents
+  FOR DELETE USING (created_by_wallet = public.current_wallet());
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.settlement_intents TO anon, authenticated;
+
+DROP TRIGGER IF EXISTS trg_01_settlement_intents_set_updated_at ON public.settlement_intents;
+CREATE TRIGGER trg_01_settlement_intents_set_updated_at
+  BEFORE UPDATE ON public.settlement_intents
+  FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();

@@ -4,11 +4,18 @@ import { makeRawDebtsArb } from "./generators";
 import { Money } from "@/lib/money";
 import { parseAssetKey, assetKey } from "@/lib/stellar/assets";
 
+/**
+ * Mirrors `normalizeAsset` in lib/settlement/simplify.ts, including its
+ * fallback. On an unparseable key the engine groups by the *trimmed* string;
+ * returning the raw one here made the test disagree with the engine about which
+ * bucket a malformed asset like "   :GAAA…" belongs to, and read as a
+ * conservation failure when nothing was actually lost.
+ */
 function normalizeAsset(asset: string): string {
   try {
     return assetKey(parseAssetKey(asset));
   } catch {
-    return asset;
+    return asset.trim();
   }
 }
 

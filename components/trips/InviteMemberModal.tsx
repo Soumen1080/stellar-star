@@ -3,8 +3,8 @@
 import React, { useEffect, useState } from "react";
 import { Copy, Check, X, Link, Shield, Trash2, Loader2, UserPlus, QrCode } from "lucide-react";
 import { useToast } from "@/components/ui/Toast";
-import { useSession } from "@/lib/supabase/useSession";
-import { QRCodeDisplay } from "@/components/payment/QRCodeDisplay";
+import { useAccessToken } from "@/lib/supabase/useSession";
+import { QRCodeSVG } from "qrcode.react";
 import type { Trip } from "@/types/trip";
 import type { Member } from "@/types/expense";
 
@@ -24,7 +24,7 @@ interface ActiveInvite {
 }
 
 export function InviteMemberModal({ trip, isOpen, onClose }: InviteMemberModalProps) {
-  const { sessionToken } = useSession();
+  const sessionToken = useAccessToken();
   const { success: toastSuccess, error: toastError } = useToast();
 
   const [selectedMemberId, setSelectedMemberId] = useState<string>("");
@@ -187,7 +187,13 @@ export function InviteMemberModal({ trip, isOpen, onClose }: InviteMemberModalPr
 
               {showQR && (
                 <div className="p-4 bg-white rounded-xl border border-[#E5E5E5] flex flex-col items-center">
-                  <QRCodeDisplay uri={generatedUrl} size={160} />
+                  <QRCodeSVG
+                    value={generatedUrl}
+                    size={160}
+                    bgColor="#ffffff"
+                    fgColor="#0F0F14"
+                    level="M"
+                  />
                   <p className="text-[11px] text-[#888] mt-2">Scan with phone to join</p>
                 </div>
               )}

@@ -26,8 +26,11 @@ jest.mock("@/components/ui/Toast", () => ({
   }),
 }));
 
-const mockUseWallet = useWallet as jest.MockedFunction<typeof useWallet>;
-const mockUseExpense = useExpense as jest.MockedFunction<typeof useExpense>;
+// `as jest.Mock`, matching the other component tests: these stubs deliberately
+// supply only the context fields SettlementSummary reads, which a fully typed
+// MockedFunction would reject.
+const mockUseWallet = useWallet as jest.Mock;
+const mockUseExpense = useExpense as jest.Mock;
 
 const trip: Trip = {
   id: "trip-1",

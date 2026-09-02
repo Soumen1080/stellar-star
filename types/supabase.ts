@@ -95,6 +95,76 @@ export type TripInviteRow = {
   updated_at: string;
 };
 
+export type SettlementIntentStatus =
+  | "pending"
+  | "submitting"
+  | "submitted"
+  | "recorded"
+  | "failed"
+  | "cancelled";
+
+/**
+ * Durable settlement intent — the row that makes paying a share idempotent.
+ * See lib/settlement/intent.ts; the table is created in migration 0004.
+ */
+export type SettlementIntentRow = {
+  id: string;
+  idempotency_key: string;
+  trip_id: string;
+  expense_id: string;
+  member_id: string;
+  payer_wallet: string;
+  member_wallet: string;
+  amount: string;
+  currency: string;
+  status: SettlementIntentStatus;
+  tx_hash: string | null;
+  /** `bigint` in SQL, so PostgREST may hand it back as a string. */
+  ledger: number | string | null;
+  on_chain: boolean;
+  error_message: string | null;
+  created_by_wallet: string;
+  created_at: string;
+  updated_at: string;
+  expires_at: string;
+};
+
+/** The oracle's record of what it has already attested. */
+export type SettlementAttestationRow = {
+  id: string;
+  tx_hash: string;
+  expense_id: string;
+  member: string;
+  amount_stroops: string;
+  nonce: string;
+  expires_at: number;
+  signature: string;
+  created_at: string;
+};
+
+export type SponsorshipStatusValue = "active" | "revoked" | "reclaimed";
+
+/** One sponsored account and the reserve it holds. */
+export type SponsoredAccountRow = {
+  account: string;
+  locked_stroops: string;
+  status: SponsorshipStatusValue;
+  created_at_ms: number;
+  last_active_at_ms: number;
+  sponsored_by: string;
+  revoked_at_ms: number | null;
+  created_at: string;
+};
+
+/** Inviter → invitee pairing used for sponsorship abuse resistance. */
+export type SponsorshipInviteRow = {
+  id: string;
+  inviter: string;
+  invitee: string;
+  created_at_ms: number;
+  created_at: string;
+};
+
 export type Database = {
   public: {
     Tables: {
@@ -158,6 +228,50 @@ export type Database = {
           updated_at?: string;
         };
         Update: Partial<TripInviteRow>;
+        Relationships: [];
+      };
+      settlement_intents: {
+        Row: SettlementIntentRow;
+        Insert: Omit<SettlementIntentRow, "id" | "created_at" | "updated_at" | "tx_hash" | "ledger" | "on_chain" | "error_message" | "currency" | "status"> & {
+          id?: string;
+          currency?: string;
+          status?: SettlementIntentStatus;
+          tx_hash?: string | null;
+          ledger?: number | string | null;
+          on_chain?: boolean;
+          error_message?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: Partial<Omit<SettlementIntentRow, "id" | "created_at" | "idempotency_key">>;
+        Relationships: [];
+      };
+      settlement_attestations: {
+        Row: SettlementAttestationRow;
+        Insert: Omit<SettlementAttestationRow, "id" | "created_at"> & {
+          id?: string;
+          created_at?: string;
+        };
+        Update: Partial<Omit<SettlementAttestationRow, "id" | "created_at">>;
+        Relationships: [];
+      };
+      sponsored_accounts: {
+        Row: SponsoredAccountRow;
+        Insert: Omit<SponsoredAccountRow, "created_at" | "status" | "revoked_at_ms"> & {
+          status?: SponsorshipStatusValue;
+          revoked_at_ms?: number | null;
+          created_at?: string;
+        };
+        Update: Partial<Omit<SponsoredAccountRow, "created_at">>;
+        Relationships: [];
+      };
+      sponsorship_invites: {
+        Row: SponsorshipInviteRow;
+        Insert: Omit<SponsorshipInviteRow, "id" | "created_at"> & {
+          id?: string;
+          created_at?: string;
+        };
+        Update: Partial<Omit<SponsorshipInviteRow, "id" | "created_at">>;
         Relationships: [];
       };
       auth_challenges: {
@@ -269,4 +383,5 @@ export type TripUpdate = Database["public"]["Tables"]["trips"]["Update"];
 export type UserInsert = Database["public"]["Tables"]["users"]["Insert"];
 export type UserUpdate = Database["public"]["Tables"]["users"]["Update"];
 export type AuthChallengeInsert = Database["public"]["Tables"]["auth_challenges"]["Insert"];
-
+export type SettlementIntentInsert = Database["public"]["Tables"]["settlement_intents"]["Insert"];
+export type SettlementIntentUpdate = Database["public"]["Tables"]["settlement_intents"]["Update"];
