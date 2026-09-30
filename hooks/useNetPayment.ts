@@ -25,6 +25,7 @@ import {
   CONTRACT_ID,
   STELLAR_NETWORK,
 } from "@/lib/utils/constants";
+import { isInFlight, runOnce } from "@/lib/settlement/inflight";
 import { reportError } from "@/lib/observability/reportError";
 import { createRequestId } from "@/lib/observability/requestId";
 import { networkMismatchMessage } from "@/lib/stellar/networkMismatch";
@@ -302,7 +303,7 @@ export function useNetPayment({ tripId }: UseNetPaymentOpts) {
     loadPoolBalance();
   }, [pendingNetSettlement, toastError, toastSuccess, loadPoolBalance, clearPersistedPending]);
 
-  const payNetSettlement = useCallback(
+  const performPayNetSettlement = useCallback(
     async ({ debts, totalAmount, asset, payerWalletAddress, tripName }: PayNetParams) => {
       const requestId = createRequestId();
 
@@ -565,7 +566,7 @@ export function useNetPayment({ tripId }: UseNetPaymentOpts) {
     ],
   );
 
-  const payNetPathSettlement = useCallback(
+  const performPayNetPathSettlement = useCallback(
     async ({ debts, tripName, payerWalletAddress, path }: PayNetPathParams) => {
       const requestId = createRequestId();
 
@@ -705,6 +706,45 @@ export function useNetPayment({ tripId }: UseNetPaymentOpts) {
       toastInfo,
       network,
     ],
+  );
+
+  /**
+   * Runs a net settlement at most once at a time per (trip, payer).
+   *
+   * Both net flows settle the same obligation — one pays it directly, the other
+   * routes it through a path — so they share a key: running them concurrently
+   * would move the money twice for one debt. `acquireSettlementIntent` cannot
+   * prevent that on its own, because it intentionally lets the same wallet
+   * resume an intent it already owns, which is what keeps a resumed tab
+   * recoverable.
+   */
+  const netSettlementKey = useCallback(
+    (payerWalletAddress: string) => `netsettle:${tripId}:${payerWalletAddress}`,
+    [tripId],
+  );
+
+  const payNetSettlement = useCallback(
+    async (params: PayNetParams) => {
+      const key = netSettlementKey(params.payerWalletAddress);
+      if (isInFlight(key)) {
+        toastInfo("Payment already in progress", "Waiting for the current payment to finish.");
+        return;
+      }
+      await runOnce(key, () => performPayNetSettlement(params));
+    },
+    [netSettlementKey, performPayNetSettlement, toastInfo],
+  );
+
+  const payNetPathSettlement = useCallback(
+    async (params: PayNetPathParams) => {
+      const key = netSettlementKey(params.payerWalletAddress);
+      if (isInFlight(key)) {
+        toastInfo("Payment already in progress", "Waiting for the current payment to finish.");
+        return;
+      }
+      await runOnce(key, () => performPayNetPathSettlement(params));
+    },
+    [netSettlementKey, performPayNetPathSettlement, toastInfo],
   );
 
   return {
