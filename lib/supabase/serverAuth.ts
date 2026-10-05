@@ -58,6 +58,8 @@ function base64url(buf: Buffer): string {
 export interface WalletSessionClaims {
   sub: string;
   wallet_address: string;
+  exp?: number;
+  iat?: number;
   [key: string]: unknown;
 }
 
@@ -147,4 +149,90 @@ export function signWalletSession(
     } satisfies WalletSessionClaims,
     ttlSeconds
   );
+}
+
+/**
+ * Expiry skew window (in seconds) within which an unexpired session can be renewed.
+ * Sessions with less than this much lifetime remaining can be refreshed without
+ * requiring a new wallet signature (1 hour).
+ */
+export const SESSION_REFRESH_WINDOW_SECONDS = 60 * 60;
+
+export interface RefreshSessionSuccess {
+  success: true;
+  token: string;
+  claims: WalletSessionClaims;
+  expiresIn: number;
+}
+
+export interface RefreshSessionFailure {
+  success: false;
+  error: string;
+  status: number;
+  code: string;
+  remainingSeconds?: number;
+}
+
+export type RefreshSessionResult = RefreshSessionSuccess | RefreshSessionFailure;
+
+/**
+ * Validates an unexpired session token and issues an extended session token
+ * if requested within the expiry skew window.
+ */
+export function refreshWalletSession(
+  token: string,
+  options?: {
+    refreshWindowSeconds?: number;
+    ttlSeconds?: number;
+    force?: boolean;
+  }
+): RefreshSessionResult {
+  const refreshWindow = options?.refreshWindowSeconds ?? SESSION_REFRESH_WINDOW_SECONDS;
+  const ttl = options?.ttlSeconds ?? SESSION_TTL_SECONDS;
+  const force = options?.force ?? false;
+
+  const claims = verifyWalletSession(token);
+  if (!claims) {
+    return {
+      success: false,
+      error: "Session has expired or is invalid. Please sign in with your wallet again.",
+      status: 401,
+      code: "SESSION_EXPIRED",
+    };
+  }
+
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const exp = typeof claims.exp === "number" ? claims.exp : nowSeconds;
+  const remainingSeconds = exp - nowSeconds;
+
+  if (remainingSeconds <= 0) {
+    return {
+      success: false,
+      error: "Session has expired. Please sign in with your wallet again.",
+      status: 401,
+      code: "SESSION_EXPIRED",
+      remainingSeconds: 0,
+    };
+  }
+
+  if (!force && remainingSeconds > refreshWindow) {
+    return {
+      success: false,
+      error: `Session is not eligible for renewal yet. Remaining: ${remainingSeconds}s, skew window: ${refreshWindow}s.`,
+      status: 400,
+      code: "NOT_IN_REFRESH_WINDOW",
+      remainingSeconds,
+    };
+  }
+
+  const subject = typeof claims.sub === "string" ? claims.sub : claims.wallet_address;
+  const refreshedToken = signWalletSession(claims.wallet_address, subject, ttl);
+  const refreshedClaims = verifyWalletSession(refreshedToken);
+
+  return {
+    success: true,
+    token: refreshedToken,
+    claims: refreshedClaims ?? claims,
+    expiresIn: ttl,
+  };
 }

@@ -6,21 +6,11 @@ import { useToast } from "@/components/ui/Toast";
 import { useSession } from "@/lib/supabase/useSession";
 import { QRCodeSVG } from "qrcode.react";
 import type { Trip } from "@/types/trip";
-import type { Member } from "@/types/expense";
 
 interface InviteMemberModalProps {
   trip: Trip;
   isOpen: boolean;
   onClose: () => void;
-}
-
-interface ActiveInvite {
-  id: string;
-  memberId?: string | null;
-  expiresAt: string;
-  uses: number;
-  maxUses: number;
-  revoked: boolean;
 }
 
 export function InviteMemberModal({ trip, isOpen, onClose }: InviteMemberModalProps) {
@@ -41,16 +31,13 @@ export function InviteMemberModal({ trip, isOpen, onClose }: InviteMemberModalPr
     [trip.members],
   );
 
+  // Reset transient link state and default the selection each time the modal opens.
   useEffect(() => {
     if (isOpen) {
       setGeneratedUrl("");
       setCopied(false);
       setShowQR(false);
-      if (unclaimedMembers.length > 0) {
-        setSelectedMemberId(unclaimedMembers[0].id);
-      } else {
-        setSelectedMemberId("");
-      }
+      setSelectedMemberId(unclaimedMembers.length > 0 ? unclaimedMembers[0].id : "");
     }
   }, [isOpen, unclaimedMembers]);
 
@@ -63,7 +50,13 @@ export function InviteMemberModal({ trip, isOpen, onClose }: InviteMemberModalPr
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [isOpen, onClose]);
 
-  if (!isOpen) return null;
+    setSelectedMemberId((current) => {
+      // "" is the General Group Invite option, always valid.
+      if (current === "") return current;
+      if (unclaimedMembers.some((m) => m.id === current)) return current;
+      return unclaimedMembers.length > 0 ? unclaimedMembers[0].id : "";
+    });
+  }, [isOpen, unclaimedKey, unclaimedMembers]);
 
   const handleGenerate = async () => {
     setLoading(true);
@@ -122,36 +115,30 @@ export function InviteMemberModal({ trip, isOpen, onClose }: InviteMemberModalPr
             aria-label="Close dialog"
             className="p-1 rounded-lg text-[#888] hover:text-[#0F0F14] hover:bg-[#F5F5F5] transition-colors"
           >
-            <X size={16} />
-          </button>
+            Select Member Slot to Invite
+          </label>
+          {unclaimedMembers.length > 0 ? (
+            <select
+              id="invite-member-slot"
+              value={selectedMemberId}
+              onChange={(e) => setSelectedMemberId(e.target.value)}
+              className="w-full rounded-xl border border-[#E5E5E5] px-3 py-2.5 text-sm bg-white text-[#0F0F14] outline-none focus:border-[#2DD4BF] focus:ring-2 focus:ring-[#2DD4BF]/20 transition-all"
+            >
+              {unclaimedMembers.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name} (unclaimed slot)
+                </option>
+              ))}
+              <option value="">General Group Invite (any new member)</option>
+            </select>
+          ) : (
+            <p className="text-xs text-[#666] p-3 bg-[#F8F9FA] rounded-xl border border-[#E9ECEF]">
+              All current members have attached wallets. You can generate a general invite link to add a new member.
+            </p>
+          )}
         </div>
 
-        <div className="p-5 space-y-4">
-          <div>
-            <label className="block text-xs font-semibold text-[#444] uppercase tracking-wide mb-1.5">
-              Select Member Slot to Invite
-            </label>
-            {unclaimedMembers.length > 0 ? (
-              <select
-                value={selectedMemberId}
-                onChange={(e) => setSelectedMemberId(e.target.value)}
-                className="w-full rounded-xl border border-[#E5E5E5] px-3 py-2.5 text-sm bg-white text-[#0F0F14] outline-none focus:border-[#2DD4BF] focus:ring-2 focus:ring-[#2DD4BF]/20 transition-all"
-              >
-                {unclaimedMembers.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.name} (unclaimed slot)
-                  </option>
-                ))}
-                <option value="">General Group Invite (any new member)</option>
-              </select>
-            ) : (
-              <p className="text-xs text-[#666] p-3 bg-[#F8F9FA] rounded-xl border border-[#E9ECEF]">
-                All current members have attached wallets. You can generate a general invite link to add a new member.
-              </p>
-            )}
-          </div>
-
-          {!generatedUrl ? (
+        {!generatedUrl ? (
             <button
               onClick={handleGenerate}
               disabled={loading}
@@ -182,6 +169,7 @@ export function InviteMemberModal({ trip, isOpen, onClose }: InviteMemberModalPr
                   onClick={handleCopy}
                   className="p-1.5 rounded-lg bg-[#2DD4BF] text-[#0F766E] hover:bg-[#20BEAB] transition-colors shrink-0"
                   title="Copy link"
+                  aria-label="Copy invitation link"
                 >
                   {copied ? <Check size={14} /> : <Copy size={14} />}
                 </button>
@@ -221,9 +209,8 @@ export function InviteMemberModal({ trip, isOpen, onClose }: InviteMemberModalPr
                 This link is valid for 7 days and can be claimed once.
               </p>
             </div>
-          )}
-        </div>
+        )}
       </div>
-    </div>
+    </Modal>
   );
 }

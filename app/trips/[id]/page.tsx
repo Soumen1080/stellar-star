@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { useParams } from "next/navigation";
+import type { Metadata } from "next";
 import { AuthGuard } from "@/components/auth/AuthGuard";
 import { ExpenseForm } from "@/components/expenses/ExpenseForm";
 import { Modal } from "@/components/ui/Modal";
@@ -22,9 +23,62 @@ import { useTrip } from "@/hooks/useTrip";
 import { useTripAutoSettlement } from "@/hooks/useTripAutoSettlement";
 import { useWallet } from "@/hooks/useWallet";
 import { Spinner } from "@/components/ui/Spinner";
+import { sanitizeMetadata, sanitizeText, sanitizeWalletLabel } from "@/lib/utils";
+
+/**
+ * Builds safe page metadata and enforces a content security policy for trip details,
+ * ensuring trip names, wallet labels, and IDs are sanitized to prevent stored or reflected XSS.
+ */
+export function generateTripMetadata({
+  tripName,
+  walletAddress,
+  tripId,
+}: {
+  tripName?: string;
+  walletAddress?: string;
+  tripId?: string;
+}): Metadata {
+  const safeId = sanitizeMetadata(tripId ?? "", 50);
+  const safeName = tripName ? sanitizeMetadata(tripName, 100) : "";
+  const safeWallet = walletAddress ? sanitizeWalletLabel(walletAddress, 60) : "";
+
+  let title = "Trip Details | Stellar Star";
+  if (safeName && safeWallet) {
+    title = `${safeName} (by ${safeWallet}) | Stellar Star`;
+  } else if (safeName) {
+    title = `${safeName} | Stellar Star`;
+  } else if (safeId) {
+    title = `Trip ${safeId} | Stellar Star`;
+  }
+
+  const description = safeName
+    ? `View and settle expenses for ${safeName} on Stellar Star.`
+    : safeId
+    ? `View details and expenses for trip ${safeId} on Stellar Star.`
+    : "Group expense splitting on the Stellar blockchain.";
+
+  return {
+    title,
+    description,
+    openGraph: {
+      title,
+      description,
+    },
+    twitter: {
+      card: "summary",
+      title,
+      description,
+    },
+    other: {
+      "content-security-policy":
+        "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https:;",
+    },
+  };
+}
 
 export default function TripDetailPage() {
   const params = useParams<{ id: string }>();
+  const safeId = sanitizeText(params?.id ?? "");
   const { getTrip, settleTrip, addExpenseToTrip, isLoading } = useTrip();
   const { expenses } = useExpense();
   const { publicKey } = useWallet();
@@ -34,18 +88,27 @@ export default function TripDetailPage() {
   const [showInviteModal, setShowInviteModal] = useState(false);
   const { error: toastError } = useToast();
 
+  const trip = getTrip(safeId);
+
+  // Safely update document title in client runtime using sanitized metadata
+  useEffect(() => {
+    if (trip?.name) {
+      document.title = `${sanitizeMetadata(trip.name)} | Stellar Star`;
+    } else if (safeId) {
+      document.title = `Trip ${sanitizeMetadata(safeId)} | Stellar Star`;
+    }
+  }, [trip?.name, safeId]);
+
   // The expense itself saved successfully; only the link to this trip failed.
   // Say so plainly rather than letting the promise reject unhandled.
   const linkExpenseToTrip = (tripId: string, expenseId: string) => {
     void addExpenseToTrip(tripId, expenseId).catch((err: any) => {
       toastError(
         "Expense saved, but not added to this trip",
-        err?.message || "Reload the page and add it to the trip again."
+        sanitizeText(err?.message || "Reload the page and add it to the trip again.")
       );
     });
   };
-
-  const trip = getTrip(params.id);
   const tripExpenses = trip ? expenses.filter((expense) => trip.expenseIds.includes(expense.id)) : [];
   const myShares = tripExpenses.flatMap((expense) =>
     expense.shares.filter((share) => share.walletAddress === publicKey)
@@ -69,7 +132,7 @@ export default function TripDetailPage() {
   return (
     <AuthGuard>
       <div className="min-h-screen bg-[#F6F6F6]">
-        <TripDetailNav tripName={trip.name} />
+        <TripDetailNav tripName={sanitizeText(trip.name)} />
 
         <main className="max-w-2xl mx-auto px-4 sm:px-6 py-8">
           <TripDetailHeader
@@ -107,7 +170,7 @@ export default function TripDetailPage() {
         open={showExpenseForm}
         onClose={() => setShowExpenseForm(false)}
         title="Add Expense"
-        description={`Add an expense to "${trip.name}"`}
+        description={`Add an expense to "${sanitizeText(trip.name)}"`}
         size="lg"
       >
         <ExpenseForm

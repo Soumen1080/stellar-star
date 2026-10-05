@@ -10,6 +10,7 @@
  */
 
 import {
+  allocateAndCommit,
   commitAttestation,
   inspectAllocation,
   resetMemoryLedger,
@@ -102,5 +103,99 @@ describe("idempotence", () => {
     const result = await inspectAllocation(TX, "exp-other", MEMBER);
 
     expect(result.allocatedStroops).toBe(4_000_000n);
+  });
+});
+
+describe("atomic allocateAndCommit & race condition prevention (Issue #231)", () => {
+  const TOTAL_PAYMENT = 10_000_000n; // 1 XLM
+
+  it("successfully allocates and commits when within payment capacity", async () => {
+    const res = await allocateAndCommit(
+      entry({ expenseId: "exp-1", amountStroops: "6000000" }),
+      TOTAL_PAYMENT,
+    );
+
+    expect(res.success).toBe(true);
+    if (res.success) {
+      expect(res.entry.amountStroops).toBe("6000000");
+      expect(res.reused).toBe(false);
+    }
+
+    const check = await inspectAllocation(TX, "exp-other", MEMBER);
+    expect(check.allocatedStroops).toBe(6_000_000n);
+  });
+
+  it("rejects allocation and does not commit when capacity is exceeded", async () => {
+    // Commit 8M
+    await commitAttestation(entry({ expenseId: "exp-1", amountStroops: "8000000" }));
+
+    // Try to allocate 3M when only 2M remaining
+    const res = await allocateAndCommit(
+      entry({ expenseId: "exp-2", amountStroops: "3000000" }),
+      TOTAL_PAYMENT,
+    );
+
+    expect(res.success).toBe(false);
+    if (!res.success) {
+      expect(res.reason).toBe("INSUFFICIENT_FUNDS");
+      expect(res.allocatedStroops).toBe(8_000_000n);
+      expect(res.remainingStroops).toBe(2_000_000n);
+    }
+
+    // Ledger should still only have 8M
+    const check = await inspectAllocation(TX, "exp-other", MEMBER);
+    expect(check.allocatedStroops).toBe(8_000_000n);
+  });
+
+  it("re-uses existing attestation idempotently without double-spending", async () => {
+    const initial = await allocateAndCommit(
+      entry({ expenseId: "exp-1", amountStroops: "5000000" }),
+      TOTAL_PAYMENT,
+    );
+    expect(initial.success).toBe(true);
+
+    const replay = await allocateAndCommit(
+      entry({ expenseId: "exp-1", amountStroops: "5000000" }),
+      TOTAL_PAYMENT,
+    );
+    expect(replay.success).toBe(true);
+    if (replay.success && initial.success) {
+      expect(replay.reused).toBe(true);
+      expect(replay.entry.nonce).toBe(initial.entry.nonce);
+    }
+
+    // Total allocated must still be only 5M, not 10M
+    const check = await inspectAllocation(TX, "exp-other", MEMBER);
+    expect(check.allocatedStroops).toBe(5_000_000n);
+  });
+
+  it("prevents over-allocation race condition during concurrent requests against the same payment", async () => {
+    // Both request 6M against a 10M payment concurrently.
+    // If not atomic, both would see 0 allocated and both succeed (total 12M).
+    // With atomic allocateAndCommit, exactly ONE succeeds and one fails with INSUFFICIENT_FUNDS.
+    const [res1, res2] = await Promise.all([
+      allocateAndCommit(
+        entry({ expenseId: "exp-concurrent-1", amountStroops: "6000000", nonce: "1".repeat(64) }),
+        TOTAL_PAYMENT,
+      ),
+      allocateAndCommit(
+        entry({ expenseId: "exp-concurrent-2", amountStroops: "6000000", nonce: "2".repeat(64) }),
+        TOTAL_PAYMENT,
+      ),
+    ]);
+
+    const successes = [res1, res2].filter((r) => r.success);
+    const failures = [res1, res2].filter((r) => !r.success);
+
+    expect(successes).toHaveLength(1);
+    expect(failures).toHaveLength(1);
+
+    if (!failures[0].success) {
+      expect(failures[0].reason).toBe("INSUFFICIENT_FUNDS");
+    }
+
+    // Total allocated must be strictly 6M (never 12M)
+    const check = await inspectAllocation(TX, "exp-other", MEMBER);
+    expect(check.allocatedStroops).toBe(6_000_000n);
   });
 });

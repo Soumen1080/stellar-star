@@ -251,6 +251,12 @@ describe("isValidStellarAddress", () => {
   it("rejects another regex-shaped address with bad checksum", () => {
     expect(isValidStellarAddress("G" + "A".repeat(55))).toBe(false);
   });
+
+  it("accepts valid lowercase or untrimmed Stellar addresses canonically", () => {
+    expect(
+      isValidStellarAddress("  gdqaxcc66zi3rlpa72ttwgi2mn6k4lh3jem6nkxkr7lpj3r7oyijf5lv  "),
+    ).toBe(true);
+  });
 });
 
 // ─── findDuplicateWalletErrors ────────────────────────────────────────────────
@@ -271,12 +277,10 @@ describe("findDuplicateWalletErrors", () => {
     expect(errors[1]).toMatch(/Duplicate wallet address/);
   });
 
-  it("skips lowercase input, since only valid (uppercase) StrKey addresses are compared", () => {
-    // StrKey addresses are always uppercase; a lowercased address fails
-    // isValidStellarAddress and is excluded from duplicate detection
-    // entirely (its own field-level "Invalid Stellar address" error covers it).
+  it("detects case-insensitive duplicates when one address is lowercase", () => {
     const errors = findDuplicateWalletErrors([ADDR_A.toLowerCase(), ADDR_A]);
-    expect(errors).toEqual({});
+    expect(errors[0]).toMatch(/Duplicate wallet address/);
+    expect(errors[1]).toMatch(/Duplicate wallet address/);
   });
 
   it("flags every member sharing an address, not just the second", () => {

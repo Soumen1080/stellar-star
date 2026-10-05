@@ -9,9 +9,11 @@ import {
   updateTripRow,
   deleteTripRow,
   addExpenseIdToTrip,
+  cacheDomainsForMutation,
   rowToTrip,
 } from "@/lib/supabase/queries";
 import { useRealtimeCollection } from "@/lib/supabase/useRealtimeCollection";
+import { invalidateQueryCaches } from "@/lib/supabase/cacheInvalidation";
 import { useWalletContext } from "./WalletContext";
 
 interface TripContextType {
@@ -65,6 +67,11 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
       mutate((previous) =>
         previous.some((t) => t.id === saved.id) ? previous : [saved, ...previous]
       );
+      invalidateQueryCaches({
+        wallet,
+        domains: cacheDomainsForMutation("trip_write"),
+        tripId: saved.id,
+      });
     },
     [wallet, mutate]
   );
@@ -73,32 +80,63 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
     async (id: string, updates: Partial<Trip>) => {
       const saved = await updateTripRow(id, updates);
       mutate((previous) => previous.map((t) => (t.id === id ? saved : t)));
+      if (wallet) {
+        invalidateQueryCaches({
+          wallet,
+          domains: cacheDomainsForMutation(
+            updates.members ? "trip_members_write" : "trip_write",
+          ),
+          tripId: id,
+        });
+      }
     },
-    [mutate]
+    [mutate, wallet]
   );
 
   const deleteTrip = useCallback(
     async (id: string) => {
       await deleteTripRow(id);
       mutate((previous) => previous.filter((t) => t.id !== id));
+      if (wallet) {
+        invalidateQueryCaches({
+          wallet,
+          domains: cacheDomainsForMutation("trip_write"),
+          tripId: id,
+        });
+      }
     },
-    [mutate]
+    [mutate, wallet]
   );
 
   const addExpenseToTrip = useCallback(
     async (tripId: string, expenseId: string) => {
       const expenseIds = await addExpenseIdToTrip(tripId, expenseId);
       mutate((previous) => previous.map((t) => (t.id === tripId ? { ...t, expenseIds } : t)));
+      if (wallet) {
+        invalidateQueryCaches({
+          wallet,
+          domains: cacheDomainsForMutation("trip_expense_link"),
+          tripId,
+          expenseId,
+        });
+      }
     },
-    [mutate]
+    [mutate, wallet]
   );
 
   const settleTrip = useCallback(
     async (id: string) => {
       const saved = await updateTripRow(id, { settled: true });
       mutate((previous) => previous.map((t) => (t.id === id ? saved : t)));
+      if (wallet) {
+        invalidateQueryCaches({
+          wallet,
+          domains: cacheDomainsForMutation("trip_write"),
+          tripId: id,
+        });
+      }
     },
-    [mutate]
+    [mutate, wallet]
   );
 
   const getTrip = useCallback((id: string) => trips.find((t) => t.id === id), [trips]);

@@ -59,6 +59,7 @@ export async function fetchExchangeRate(
 ): Promise<ExchangeQuote | null> {
   let payload: {
     rate?: number | string | null;
+    rateDecimal?: string | null;
     source?: string | null;
     fetchedAt?: number | null;
     stale?: boolean;
@@ -79,11 +80,12 @@ export async function fetchExchangeRate(
 
   if (!payload || payload.error || payload.unavailable) return null;
 
-  const rate = Number(payload.rate);
+  const exactRate = payload.rateDecimal ?? payload.rate;
+  const rate = Number(exactRate);
   if (!Number.isFinite(rate) || rate <= 0) return null;
 
   return {
-    rate: String(payload.rate),
+    rate: String(exactRate),
     // The route reports `fetchedAt` (epoch ms) — provenance for the quote.
     fetchedAtIso: new Date(payload.fetchedAt ?? Date.now()).toISOString(),
     stale: payload.stale === true,

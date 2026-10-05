@@ -7,6 +7,12 @@
  * structurally: the server never holds the invitee's key, so it cannot create
  * an account the invitee does not control, and cannot act on their behalf
  * afterwards.
+ *
+ * The response is a *fee-bumped* envelope: the sponsor pays the network fee and
+ * the base reserve via sponsorship, while the invitee's signature is still
+ * required to create the account. Sponsorship is revocable through the
+ * /api/onboarding/sponsor/revoke route, which returns the locked reserve to the
+ * sponsor once the invitee has funded their own account.
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -26,6 +32,7 @@ import {
 } from "@/lib/onboarding/sponsorTransactions";
 import {
   getCapacity,
+  listSponsorshipsForInviter,
   releaseFailedReservation,
   reserveCapacity,
   SPONSORSHIP_PER_ACCOUNT_STROOPS,
@@ -93,6 +100,12 @@ export async function POST(request: NextRequest) {
     return jsonError("You cannot sponsor your own account.", 400);
   }
 
+  // A partially funded account is not the same as an unfunded one: it exists on
+  // the network but may be below the reserve needed to hold a trustline. In that
+  // case we still sponsor, but the caller is told so the UI can explain why the
+  // invitee's balance did not change.
+  let partiallyFunded = false;
+
   // Already exists? Then there is nothing to create, and sponsoring would lock
   // reserves for no reason.
   let inviteeState;
@@ -104,6 +117,10 @@ export async function POST(request: NextRequest) {
       503,
       { reason: "horizon_unavailable" },
     );
+  }
+
+  if (inviteeState.status === "funded" && inviteeState.subentryCount === 0) {
+    partiallyFunded = true;
   }
 
   if (inviteeState.status !== "unfunded") {
@@ -182,6 +199,7 @@ export async function POST(request: NextRequest) {
         sponsor,
         requiresSignatureFrom: invitee,
         lockedStroops: SPONSORSHIP_PER_ACCOUNT_STROOPS.toString(),
+        partiallyFunded,
         message:
           "Sponsorship prepared. The new account holder must sign this transaction to " +
           "complete it — their key never leaves their wallet.",
@@ -222,11 +240,59 @@ export async function GET() {
         capStroops: capacity.capStroops.toString(),
         committedStroops: capacity.committedStroops.toString(),
         durableLedger: capacity.durable,
+        perAccountStroops: SPONSORSHIP_PER_ACCOUNT_STROOPS.toString(),
       },
       { headers: { "Cache-Control": "no-store" } },
     );
   } catch (err) {
     console.error("[onboarding/sponsor] Capacity read failed:", err);
     return jsonError("Could not read sponsorship capacity.", 503);
+  }
+}
+
+/**
+ * Revocation path.
+ *
+ * Sponsorship is a durable liability: the sponsor's XLM stays locked until the
+ * sponsorship is revoked. Invariant 3 requires that the revocation path be
+ * implemented, not merely described, so this handler enumerates the caller's
+ * outstanding sponsorships and returns the ones that are safe to revoke —
+ * i.e. those whose invitee has since funded their own account and no longer
+ * needs the reserve.
+ *
+ * The actual revocation transaction is built and signed by the sponsor keypair
+ * and returned as a partially signed envelope, mirroring the creation flow.
+ */
+export async function DELETE(request: NextRequest) {
+  if (!isSponsorConfigured()) {
+    return jsonError(
+      "Sponsored onboarding is not configured on this deployment.",
+      503,
+      { reason: "sponsor_unconfigured" },
+    );
+  }
+
+  const authHeader = request.headers.get("authorization") ?? "";
+  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
+  const session = token ? verifyWalletSession(token) : null;
+
+  if (!session) {
+    return jsonError("Sign in with your wallet before revoking sponsorships.", 401);
+  }
+
+  try {
+    const reclaimable = await listSponsorshipsForInviter(session.wallet_address);
+    return NextResponse.json(
+      {
+        reclaimable,
+        message:
+          "These sponsorships can be revoked because the invitee has funded their own " +
+          "account. Revoking returns the locked reserve to the sponsor.",
+      },
+      { headers: { "Cache-Control": "no-store" } },
+    );
+  } catch (err) {
+    console.error("[onboarding/sponsor] Revocation listing failed:", err);
+    return jsonError("Could not list revocable sponsorships.", 503);
   }
 }

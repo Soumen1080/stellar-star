@@ -25,6 +25,7 @@ import { useNetPayment } from "@/hooks/useNetPayment";
 import { usePathPayment } from "@/hooks/usePathPayment";
 import { buildPaymentEventKey } from "@/lib/stellar/events";
 import { Money as MoneyDisplay } from "@/components/ui/Money";
+import { WalletAddressBadge } from "@/components/ui/WalletAddressBadge";
 import { Money } from "@/lib/money";
 
 interface SettlementSummaryProps {
@@ -185,10 +186,25 @@ function NetPaymentRow({
       )}
     >
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-3">
-        <div className="flex items-center gap-2 min-w-0 text-sm font-semibold text-[#0F0F14]">
-          <span className="truncate">{payment.from}</span>
-          <ArrowRight size={13} className="text-[#2DD4BF] shrink-0" />
-          <span className="truncate">{payment.to}</span>
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 min-w-0 text-sm font-semibold text-[#0F0F14]">
+            <span className="truncate">{payment.from}</span>
+            <ArrowRight size={13} className="text-[#2DD4BF] shrink-0" />
+            <span className="truncate">{payment.to}</span>
+          </div>
+          {(payment.fromWallet || payment.toWallet) && (
+            <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1">
+              {payment.fromWallet && (
+                <WalletAddressBadge address={payment.fromWallet} />
+              )}
+              {payment.fromWallet && payment.toWallet && (
+                <ArrowRight size={10} className="shrink-0 text-[#AAA]" />
+              )}
+              {payment.toWallet && (
+                <WalletAddressBadge address={payment.toWallet} />
+              )}
+            </div>
+          )}
         </div>
 
         <div className="flex items-center justify-between sm:justify-end gap-2">

@@ -25,6 +25,7 @@ import {
   STELLAR_NETWORK,
 } from "@/lib/utils/constants";
 import { reportError } from "@/lib/observability/reportError";
+import { createRequestId } from "@/lib/observability/requestId";
 import { networkMismatchMessage } from "@/lib/stellar/networkMismatch";
 import {
   savePendingOnChain,
@@ -34,6 +35,7 @@ import {
 } from "@/lib/utils/pendingOnChain";
 import {
   acquireSettlementIntent,
+  upsertSettlementIntent,
   markIntentSubmitted,
   markIntentRecorded,
   markIntentFailed,
@@ -43,6 +45,7 @@ import {
   reconcileSettlementIntent,
   reconcilePendingIntentsForWallet,
 } from "@/lib/settlement/reconcile";
+import { validateAmount } from "@/lib/expense/validation";
 import type { SplitShare } from "@/types/expense";
 
 // ---------------------------------------------------------------------------
@@ -146,8 +149,38 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
   useEffect(() => {
     if (!publicKey) return;
 
-    // 1. Device-agnostic reconciliation: check Supabase settlement intents
-    reconcilePendingIntentsForWallet(publicKey).catch(() => {});
+    // 1. Device-agnostic reconciliation: check Supabase settlement intents (read-only without wallet popup)
+    reconcilePendingIntentsForWallet(publicKey, undefined, { allowActiveSubmission: false }).then((results) => {
+      // Find if the current expense has a pending on-chain record that needs signing
+      const needsSignature = results.find(
+        (r) => r.needsOnChainSignature && r.intentId.includes(expenseId)
+      );
+
+      if (needsSignature) {
+        // If the intent is not already loaded in pendingOnChain, populate it so the Retry button works
+        if (!pendingOnChain) {
+           const record: PendingOnChainRecord = {
+             memberPublicKey: needsSignature.intent.memberWallet,
+             tripId: needsSignature.intent.tripId,
+             expenseId: needsSignature.intent.expenseId,
+             payerPublicKey: needsSignature.intent.payerWallet,
+             amountXlm: needsSignature.intent.amount,
+             memoText: "", // Re-recording on chain doesn't strictly need memo
+             txHash: needsSignature.intent.txHash!,
+             ledger: needsSignature.intent.ledger ?? 0,
+           };
+           setPendingOnChainState(record);
+        }
+
+        setPaymentState({
+          status: "partial_success",
+          hash: needsSignature.intent.txHash!,
+          ledger: needsSignature.intent.ledger ?? 0,
+          onChain: false,
+          message: "A previous on-chain recording attempt requires your signature. Click Retry to complete it.",
+        });
+      }
+    }).catch(() => {});
 
     // 2. Restore local retry state if present
     const restored = loadPendingOnChain(publicKey, expenseId);
@@ -192,6 +225,11 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
         toastError("Wallet not connected", "Please connect your Freighter wallet first.");
         return false;
       }
+      const amountError = validateAmount(amountXlm, "XLM");
+      if (amountError) {
+        toastError("Invalid deposit amount", amountError);
+        return false;
+      }
       setDepositLoading(true);
       try {
         const result = await depositPoolBalance(publicKey, amountXlm);
@@ -232,6 +270,7 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
 
   const retryOnChainRecord = useCallback(async () => {
     if (!pendingOnChain) return;
+    const requestId = createRequestId();
 
     const poolCheck = await precheckPoolBalance(
       pendingOnChain.memberPublicKey,
@@ -255,7 +294,7 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
 
     // The oracle re-verifies against Horizon itself; there is no point doing a
     // client-side check first, and its verdict would carry no weight anyway.
-    const attested = await fetchAttestation(pendingOnChain);
+    const attested = await fetchAttestation({ ...pendingOnChain, requestId });
 
     if (!attested.ok) {
       setPaymentState({
@@ -274,6 +313,7 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
 
     const contractResult = await recordPaymentOnChain({
       ...pendingOnChain,
+      requestId,
       attestation: attested.attestation,
       onStatus: (step) => setPaymentState({ status: "recording", step }),
     });
@@ -309,8 +349,16 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
 
   const payShare = useCallback(
     async ({ share, expenseTitle, payerWalletAddress, tripId }: PayShareParams) => {
+      const requestId = createRequestId();
+
       if (!publicKey) {
         toastError("Wallet not connected", "Please connect your Freighter wallet first.");
+        return;
+      }
+
+      const amountError = validateAmount(share.amount, "XLM");
+      if (amountError) {
+        toastError("Invalid payment amount", amountError);
         return;
       }
 
@@ -322,12 +370,18 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
       if (mismatchMsg) {
         setPaymentState({ status: "blocked", message: mismatchMsg });
         toastError("Network mismatch", mismatchMsg);
-        reportError("payment.blocked-network-mismatch", new Error(mismatchMsg), {
-          stage: "payShare",
-          amount: share.amount,
-          walletNetwork: network,
-          appNetwork: STELLAR_NETWORK,
-        });
+        reportError(
+          "payment.blocked-network-mismatch",
+          new Error(mismatchMsg),
+          {
+            stage: "payShare",
+            amount: share.amount,
+            walletNetwork: network,
+            appNetwork: STELLAR_NETWORK,
+          },
+          "error",
+          requestId,
+        );
         return;
       }
 
@@ -359,12 +413,14 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
       let intent: SettlementIntent | null = null;
       try {
         const intentResult = await acquireSettlementIntent({
+          requestId,
           tripId: tripId ?? "none",
           expenseId,
           memberId: share.memberId,
           payerWallet: payerWalletAddress,
           memberWallet: publicKey,
           amount: share.amount,
+          txHash: pendingOnChain?.txHash,
         });
 
         if (!intentResult.ok) {
@@ -375,7 +431,9 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
           if (intentResult.code === "SUBMITTED_NEEDS_RECONCILIATION") {
             toastInfo("Reconciling settlement...", "Previous payment detected on Stellar.");
             setPaymentState({ status: "recording", step: "simulating" });
-            const recon = await reconcileSettlementIntent(intentResult.intent);
+            const recon = await reconcileSettlementIntent(intentResult.intent, undefined, {
+              allowActiveSubmission: true,
+            });
             if (recon.reconciled) {
               setPaymentState({
                 status: "success",
@@ -396,7 +454,13 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
           intent = intentResult.intent;
         }
       } catch (err) {
-        console.warn("[usePayment] Durable intent acquire warning:", err);
+        reportError(
+          "settlement.intent-acquire-failed",
+          err,
+          { stage: "payShare", tripId, expenseId },
+          "warning",
+          requestId,
+        );
       }
 
       try {
@@ -427,7 +491,7 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
         const signedXDR = await signXDR(xdr, NETWORK_PASSPHRASE);
 
         setPaymentState({ status: "submitting" });
-        const result = await submitSignedTransaction(signedXDR);
+        const result = await submitSignedTransaction(signedXDR, requestId);
 
         // Update durable intent immediately upon successful Horizon submission (Money has moved!)
         if (intent) {
@@ -435,6 +499,24 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
             await markIntentSubmitted(intent.id, result.hash, result.ledger);
           } catch (err) {
             console.warn("[usePayment] Failed to update intent status to submitted:", err);
+          }
+        } else {
+          try {
+            intent = await upsertSettlementIntent({
+              requestId,
+              tripId: tripId ?? "none",
+              expenseId,
+              memberId: share.memberId,
+              payerWallet: payerWalletAddress,
+              memberWallet: publicKey,
+              amount: share.amount,
+              currency: "XLM",
+              status: "submitted",
+              txHash: result.hash,
+              ledger: result.ledger,
+            });
+          } catch (err) {
+            console.warn("[usePayment] Failed to upsert intent on submit:", err);
           }
         }
 
@@ -448,6 +530,7 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
           // The settlement proof now comes from the oracle, which checks
           // Horizon server-side. The client no longer verifies its own claim.
           const attested = await fetchAttestation({
+            requestId,
             tripId,
             expenseId,
             payerPublicKey: payerWalletAddress,
@@ -461,6 +544,7 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
             buildAndPersistPending(result.hash, result.ledger, payerWalletAddress, share.amount, tripId, memoText);
           } else {
             const contractResult = await recordPaymentOnChain({
+              requestId,
               memberPublicKey: publicKey,
               tripId,
               expenseId,
@@ -499,13 +583,19 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
             onChain: false,
             message: onChainError,
           });
-          reportError("payment.onchain-proof-failed", new Error(onChainError), {
-            stage: "payShare",
-            hash: result.hash,
-            ledger: result.ledger,
-            amount: share.amount,
-            tripId,
-          });
+          reportError(
+            "payment.onchain-proof-failed",
+            new Error(onChainError),
+            {
+              stage: "payShare",
+              hash: result.hash,
+              ledger: result.ledger,
+              amount: share.amount,
+              tripId,
+            },
+            "error",
+            requestId,
+          );
           toastInfo(
             "Payment sent — recorded off-chain only",
             "The XLM transfer succeeded, but this settlement has no on-chain proof yet. Use retry to add it.",
@@ -531,11 +621,17 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
         const display    = isRejected ? "Transaction cancelled in wallet." : message;
 
       setPaymentState({ status: "error", message: display });
-      reportError("payment.failed", err, {
-        stage: "payShare",
-        amount: share.amount,
-        tripId,
-      });
+      reportError(
+        "payment.failed",
+        err,
+        {
+          stage: "payShare",
+          amount: share.amount,
+          tripId,
+        },
+        "error",
+        requestId,
+      );
       toastError("Payment failed", display);
     }
     },

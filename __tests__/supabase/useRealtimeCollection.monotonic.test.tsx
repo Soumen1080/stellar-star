@@ -4,6 +4,7 @@ import { act, renderHook } from "@testing-library/react";
 import { useRealtimeCollection } from "@/lib/supabase/useRealtimeCollection";
 import { getSupabaseClient, isSupabaseConfigured, requireAuthenticatedClient } from "@/lib/supabase/client";
 import { useAccessToken, useSessionWallet } from "@/lib/supabase/useSession";
+import { invalidateQueryCaches } from "@/lib/supabase/cacheInvalidation";
 
 jest.mock("@/lib/supabase/client", () => ({
   isSupabaseConfigured: jest.fn(),
@@ -105,5 +106,41 @@ describe("useRealtimeCollection — Version Monotonicity & Out-of-Order Delivery
     });
 
     expect(result.current.items[0].version).toBe(3);
+  });
+
+  it("revalidates the matching wallet collection after a dependent write", async () => {
+    const fetchAll = jest.fn().mockResolvedValue([]);
+
+    renderHook(() =>
+      useRealtimeCollection<TestItem>({
+        table: "expenses",
+        cacheKey: "test_expenses",
+        fetchAll,
+        fromRow: (row) => row as TestItem,
+        getId: (item) => item.id,
+        connectedWallet: WALLET,
+      }),
+    );
+
+    await act(async () => {});
+    expect(fetchAll).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      invalidateQueryCaches({
+        wallet: WALLET,
+        domains: ["expenses"],
+        expenseId: "expense-1",
+      });
+    });
+    expect(fetchAll).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      invalidateQueryCaches({
+        wallet: "GOTHERAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        domains: ["expenses"],
+      });
+      invalidateQueryCaches({ wallet: WALLET, domains: ["trips"] });
+    });
+    expect(fetchAll).toHaveBeenCalledTimes(2);
   });
 });

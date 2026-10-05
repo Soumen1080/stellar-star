@@ -1,7 +1,7 @@
 import { nativeToScVal } from "@stellar/stellar-sdk";
 import { checkIsPaid, getContractPayments } from "@/lib/stellar/contract";
 import { sorobanServer } from "@/lib/stellar/soroban";
-import { HORIZON_URL } from "@/lib/utils/constants";
+import { server } from "@/lib/stellar/client";
 
 jest.mock("@/lib/stellar/soroban", () => ({
   sorobanServer: {
@@ -9,24 +9,26 @@ jest.mock("@/lib/stellar/soroban", () => ({
   },
 }));
 
+// `loadAccount` reaches Horizon through the SDK client, not global `fetch`
+// (#227), so the account lookup is stubbed at that seam.
+jest.mock("@/lib/stellar/client", () => ({
+  server: {
+    loadAccount: jest.fn(),
+  },
+}));
+
 const UNFUNDED_CALLER =
   "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
 const FUNDED_SEQUENCE = "42";
 
+/** What the SDK's `loadAccount` resolves with for a funded account. */
 function horizonAccountResponse(sequence: string) {
-  return {
-    ok: true,
-    status: 200,
-    json: async () => ({ sequence }),
-  };
+  return { sequenceNumber: () => sequence };
 }
 
-function horizonNotFoundResponse() {
-  return {
-    ok: false,
-    status: 404,
-    json: async () => ({}),
-  };
+/** How the SDK surfaces an account Horizon does not have. */
+function horizonNotFoundError() {
+  return Object.assign(new Error("Not Found"), { response: { status: 404 } });
 }
 
 function simulationSuccess(retval: ReturnType<typeof nativeToScVal>) {
@@ -46,25 +48,13 @@ function simulationSuccess(retval: ReturnType<typeof nativeToScVal>) {
 }
 
 describe("read-only contract queries with unfunded caller", () => {
-  const originalFetch = global.fetch;
-
   beforeEach(() => {
     jest.mocked(sorobanServer.simulateTransaction).mockReset();
-    global.fetch = jest.fn();
-  });
-
-  afterEach(() => {
-    global.fetch = originalFetch;
+    jest.mocked(server.loadAccount).mockReset();
   });
 
   it("checkIsPaid simulates with sequence 0 when Horizon returns 404", async () => {
-    jest.mocked(global.fetch).mockImplementation(async (input) => {
-      const url = String(input);
-      if (url.startsWith(`${HORIZON_URL}/accounts/${UNFUNDED_CALLER}`)) {
-        return horizonNotFoundResponse() as Response;
-      }
-      throw new Error(`Unexpected fetch: ${url}`);
-    });
+    jest.mocked(server.loadAccount).mockRejectedValue(horizonNotFoundError());
 
     jest.mocked(sorobanServer.simulateTransaction).mockImplementation(async (tx) => {
       if (!("source" in tx)) {
@@ -86,13 +76,7 @@ describe("read-only contract queries with unfunded caller", () => {
   });
 
   it("getContractPayments simulates with sequence 0 when Horizon returns 404", async () => {
-    jest.mocked(global.fetch).mockImplementation(async (input) => {
-      const url = String(input);
-      if (url.startsWith(`${HORIZON_URL}/accounts/${UNFUNDED_CALLER}`)) {
-        return horizonNotFoundResponse() as Response;
-      }
-      throw new Error(`Unexpected fetch: ${url}`);
-    });
+    jest.mocked(server.loadAccount).mockRejectedValue(horizonNotFoundError());
 
     jest.mocked(sorobanServer.simulateTransaction).mockImplementation(async (tx) => {
       if (!("source" in tx)) {
@@ -124,13 +108,13 @@ describe("read-only contract queries with unfunded caller", () => {
   });
 
   it("checkIsPaid still uses Horizon sequence for funded callers", async () => {
-    jest.mocked(global.fetch).mockImplementation(async (input) => {
-      const url = String(input);
-      if (url.startsWith(`${HORIZON_URL}/accounts/${UNFUNDED_CALLER}`)) {
-        return horizonAccountResponse(FUNDED_SEQUENCE) as Response;
-      }
-      throw new Error(`Unexpected fetch: ${url}`);
-    });
+    jest
+      .mocked(server.loadAccount)
+      .mockResolvedValue(
+        horizonAccountResponse(FUNDED_SEQUENCE) as unknown as Awaited<
+          ReturnType<typeof server.loadAccount>
+        >,
+      );
 
     jest.mocked(sorobanServer.simulateTransaction).mockImplementation(async (tx) => {
       if (!("sequence" in tx)) {

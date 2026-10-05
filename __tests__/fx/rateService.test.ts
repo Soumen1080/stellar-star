@@ -61,6 +61,7 @@ describe("FxRateService — primary provider success", () => {
     const result = await service.getRate("INR", "XLM");
 
     expect(result.rate).toBeCloseTo(0.00014);
+    expect(result.rateDecimal).toBe("0.00014");
     expect(result.source).toBe("coingecko");
     expect(result.fetchedAt).toBeGreaterThan(0);
     expect(result.stale).toBe(false);

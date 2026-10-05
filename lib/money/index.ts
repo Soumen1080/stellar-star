@@ -15,6 +15,7 @@
  */
 
 export * from "./money";
+export * from "./assetPrecision";
 
 export {
   Amount,

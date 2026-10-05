@@ -7,6 +7,7 @@ import { Users, ReceiptText, ChevronRight, Trash2, CheckCheck } from "lucide-rea
 import type { Trip } from "@/types/trip";
 import { cn } from "@/lib/utils";
 import { Modal, ModalFooter } from "@/components/ui/Modal";
+import { WalletAddressBadge } from "@/components/ui/WalletAddressBadge";
 
 import { Money } from "@/components/ui/Money";
 import { type Money as MoneyType } from "@/lib/money";
@@ -106,8 +107,16 @@ export function TripCard({
       </Link>
 
       {/* Footer */}
-      <div className="flex items-center justify-between px-4 py-3 border-t border-[#F5F5F5]">
-        <span className="text-[10px] text-[#BBB]">{createdAt}</span>
+      <div className="flex items-center justify-between gap-2 px-4 py-3 border-t border-[#F5F5F5]">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="shrink-0 text-[10px] text-[#BBB]">{createdAt}</span>
+          {trip.createdByWallet && (
+            <WalletAddressBadge
+              address={trip.createdByWallet}
+              className="max-w-[9rem]"
+            />
+          )}
+        </div>
         {canDelete ? (
           <button
             onClick={(e) => {

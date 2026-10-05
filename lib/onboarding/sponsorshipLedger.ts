@@ -16,8 +16,8 @@
  * Supabase when configured, so the cap holds across instances and restarts;
  * otherwise a process-local map. `isDurable()` reports which. This distinction
  * matters more here than elsewhere: a per-process cap on a multi-instance
- * deployment is N times the cap the operator thinks they set, which is exactly
- * the drain the cap exists to prevent.
+ * deployment is N times the cap the operator thinks they set, which is exactly the
+ * drain the cap exists to prevent.
  */
 
 import { createServiceRoleClient, isServerSupabaseConfigured } from "@/lib/supabase/server";

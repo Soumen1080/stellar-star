@@ -177,7 +177,120 @@ export async function commitAttestation(
   });
 }
 
-/** Test seam: drops the in-memory ledger. Has no effect on the Supabase table. */
+/**
+ * Per-transaction lock to serialize allocation checks and commits on the same
+ * payment transaction hash.
+ */
+const txLocks = new Map<string, Promise<void>>();
+
+export async function withTxLock<T>(txHash: string, fn: () => Promise<T> | T): Promise<T> {
+  const key = txHash.toLowerCase();
+  const prevLock = txLocks.get(key) ?? Promise.resolve();
+
+  let releaseLock!: () => void;
+  const currentLock = new Promise<void>((resolve) => {
+    releaseLock = resolve;
+  });
+
+  const nextInQueue = prevLock.then(
+    () => currentLock,
+    () => currentLock,
+  );
+  txLocks.set(key, nextInQueue);
+
+  await prevLock;
+  try {
+    return await fn();
+  } finally {
+    releaseLock();
+    if (txLocks.get(key) === nextInQueue) {
+      txLocks.delete(key);
+    }
+  }
+}
+
+export interface AllocateAndCommitOptions {
+  txHash: string;
+  expenseId: string;
+  member: string;
+  claimedAmountStroops: bigint;
+  totalPaymentStroops: bigint;
+  createEntry: () => Promise<AttestationLedgerEntry> | AttestationLedgerEntry;
+}
+
+export type AllocateAndCommitResult =
+  | { success: true; entry: AttestationLedgerEntry; reused: boolean }
+  | {
+      success: false;
+      reason: "INSUFFICIENT_FUNDS" | "AMOUNT_MISMATCH";
+      allocatedStroops: bigint;
+      remainingStroops: bigint;
+    };
+
+/**
+ * Atomically verifies available capacity against a transaction and commits the attestation.
+ * Serialized per txHash to prevent concurrent requests from over-allocating the payment.
+ */
+export async function allocateAndCommit(
+  optionsOrEntry: AllocateAndCommitOptions | AttestationLedgerEntry,
+  maxPaymentStroops?: bigint,
+): Promise<AllocateAndCommitResult> {
+  const isOptions = "createEntry" in optionsOrEntry;
+  const txHash = optionsOrEntry.txHash;
+  const expenseId = optionsOrEntry.expenseId;
+  const member = optionsOrEntry.member;
+  const claimedAmount = isOptions
+    ? optionsOrEntry.claimedAmountStroops
+    : BigInt(optionsOrEntry.amountStroops);
+  const totalPayment = isOptions
+    ? optionsOrEntry.totalPaymentStroops
+    : (maxPaymentStroops ?? 0n);
+  const getEntry = isOptions
+    ? optionsOrEntry.createEntry
+    : () => optionsOrEntry;
+
+  return withTxLock(txHash, async () => {
+    const allocation = await inspectAllocation(txHash, expenseId, member);
+
+    if (allocation.existing) {
+      if (BigInt(allocation.existing.amountStroops) !== claimedAmount) {
+        return {
+          success: false,
+          reason: "AMOUNT_MISMATCH",
+          allocatedStroops: allocation.allocatedStroops,
+          remainingStroops: totalPayment - allocation.allocatedStroops,
+        };
+      }
+      return {
+        success: true,
+        entry: allocation.existing,
+        reused: true,
+      };
+    }
+
+    const remaining = totalPayment - allocation.allocatedStroops;
+    if (claimedAmount > remaining) {
+      return {
+        success: false,
+        reason: "INSUFFICIENT_FUNDS",
+        allocatedStroops: allocation.allocatedStroops,
+        remainingStroops: remaining,
+      };
+    }
+
+    const entryToCommit = await getEntry();
+    const stored = await commitAttestation(entryToCommit);
+
+    return {
+      success: true,
+      entry: stored,
+      reused: stored.nonce !== entryToCommit.nonce,
+    };
+  });
+}
+
+/** Test seam: drops the in-memory ledger and active locks. Has no effect on the Supabase table. */
 export function resetMemoryLedger(): void {
   memoryLedger.clear();
+  txLocks.clear();
 }

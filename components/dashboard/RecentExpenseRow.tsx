@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { ArrowRight, CheckCircle2, ReceiptText } from "lucide-react";
 import { Money } from "@/components/ui/Money";
+import { WalletAddressBadge } from "@/components/ui/WalletAddressBadge";
 import type { Expense } from "@/types/expense";
 
 export function RecentExpenseRow({ expense }: { expense: Expense }) {
@@ -16,6 +17,9 @@ export function RecentExpenseRow({ expense }: { expense: Expense }) {
     expense.currency !== "XLM" && expense.exchangeRate
       ? parseFloat(expense.totalAmount) / parseFloat(expense.exchangeRate)
       : null;
+  const payerWallet = expense.members.find(
+    (member) => member.id === expense.paidByMemberId,
+  )?.walletAddress;
 
   return (
     <Link
@@ -41,6 +45,12 @@ export function RecentExpenseRow({ expense }: { expense: Expense }) {
             </>
           )}
           <span>&middot; {expense.members.length} members &middot; {date}</span>
+          {payerWallet && (
+            <>
+              <span>&middot; payer</span>
+              <WalletAddressBadge address={payerWallet} copyable={false} />
+            </>
+          )}
         </p>
       </div>
       <div className="shrink-0 flex items-center gap-2">

@@ -38,7 +38,7 @@ export function TripForm({ onSubmit, onCancel, initialData, currentUserPublicKey
       {
         id: crypto.randomUUID(),
         name: currentUserName ?? "",
-        walletAddress: currentUserPublicKey ?? "",
+        walletAddress: currentUserPublicKey ? currentUserPublicKey.trim().toUpperCase() : "",
       },
       createMember(),
     ];

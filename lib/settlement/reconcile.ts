@@ -62,6 +62,18 @@ export interface ReconcileIntentResult {
   onChain: boolean;
   status: SettlementIntent["status"];
   message?: string;
+  needsOnChainSignature?: boolean;
+  intent: SettlementIntent;
+}
+
+export interface ReconcileOptions {
+  /**
+   * If true, reconciliation is permitted to trigger active wallet signatures
+   * (e.g. popping up Freighter to complete a Soroban contract recording).
+   * If false or omitted, reconciliation is strictly read-only and will return
+   * a NEEDS_ON_CHAIN_SIGNATURE status if active submission is required.
+   */
+  allowActiveSubmission?: boolean;
 }
 
 /**
@@ -73,6 +85,7 @@ export interface ReconcileIntentResult {
 export async function reconcileSettlementIntent(
   intent: SettlementIntent,
   client?: StellarStarClient,
+  options?: ReconcileOptions,
 ): Promise<ReconcileIntentResult> {
   // If already fully recorded, reconciliation is a clean no-op (Invariant 6).
   if (intent.status === "recorded" && intent.onChain) {
@@ -81,6 +94,7 @@ export async function reconcileSettlementIntent(
       reconciled: true,
       onChain: true,
       status: "recorded",
+      intent,
     };
   }
 
@@ -95,6 +109,7 @@ export async function reconcileSettlementIntent(
         onChain: false,
         status: "failed",
         message: "Settlement intent expired without transaction submission.",
+        intent,
       };
     }
     return {
@@ -103,13 +118,14 @@ export async function reconcileSettlementIntent(
       onChain: false,
       status: intent.status,
       message: "Settlement is still in progress in wallet.",
+      intent,
     };
   }
 
   // 1. Check Horizon: Did the transaction move value on the Stellar ledger?
   let verifiedPayment;
   try {
-    verifiedPayment = await verifyPaymentByHash(intent.txHash);
+    verifiedPayment = await verifyPaymentByHash(intent.txHash, intent.requestId);
   } catch (err) {
     // If Horizon cannot find the transaction or verification fails
     const message = err instanceof Error ? err.message : "Horizon verification failed.";
@@ -119,12 +135,14 @@ export async function reconcileSettlementIntent(
       onChain: false,
       status: intent.status,
       message,
+      intent,
     };
   }
 
   // 2. Horizon confirmed the transaction! Ensure contract is recorded if configured.
   let onChain = intent.onChain;
   let ledger = verifiedPayment.ledger;
+  let needsSignature = false;
 
   if (CONTRACT_ID && !onChain && intent.tripId) {
     try {
@@ -140,6 +158,7 @@ export async function reconcileSettlementIntent(
       } else {
         // Attempt contract recording
         const attested = await fetchAttestation({
+          requestId: intent.requestId,
           tripId: intent.tripId,
           expenseId: intent.expenseId,
           payerPublicKey: intent.payerWallet,
@@ -149,19 +168,23 @@ export async function reconcileSettlementIntent(
         });
 
         if (attested.ok) {
-          const contractRes = await recordPaymentOnChain({
-            memberPublicKey: intent.memberWallet,
-            tripId: intent.tripId,
-            expenseId: intent.expenseId,
-            payerPublicKey: intent.payerWallet,
-            amountXlm: intent.amount,
-            txHash: intent.txHash,
-            attestation: attested.attestation,
-          });
+          if (options?.allowActiveSubmission ?? true) {
+            const contractRes = await recordPaymentOnChain({
+              memberPublicKey: intent.memberWallet,
+              tripId: intent.tripId,
+              expenseId: intent.expenseId,
+              payerPublicKey: intent.payerWallet,
+              amountXlm: intent.amount,
+              txHash: intent.txHash,
+              attestation: attested.attestation,
+            });
 
-          if (contractRes.success) {
-            onChain = true;
-            if (contractRes.ledger) ledger = contractRes.ledger;
+            if (contractRes.success) {
+              onChain = true;
+              if (contractRes.ledger) ledger = contractRes.ledger;
+            }
+          } else {
+            needsSignature = true;
           }
         }
       }
@@ -180,11 +203,24 @@ export async function reconcileSettlementIntent(
   // 4. Mark intent recorded
   await markIntentRecorded(intent.id, ledger, onChain, client);
 
+  if (needsSignature) {
+    return {
+      intentId: intent.id,
+      reconciled: true,
+      onChain: false,
+      status: "recorded", // It's recorded in DB, but not on chain
+      message: "Needs on-chain signature.",
+      needsOnChainSignature: true,
+      intent,
+    };
+  }
+
   return {
     intentId: intent.id,
     reconciled: true,
     onChain,
     status: "recorded",
+    intent,
   };
 }
 

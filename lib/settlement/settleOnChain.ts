@@ -30,6 +30,7 @@ export function xlmToStroopsString(xlm: string): string {
 }
 
 export interface SettlementClaimInput {
+  requestId: string;
   tripId: string;
   expenseId: string;
   payerPublicKey: string;
@@ -69,6 +70,7 @@ export async function fetchAttestation(
 
   try {
     const attestation = await requestAttestation({
+      requestId: claim.requestId,
       tripId: claim.tripId,
       expenseId: claim.expenseId,
       payer: claim.payerPublicKey,

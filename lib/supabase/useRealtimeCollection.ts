@@ -5,6 +5,11 @@ import type { RealtimeChannel, RealtimePostgresChangesPayload } from "@supabase/
 import { isSupabaseConfigured, requireAuthenticatedClient } from "./client";
 import { DatabaseError } from "./queries";
 import { useAccessToken, useSessionWallet } from "./useSession";
+import {
+  subscribeToQueryInvalidation,
+  walletCollectionCacheKey,
+  type QueryCacheDomain,
+} from "./cacheInvalidation";
 
 /**
  * Loads a wallet-scoped table, keeps it live over Realtime, and falls back to a
@@ -75,29 +80,37 @@ export function useRealtimeCollection<T>({
   // Discards a response that arrives after the wallet or session changed.
   const loadIdRef = useRef(0);
   const channelRef = useRef<RealtimeChannel | null>(null);
+  const cacheDomain: QueryCacheDomain | null =
+    table === "trips" || table === "expenses" ? table : null;
 
   // ── Per-wallet cache ──────────────────────────────────────────────────────
 
   const readCache = useCallback((): T[] => {
     if (!wallet) return [];
     try {
-      const raw = localStorage.getItem(`${cacheKey}:${wallet}`);
+      const key = cacheDomain
+        ? walletCollectionCacheKey(cacheDomain, wallet)
+        : `${cacheKey}:${wallet}`;
+      const raw = localStorage.getItem(key);
       return raw ? (JSON.parse(raw) as T[]) : [];
     } catch {
       return [];
     }
-  }, [cacheKey, wallet]);
+  }, [cacheDomain, cacheKey, wallet]);
 
   const writeCache = useCallback(
     (next: T[]) => {
       if (!wallet) return;
       try {
-        localStorage.setItem(`${cacheKey}:${wallet}`, JSON.stringify(next));
+        const key = cacheDomain
+          ? walletCollectionCacheKey(cacheDomain, wallet)
+          : `${cacheKey}:${wallet}`;
+        localStorage.setItem(key, JSON.stringify(next));
       } catch (err) {
         console.warn(`[StellarStar] Could not cache ${table}:`, err);
       }
     },
-    [cacheKey, table, wallet]
+    [cacheDomain, cacheKey, table, wallet]
   );
 
   /** Updates state and the cache together so they never disagree. */
@@ -172,6 +185,16 @@ export function useRealtimeCollection<T>({
     setIsLoading(true);
     void load();
   }, [wallet, token, load]);
+
+  // Successful writes publish one wallet-scoped invalidation event. Every
+  // dependent collection revalidates from the database, including other tabs,
+  // instead of waiting for a Realtime event that may be delayed or missed.
+  useEffect(() => {
+    if (!wallet || !token || !cacheDomain) return;
+    return subscribeToQueryInvalidation(wallet, cacheDomain, () => {
+      void load();
+    });
+  }, [cacheDomain, wallet, token, load]);
 
   // ── Realtime ──────────────────────────────────────────────────────────────
   // Realtime enforces the same RLS policies as a query, so this receives only

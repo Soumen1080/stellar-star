@@ -7,10 +7,12 @@ import {
   calculateSplit,
   findDuplicateWalletErrors,
   isValidStellarAddress,
-  isValidXLMAmount,
 } from "@/lib/split/calculator";
+import { validateAmount } from "@/lib/expense/validation";
 import type { Expense, Member, SplitMode } from "@/types/expense";
 import { fetchExchangeRate, describeAge } from "@/lib/fx/quote";
+import { convertAssetAmount, toLedgerAmount } from "@/lib/money/assetPrecision";
+import { Money } from "@/lib/money";
 
 export interface UseExpenseFormOptions {
   onSuccess?: (expenseId?: string) => void;
@@ -39,10 +41,10 @@ export function validateExpenseFormFields({
   const errors: Record<string, string> = {};
 
   if (!title.trim()) errors.title = "Title is required.";
-  if (!totalAmount || Number.isNaN(parseFloat(totalAmount)) || parseFloat(totalAmount) <= 0) {
-    errors.totalAmount = `Enter a valid ${currency} amount.`;
-  } else if (currency === "XLM" && !isValidXLMAmount(totalAmount)) {
-    errors.totalAmount = "Enter a valid XLM amount (max 7 decimal places, e.g. 10.5).";
+
+  const amountError = validateAmount(totalAmount, currency);
+  if (amountError) {
+    errors.totalAmount = amountError;
   }
 
   members.forEach((member, index) => {
@@ -102,8 +104,8 @@ export function useExpenseForm({
 
   const namedMembers = useMemo(() => members.filter((member) => member.name.trim()), [members]);
   const shares = useMemo(() => {
-    const amount = parseFloat(totalAmount);
-    if (Number.isNaN(amount) || amount <= 0 || namedMembers.length < 2) return [];
+    const amount = Money.tryParse(totalAmount);
+    if (!amount || !amount.isPositive() || namedMembers.length < 2) return [];
     return calculateSplit(amount, namedMembers, paidByMemberId, splitMode);
   }, [totalAmount, namedMembers, paidByMemberId, splitMode]);
   const payerName = members.find((member) => member.id === paidByMemberId)?.name || "Payer";
@@ -143,9 +145,10 @@ export function useExpenseForm({
       try {
         const cleanMembers = members.map((member) => ({
           ...member,
-          walletAddress: member.walletAddress?.trim(),
+          name: member.name.trim(),
+          walletAddress: member.walletAddress ? member.walletAddress.trim().toUpperCase() : undefined,
         }));
-        let finalXlmAmount = parseFloat(totalAmount);
+        let finalSettlementAmount = toLedgerAmount(totalAmount, "XLM");
         let exchangeRate: string | undefined = undefined;
         let exchangeRateTimestamp: string | undefined = undefined;
 
@@ -169,7 +172,12 @@ export function useExpenseForm({
 
           exchangeRate = quote.rate;
           exchangeRateTimestamp = quote.fetchedAtIso;
-          finalXlmAmount = finalXlmAmount * parseFloat(quote.rate);
+          finalSettlementAmount = convertAssetAmount(
+            totalAmount,
+            currency,
+            "XLM",
+            quote.rate,
+          );
 
           if (quote.stale) {
             // Served from cache past its TTL. The expense is still created —
@@ -183,16 +191,17 @@ export function useExpenseForm({
         }
 
         const calculatedShares = calculateSplit(
-          finalXlmAmount,
+          finalSettlementAmount,
           cleanMembers,
           paidByMemberId,
           splitMode,
         );
+
         const expense: Expense = {
           id: crypto.randomUUID(),
           title: title.trim(),
           description: description.trim() || undefined,
-          totalAmount: finalXlmAmount.toFixed(7),
+          totalAmount: finalSettlementAmount,
           currency,
           exchangeRate,
           exchangeRateTimestamp,
@@ -220,6 +229,11 @@ export function useExpenseForm({
         setSubmitting(false);
       }
     },
+    // `currency` and `toastInfo` are both read in the body above and belong
+    // here. Omitting `currency` was a live bug, not just a lint gap: the
+    // callback closed over "XLM" from the first render, so switching the
+    // dropdown to USD or INR and submitting skipped the conversion branch
+    // entirely and persisted the typed amount tagged XLM.
     [
       addExpense,
       currency,

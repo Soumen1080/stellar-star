@@ -13,6 +13,40 @@ import {
   stroopsToXlm,
 } from "@/lib/stellar/accountState";
 
+/**
+ * Returns true when the given account already holds a trustline for `asset`.
+ *
+ * Uses a cache-busting timestamp so browsers never serve a stale 200 that hides
+ * a trustline that was just created. The result is used as a pre-flight
+ * idempotency check in {@link buildChangeTrustTransaction} and
+ * {@link useTrustline} to prevent duplicate ChangeTrust submissions.
+ */
+export async function hasTrustline(publicKey: string, asset: AssetRef): Promise<boolean> {
+  if (isNative(asset)) return true; // XLM is always implicitly trusted
+
+  try {
+    const res = await fetch(`${HORIZON_URL}/accounts/${publicKey}?_ts=${Date.now()}`, {
+      cache: "no-store",
+      headers: { "Cache-Control": "no-cache" },
+    });
+    if (!res.ok) return false; // unfunded or network error — let the caller decide
+
+    const data = (await res.json()) as { balances?: Array<{ asset_code?: string; asset_issuer?: string }> };
+    const balances = data.balances ?? [];
+    return balances.some(
+      (b) =>
+        "asset_code" in b &&
+        b.asset_code === (asset as { code: string }).code &&
+        b.asset_issuer === (asset as { issuer: string }).issuer,
+    );
+  } catch {
+    // Network error — fail open: let buildChangeTrustTransaction proceed and
+    // rely on the Horizon op_already_exists error as the final guard.
+    return false;
+  }
+}
+
+
 export interface BuildChangeTrustParams {
   publicKey: string;
   asset: AssetRef;

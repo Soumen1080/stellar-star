@@ -58,7 +58,7 @@ export function QRCodeDisplay({ data, className }: QRCodeDisplayProps) {
       <div className="text-center">
         <p className="text-xs font-semibold text-[#555] mb-0.5 flex items-center justify-center gap-1">
           <span>Scan to pay </span>
-          <Money amount={data.amount} asset="XLM" />
+          <Money amount={data.amount} asset={data.assetCode || "XLM"} />
         </p>
         <p className="text-[10px] text-[#AAA]">
           Works with Freighter, Lobstr &amp; SEP-0007 wallets

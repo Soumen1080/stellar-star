@@ -33,6 +33,22 @@
  *
  * The route sets `Cache-Control: public, s-maxage=30` so CDN edges cache fresh
  * responses. Stale and unavailable responses are not cached.
+ *
+ * ## Abuse resistance
+ *
+ * The route is public, and its cache is keyed by the requested pair, so the
+ * validation of `from`/`to` is what bounds upstream load. A shape check alone
+ * (any 2–6 letters) admits millions of pairs, letting a caller miss the cache on
+ * every request and turn each miss into a CoinGecko / ExchangeRate.host call —
+ * draining the shared quota and tripping the circuit breakers for all users.
+ *
+ * Two limits close that:
+ *
+ *   1. `normalizeCurrency` rejects anything off the `SUPPORTED_CURRENCIES`
+ *      whitelist with a 400, *before* the rate service is consulted. The key
+ *      space is finite, so the cache can actually cover it.
+ *   2. Per-IP rate limiting (60/min) caps how fast one client can walk even the
+ *      valid pairs.
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -71,7 +87,7 @@ function isValidCurrencyCode(code: unknown): code is string {
 }
 
 function jsonError(message: string, status: number) {
-  return NextResponse.json({ error: message }, { status });
+  return NextResponse.json({ error: message }, { status, headers: { "Cache-Control": "no-store" } });
 }
 
 export async function GET(request: NextRequest) {
@@ -85,11 +101,58 @@ export async function GET(request: NextRequest) {
   const from = searchParams.get("from");
   const to = searchParams.get("to");
 
-  if (!isValidCurrencyCode(from)) {
-    return jsonError('Query param "from" must be a 2–6 letter currency code.', 400);
+  // Whitelist first: rejecting an unsupported pair must not consume the caller's
+  // rate-limit budget, and it is the cheaper of the two checks.
+  const fromCode = normalizeCurrency(from);
+  const toCode = normalizeCurrency(to);
+
+  if (fromCode === null) {
+    return jsonError(
+      `Query param "from" must be a supported currency code. Supported: ${SUPPORTED_CURRENCIES.join(", ")}.`,
+      400,
+    );
   }
-  if (!isValidCurrencyCode(to)) {
-    return jsonError('Query param "to" must be a 2–6 letter currency code.', 400);
+  if (toCode === null) {
+    return jsonError(
+      `Query param "to" must be a supported currency code. Supported: ${SUPPORTED_CURRENCIES.join(", ")}.`,
+      400,
+    );
+  }
+
+  // Identical codes need no provider round-trip, whatever the cache state.
+  if (fromCode === toCode) {
+    return NextResponse.json(
+      {
+        rate: 1,
+        rateDecimal: "1",
+        source: "identity",
+        fetchedAt: Date.now(),
+        stale: false,
+        rateAgeMs: 0,
+        unavailable: false,
+      },
+      { status: 200, headers: { "Cache-Control": "public, s-maxage=30" } },
+    );
+  }
+
+  // Then rate-limit: caps how fast one client can walk the valid pair space.
+  const clientIp = getClientIp(request);
+  const ipLimit = await checkRateLimit(
+    `fx-rate:ip:${clientIp}`,
+    RATE_LIMIT_MAX,
+    RATE_LIMIT_WINDOW_MS,
+  );
+  if (!ipLimit.allowed) {
+    return NextResponse.json(
+      { error: "Too many rate requests. Please try again later." },
+      {
+        status: 429,
+        headers: {
+          "Retry-After": String(Math.ceil(ipLimit.resetMs / 1000)),
+          "Cache-Control": "no-store",
+        },
+      },
+    );
   }
 
   const upperFrom = from.toUpperCase();

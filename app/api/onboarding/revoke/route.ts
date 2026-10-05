@@ -38,6 +38,7 @@ import {
   getSponsorship,
   listReclaimable,
   markRevoked,
+  recordSponsorshipActivity,
   SPONSORSHIP_IDLE_RECLAIM_MS,
 } from "@/lib/onboarding/sponsorshipLedger";
 import { releaseInvite } from "@/lib/onboarding/abuseResistance";
@@ -170,6 +171,11 @@ export async function POST(request: NextRequest) {
     await markRevoked(account);
     await releaseInvite(record.sponsoredBy, account).catch(() => {});
 
+    // A successful revocation is activity on the sponsorship record; stamping
+    // it keeps the idle-reclaim window honest if the record is ever re-opened
+    // or audited, and prevents a stale lastActiveAt from misclassifying it.
+    await recordSponsorshipActivity(account).catch(() => {});
+
     return NextResponse.json(
       {
         revoked: true,
@@ -183,6 +189,10 @@ export async function POST(request: NextRequest) {
     const message = err instanceof Error ? err.message : "Revocation failed.";
     // The most common cause: the account cannot yet cover its own reserve. That
     // is not an error state for the user — the sponsorship simply continues.
+    // Record the attempt so an operator cannot be tricked into repeatedly
+    // retrying a revocation that the network will keep rejecting, and so the
+    // idle window reflects that the account is still under sponsorship.
+    await recordSponsorshipActivity(account).catch(() => {});
     return jsonError(message, 409, { sponsorshipRetained: true });
   }
 }
@@ -198,8 +208,13 @@ export async function GET(request: NextRequest) {
 
   const reclaimable = await listReclaimable();
 
+  // Expose the configured idle window alongside the list so an operator
+  // dashboard can render the reclaim threshold without hard-coding it.
+  const idleReclaimMs = SPONSORSHIP_IDLE_RECLAIM_MS;
+
   return NextResponse.json(
     {
+      idleReclaimMs,
       reclaimable: reclaimable.map((r) => ({
         account: r.account,
         lockedStroops: r.lockedStroops,

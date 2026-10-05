@@ -652,6 +652,64 @@ alter table public.settlement_attestations enable row level security;
 -- Sponsored account onboarding  (issue #147 / epic #45)
 -- ============================================================================
 
+-- 0001 created an older sponsored_accounts shape. Reconcile it before creating
+-- indexes on the current ledger columns so a fresh ordered replay and an
+-- existing 0001 database both converge instead of failing on `status`.
+DO $sponsored_accounts_shape$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+     WHERE table_schema = 'public' AND table_name = 'sponsored_accounts'
+       AND column_name = 'account_id'
+  ) AND NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+     WHERE table_schema = 'public' AND table_name = 'sponsored_accounts'
+       AND column_name = 'account'
+  ) THEN
+    ALTER TABLE public.sponsored_accounts RENAME COLUMN account_id TO account;
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+     WHERE table_schema = 'public' AND table_name = 'sponsored_accounts'
+       AND column_name = 'sponsor'
+  ) AND NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+     WHERE table_schema = 'public' AND table_name = 'sponsored_accounts'
+       AND column_name = 'sponsored_by'
+  ) THEN
+    ALTER TABLE public.sponsored_accounts RENAME COLUMN sponsor TO sponsored_by;
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+     WHERE table_schema = 'public' AND table_name = 'sponsored_accounts'
+       AND column_name = 'operation_id'
+  ) THEN
+    ALTER TABLE public.sponsored_accounts ALTER COLUMN operation_id DROP NOT NULL;
+  END IF;
+END
+$sponsored_accounts_shape$;
+
+ALTER TABLE public.sponsored_accounts
+  ADD COLUMN IF NOT EXISTS locked_stroops NUMERIC(30) NOT NULL DEFAULT 1
+    CHECK (locked_stroops > 0),
+  ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active'
+    CHECK (status IN ('active', 'revoked', 'reclaimed')),
+  ADD COLUMN IF NOT EXISTS created_at_ms BIGINT,
+  ADD COLUMN IF NOT EXISTS last_active_at_ms BIGINT,
+  ADD COLUMN IF NOT EXISTS sponsored_by TEXT NOT NULL DEFAULT '',
+  ADD COLUMN IF NOT EXISTS revoked_at_ms BIGINT;
+
+UPDATE public.sponsored_accounts
+   SET created_at_ms = COALESCE(created_at_ms, (extract(epoch FROM created_at) * 1000)::BIGINT),
+       last_active_at_ms = COALESCE(last_active_at_ms, (extract(epoch FROM created_at) * 1000)::BIGINT)
+ WHERE created_at_ms IS NULL OR last_active_at_ms IS NULL;
+
+ALTER TABLE public.sponsored_accounts
+  ALTER COLUMN created_at_ms SET NOT NULL,
+  ALTER COLUMN last_active_at_ms SET NOT NULL;
+
 -- ─── SPONSORED ACCOUNT INDEXES ───────────────────────────────────────────────
 create index if not exists sponsored_accounts_status_idx
   on public.sponsored_accounts (status);

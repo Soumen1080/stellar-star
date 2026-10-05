@@ -4,7 +4,7 @@ import React, { useState } from "react";
 import Link from "next/link";
 import { AnimatePresence, motion } from "framer-motion";
 import { Plus, ArrowLeft, Map, Inbox } from "lucide-react";
-import { useTrip } from "@/hooks/useTrip";
+import { useTripSearch } from "@/hooks/useTrip";
 import { useExpense } from "@/hooks/useExpense";
 import { useWallet } from "@/hooks/useWallet";
 import { useAuth } from "@/context/AuthContext";
@@ -14,6 +14,7 @@ import { Modal } from "@/components/ui/Modal";
 import { Spinner } from "@/components/ui/Spinner";
 import { TripCard } from "@/components/trips/TripCard";
 import { TripForm } from "@/components/trips/TripForm";
+import { TripSearch } from "@/components/trips/TripSearch";
 import { useToast } from "@/components/ui/Toast";
 import type { TripFormData, Trip } from "@/types/trip";
 import { Money } from "@/lib/money";
@@ -50,7 +51,8 @@ function EmptyState({ onNew }: { onNew: () => void }) {
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function TripsPage() {
-  const { trips, addTrip, deleteTrip, isLoading, isOffline } = useTrip();
+  const [searchQuery, setSearchQuery] = useState("");
+  const { trips, totalTrips, addTrip, deleteTrip, isLoading, isOffline } = useTripSearch(searchQuery);
   const { expenses } = useExpense();
   const { publicKey } = useWallet();
   const { user } = useAuth();
@@ -136,13 +138,13 @@ export default function TripsPage() {
                 <h1 className="text-xl font-black text-[#0F0F14]">Trips</h1>
               </div>
               <p className="text-sm text-[#888]">
-                {trips.length === 0
+                {totalTrips === 0
                   ? "Group your expenses by trip"
-                  : `${trips.length} trip${trips.length !== 1 ? "s" : ""}`}
+                  : `${totalTrips} trip${totalTrips !== 1 ? "s" : ""}`}
               </p>
             </div>
 
-            {trips.length > 0 && (
+            {totalTrips > 0 && (
               <button
                 onClick={() => setShowForm(true)}
                 className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[#0F0F14] text-[#2DD4BF] text-sm font-bold hover:bg-[#1A1A22] transition-all shrink-0"
@@ -160,12 +162,20 @@ export default function TripsPage() {
             </div>
           )}
 
+          {totalTrips > 0 && (
+            <TripSearch value={searchQuery} onSearchChange={setSearchQuery} />
+          )}
+
           {isLoading ? (
             <div className="flex justify-center py-12">
               <Spinner size={32} className="text-[#2DD4BF]" />
             </div>
-          ) : trips.length === 0 ? (
+          ) : totalTrips === 0 ? (
             <EmptyState onNew={() => setShowForm(true)} />
+          ) : trips.length === 0 ? (
+            <p className="rounded-xl border border-[#E5E5E5] bg-white px-4 py-8 text-center text-sm text-[#888]">
+              No trips match your search.
+            </p>
           ) : (
             <div className="space-y-3">
               <AnimatePresence mode="popLayout">

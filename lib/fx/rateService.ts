@@ -24,6 +24,13 @@
  * 5. Every quote carries provenance.
  *    `source` and `fetchedAt` are mandatory on every non-null result.
  *
+ * 6. Only whitelisted currency pairs reach a provider.
+ *    `getRate` normalises both codes against `SUPPORTED_CURRENCIES` and returns
+ *    `unavailable` for anything else, before touching the cache. The cache and
+ *    breakers are process-wide singletons, so an unbounded key space would let
+ *    one caller cycling junk codes miss the cache on every request, drain the
+ *    shared provider quota, and trip the breakers for everyone.
+ *
  * ## Freshness policy
  *
  * Crypto rates (XLM/USD) move by the second; fiat rates (INR/USD) are
@@ -45,6 +52,8 @@ import { RateCache } from "./rateCache";
 import { CircuitBreaker } from "./circuitBreaker";
 import { CoinGeckoProvider } from "./providers/coingecko";
 import { ExchangeRateProvider } from "./providers/exchangerate";
+import { normalizeCurrency } from "./currencies";
+import { normalizeDecimalRate } from "@/lib/money/assetPrecision";
 
 // ── Freshness policies ────────────────────────────────────────────────────────
 
@@ -67,6 +76,21 @@ function policyFor(from: string, to: string): FreshnessPolicy {
   const fromUp = from.toUpperCase();
   const toUp = to.toUpperCase();
   return fromUp === "XLM" || toUp === "XLM" ? CRYPTO_POLICY : FIAT_POLICY;
+}
+
+/**
+ * The degraded result. A getter rather than a shared constant so that a caller
+ * mutating what it receives cannot corrupt later responses.
+ */
+function unavailableResult(): RateResult {
+  return {
+    rate: null,
+    source: null,
+    fetchedAt: null,
+    stale: false,
+    rateAgeMs: null,
+    unavailable: true,
+  };
 }
 
 // ── Service ───────────────────────────────────────────────────────────────────
@@ -110,15 +134,38 @@ export class FxRateService {
    * concurrent requests for the same pair share one fetch.
    */
   async getRate(from: string, to: string): Promise<RateResult> {
+    // Unsupported codes never reach a provider. The API route already rejects
+    // them with a 400, but the service is importable by any server-side caller
+    // and the provider quota it guards is process-wide, so it does not rely on
+    // its callers to have validated. Unsupported pairs also must not occupy
+    // cache entries, so this precedes the cache lookup.
+    const fromCode = normalizeCurrency(from);
+    const toCode = normalizeCurrency(to);
+    if (fromCode === null || toCode === null) return unavailableResult();
+
+    // Identical codes are an identity conversion, not an upstream question.
+    if (fromCode === toCode) {
+      const fetchedAt = this.now();
+      return {
+        rate: 1,
+        rateDecimal: "1",
+        source: "identity",
+        fetchedAt,
+        stale: false,
+        rateAgeMs: 0,
+        unavailable: false,
+      };
+    }
+
     const now = this.now();
 
     // 1. Fresh cache hit.
-    const cached = this.cache.get(from, to, now);
+    const cached = this.cache.get(fromCode, toCode, now);
     if (cached && !cached.stale) return cached;
 
     // 2–4: coalesce concurrent upstream attempts.
-    const result = await this.cache.coalesce(from, to, () =>
-      this.fetchFromProviders(from, to),
+    const result = await this.cache.coalesce(fromCode, toCode, () =>
+      this.fetchFromProviders(fromCode, toCode),
     );
 
     if (result && !result.unavailable) return result;
@@ -127,7 +174,7 @@ export class FxRateService {
     if (cached && cached.stale) return cached;
 
     // 4. Total failure.
-    return { rate: null, source: null, fetchedAt: null, stale: false, rateAgeMs: null, unavailable: true };
+    return unavailableResult();
   }
 
   /**
@@ -144,10 +191,13 @@ export class FxRateService {
       const rate = await breaker.call(() => provider.fetch(from, to));
 
       if (rate !== null) {
+        const rateDecimal = normalizeDecimalRate(rate);
+        if (rateDecimal === null) continue;
         const fetchedAt = this.now();
-        this.cache.set(from, to, rate, provider.name, policy, fetchedAt);
+        this.cache.set(from, to, rate, provider.name, policy, fetchedAt, rateDecimal);
         return {
           rate,
+          rateDecimal,
           source: provider.name,
           fetchedAt,
           stale: false,

@@ -3,9 +3,16 @@
 import crypto from "crypto";
 import { Keypair, TransactionBuilder, Account, Memo, Operation } from "@stellar/stellar-sdk";
 import { NETWORK_PASSPHRASE, TX_BASE_FEE } from "@/lib/utils/constants";
-import { generateChallengeSignature, signSupabaseJwt } from "@/lib/supabase/serverAuth";
+import {
+  generateChallengeSignature,
+  signSupabaseJwt,
+  signWalletSession,
+  refreshWalletSession,
+  SESSION_REFRESH_WINDOW_SECONDS,
+} from "@/lib/supabase/serverAuth";
 import { GET as challengeGET } from "@/app/api/auth/challenge/route";
 import { POST as verifyPOST } from "@/app/api/auth/verify/route";
+import { POST as refreshPOST } from "@/app/api/auth/refresh/route";
 
 // The verify route provisions the user profile through the server-side client.
 // Stub it so these tests exercise the signature-verification path without a
@@ -287,5 +294,93 @@ describe("serverAuth secret handling", () => {
 
     // Same signature, attacker-modified payload: must no longer verify.
     expect(verify(encodedHeader, tamperedPayload, encodedSignature)).toBe(false);
+  });
+});
+
+describe("silent session renewal & refresh endpoint (Issue #230)", () => {
+  const TEST_WALLET = "GBTESTWALLETADDRESS000000000000000000000000000000000000";
+
+  it("rejects renewal when token has more than the expiry skew window remaining", () => {
+    // 2 hours remaining (> 1 hour window)
+    const token = signWalletSession(TEST_WALLET, "test-user-id", 7200);
+    const result = refreshWalletSession(token);
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.status).toBe(400);
+      expect(result.code).toBe("NOT_IN_REFRESH_WINDOW");
+      expect(result.remainingSeconds).toBeGreaterThan(SESSION_REFRESH_WINDOW_SECONDS);
+    }
+  });
+
+  it("renews token when within the expiry skew window (e.g. 30 minutes left)", () => {
+    // 30 minutes remaining (< 1 hour window)
+    const token = signWalletSession(TEST_WALLET, "test-user-id", 1800);
+    const result = refreshWalletSession(token);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(typeof result.token).toBe("string");
+      expect(result.claims.wallet_address).toBe(TEST_WALLET);
+      expect(result.claims.sub).toBe("test-user-id");
+      expect(result.expiresIn).toBe(24 * 60 * 60);
+
+      // Verify the new token is valid
+      const { payload } = decodeJwt(result.token);
+      expect(payload.wallet_address).toBe(TEST_WALLET);
+      expect(payload.sub).toBe("test-user-id");
+      expect(payload.exp - payload.iat).toBe(24 * 60 * 60);
+    }
+  });
+
+  it("rejects expired tokens from being renewed", () => {
+    const expiredToken = signWalletSession(TEST_WALLET, "test-user-id", -60);
+    const result = refreshWalletSession(expiredToken);
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.status).toBe(401);
+      expect(result.code).toBe("SESSION_EXPIRED");
+    }
+  });
+
+  it("POST /api/auth/refresh returns 401 when token is missing", async () => {
+    const req = {
+      headers: { get: () => null },
+      json: async () => ({}),
+    } as any;
+
+    const res = await refreshPOST(req);
+    expect(res.status).toBe(401);
+    const body = await res.json();
+    expect(body.code).toBe("UNAUTHORIZED");
+  });
+
+  it("POST /api/auth/refresh returns 400 when session is not in refresh window", async () => {
+    const token = signWalletSession(TEST_WALLET, "test-user-id", 7200);
+    const req = {
+      headers: { get: (name: string) => (name.toLowerCase() === "authorization" ? `Bearer ${token}` : null) },
+      json: async () => ({}),
+    } as any;
+
+    const res = await refreshPOST(req);
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe("NOT_IN_REFRESH_WINDOW");
+  });
+
+  it("POST /api/auth/refresh succeeds and returns extended session when inside skew window", async () => {
+    const token = signWalletSession(TEST_WALLET, "test-user-id", 1800);
+    const req = {
+      headers: { get: (name: string) => (name.toLowerCase() === "authorization" ? `Bearer ${token}` : null) },
+      json: async () => ({}),
+    } as any;
+
+    const res = await refreshPOST(req);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(typeof body.token).toBe("string");
+    expect(body.expiresIn).toBe(24 * 60 * 60);
+    expect(body.claims.walletAddress).toBe(TEST_WALLET);
   });
 });

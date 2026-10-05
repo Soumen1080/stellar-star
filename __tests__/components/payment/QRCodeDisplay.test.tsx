@@ -255,6 +255,22 @@ describe("QRCodeDisplay — data edge cases", () => {
     const uri = qrSvg.getAttribute("data-value") ?? "";
     expect(uri).not.toContain("memo_type");
   });
+
+  it("renders non-native asset code and passes asset parameters to QR URI", () => {
+    const dataWithAsset: QRPaymentData = {
+      destination: "GDQAXCC66ZI3RLPA72TTWGI2MN6K4LH3JEM6NKXKR7LPJ3R7OYIJF5LV",
+      amount: "50",
+      assetCode: "USDC",
+      assetIssuer: "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+    };
+    const { container } = renderQR(<QRCodeDisplay data={dataWithAsset} />);
+    const cleanText = container.textContent?.replace(/\u00a0/g, " ");
+    expect(cleanText).toContain("USDC 50.00");
+    const qrSvg = screen.getByTestId("qr-svg");
+    const uri = qrSvg.getAttribute("data-value") ?? "";
+    expect(uri).toContain("asset_code=USDC");
+    expect(uri).toContain("asset_issuer=GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5");
+  });
 });
 
 // ─── QRToggle ─────────────────────────────────────────────────────────────────

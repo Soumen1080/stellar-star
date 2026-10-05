@@ -233,7 +233,8 @@ export function isValidXLMAmount(value: string): boolean {
 }
 
 export function isValidStellarAddress(address: string): boolean {
-  return StrKey.isValidEd25519PublicKey(address);
+  if (!address || typeof address !== "string") return false;
+  return StrKey.isValidEd25519PublicKey(address.trim().toUpperCase());
 }
 
 export function findDuplicateWalletErrors(

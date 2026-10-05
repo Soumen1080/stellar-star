@@ -15,6 +15,7 @@
 import { Keypair } from "@stellar/stellar-sdk";
 import { buildClaimMessage, type SettlementClaim } from "@/lib/settlement/attestationMessage";
 import { CONTRACT_ID, ORACLE_PUBLIC_KEY, SETTLEMENT_ASSET_ID } from "@/lib/utils/constants";
+import { REQUEST_ID_HEADER } from "@/lib/observability/requestId";
 
 export type { SettlementClaim };
 
@@ -38,6 +39,7 @@ export interface Attestation {
  * attested with different values.
  */
 export interface AttestationRequest {
+  requestId: string;
   tripId: string;
   expenseId: string;
   payer: string;
@@ -84,7 +86,7 @@ interface AttestationResponseBody {
  * because the claim is simply not true and retrying will not make it true.
  */
 export async function requestAttestation(claim: AttestationRequest): Promise<Attestation> {
-  const { accessToken, ...body } = claim;
+  const { accessToken, requestId, ...body } = claim;
 
   let response: Response;
   try {
@@ -92,6 +94,7 @@ export async function requestAttestation(claim: AttestationRequest): Promise<Att
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        [REQUEST_ID_HEADER]: requestId,
         ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
       },
       body: JSON.stringify(body),
@@ -148,7 +151,7 @@ export async function requestAttestation(claim: AttestationRequest): Promise<Att
  */
 export function verifyAttestation(attestation: Attestation): boolean {
   try {
-    const expectedOracle = ORACLE_PUBLIC_KEY;
+    const expectedOracle = process.env.NEXT_PUBLIC_SETTLEMENT_ORACLE_PUBLIC_KEY || ORACLE_PUBLIC_KEY;
     if (!expectedOracle) return false;
     if (attestation.oraclePublicKey !== expectedOracle) return false;
 

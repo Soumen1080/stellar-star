@@ -106,6 +106,23 @@ describe("a usable quote carries its provenance", () => {
     expect(quote!.fetchedAtIso).toBe(new Date(fetchedAt).toISOString());
   });
 
+  it("prefers the service's exact decimal rate over its numeric compatibility field", async () => {
+    const quote = await fetchExchangeRate(
+      "USD",
+      fetchReturning({
+        rate: 0.123456789,
+        rateDecimal: "0.1234567890001",
+        source: "test",
+        fetchedAt: 1,
+        stale: false,
+        rateAgeMs: 0,
+        unavailable: false,
+      }),
+    );
+
+    expect(quote?.rate).toBe("0.1234567890001");
+  });
+
   it("marks a stale quote as stale and keeps its age", async () => {
     const quote = await fetchExchangeRate(
       "INR",

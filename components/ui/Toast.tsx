@@ -10,7 +10,7 @@ import React, {
 } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { CheckCircle2, XCircle, Info, X } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { cn, sanitizeText } from "@/lib/utils";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -96,9 +96,13 @@ function ToastCard({
     >
       <div className="shrink-0 mt-0.5">{icons[t.variant]}</div>
       <div className="flex-1 min-w-0">
-        <p className="text-sm font-semibold text-[#0F0F14] leading-snug">{t.title}</p>
+        <p className="text-sm font-semibold text-[#0F0F14] leading-snug">
+          {sanitizeText(t.title)}
+        </p>
         {t.description && (
-          <p className="text-xs text-[#666] mt-0.5 leading-snug">{t.description}</p>
+          <p className="text-xs text-[#666] mt-0.5 leading-snug">
+            {sanitizeText(t.description)}
+          </p>
         )}
       </div>
       <button
@@ -123,7 +127,12 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
 
   const addToast = useCallback((opts: Omit<Toast, "id">) => {
     const id = Math.random().toString(36).slice(2);
-    setToasts((prev) => [...prev.slice(-4), { ...opts, id }]); // max 5 at once
+    const safeTitle = sanitizeText(opts.title);
+    const safeDescription = opts.description ? sanitizeText(opts.description) : undefined;
+    setToasts((prev) => [
+      ...prev.slice(-4),
+      { ...opts, id, title: safeTitle, description: safeDescription },
+    ]); // max 5 at once
   }, []);
 
   const ctx: ToastContextType = {

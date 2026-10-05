@@ -21,6 +21,7 @@ import {
   type HorizonOperationRecord,
   type SettlementMatch,
 } from "@/lib/stellar/verifyPaymentOperation";
+import { REQUEST_ID_HEADER } from "@/lib/observability/requestId";
 
 /** Classic Stellar assets are int64 stroops with exactly 7 decimals, protocol-wide. */
 const STROOPS_PER_UNIT = 10_000_000n;
@@ -73,10 +74,13 @@ export function amountToStroops(amount: string): bigint {
 // drop the evidence this function now depends on.
 type HorizonOperation = HorizonOperationRecord;
 
-async function fetchJson(url: string): Promise<unknown> {
+async function fetchJson(url: string, requestId?: string): Promise<unknown> {
   let response: Response;
   try {
-    response = await fetch(url, { cache: "no-store" });
+    response = await fetch(url, {
+      cache: "no-store",
+      ...(requestId ? { headers: { [REQUEST_ID_HEADER]: requestId } } : {}),
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : "network error";
     throw new HorizonVerificationError(`Could not reach Horizon: ${message}`, true);
@@ -101,13 +105,19 @@ async function fetchJson(url: string): Promise<unknown> {
  * Only `txHash` is taken from the caller. Everything in the result is derived
  * from Horizon's response.
  */
-export async function verifyPaymentByHash(txHash: string): Promise<VerifiedPayment> {
+export async function verifyPaymentByHash(
+  txHash: string,
+  requestId?: string,
+): Promise<VerifiedPayment> {
   if (!/^[0-9a-f]{64}$/i.test(txHash)) {
     throw new HorizonVerificationError("Transaction hash must be 64 hex characters.");
   }
 
   const normalisedHash = txHash.toLowerCase();
-  const tx = (await fetchJson(`${HORIZON_URL}/transactions/${normalisedHash}`)) as {
+  const tx = (await fetchJson(
+    `${HORIZON_URL}/transactions/${normalisedHash}`,
+    requestId,
+  )) as {
     successful?: boolean;
     ledger?: number;
     created_at?: string;
@@ -138,6 +148,7 @@ export async function verifyPaymentByHash(txHash: string): Promise<VerifiedPayme
 
   const opsBody = (await fetchJson(
     `${HORIZON_URL}/transactions/${normalisedHash}/operations?limit=200`,
+    requestId,
   )) as { _embedded?: { records?: HorizonOperation[] } };
 
   const operations = opsBody._embedded?.records ?? [];

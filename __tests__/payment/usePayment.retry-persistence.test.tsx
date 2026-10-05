@@ -24,6 +24,17 @@ jest.mock("@/lib/stellar/buildTransaction");
 jest.mock("@/lib/stellar/submitTransaction");
 jest.mock("@/lib/stellar/contract");
 jest.mock("@/lib/settlement/settleOnChain");
+jest.mock("@/lib/settlement/intent", () => ({
+  acquireSettlementIntent: jest.fn().mockResolvedValue({ ok: true, intent: { id: "mock-intent" } }),
+  upsertSettlementIntent: jest.fn().mockResolvedValue({ id: "mock-intent" }),
+  markIntentSubmitted: jest.fn().mockResolvedValue({}),
+  markIntentRecorded: jest.fn().mockResolvedValue({}),
+  markIntentFailed: jest.fn().mockResolvedValue({}),
+}));
+jest.mock("@/lib/settlement/reconcile", () => ({
+  reconcilePendingIntentsForWallet: jest.fn().mockResolvedValue([]),
+  reconcileSettlementIntent: jest.fn().mockResolvedValue({ reconciled: true, onChain: false }),
+}));
 jest.mock("@/lib/freighter");
 jest.mock("@/hooks/useWallet", () => ({ useWallet: jest.fn() }));
 jest.mock("@/hooks/useExpense", () => ({ useExpense: jest.fn() }));

@@ -110,7 +110,6 @@ CREATE INDEX IF NOT EXISTS auth_challenges_address_idx ON public.auth_challenges
 -- These exist in migrations/0001_baseline.sql and are mirrored here so both
 -- provisioning paths converge on the same indexes.
 CREATE INDEX IF NOT EXISTS auth_challenges_expiration_idx ON public.auth_challenges (expiration);
-CREATE INDEX IF NOT EXISTS auth_rate_limits_window_idx ON public.auth_rate_limits (window_start);
 
 CREATE TABLE IF NOT EXISTS public.auth_rate_limits (
   key            TEXT PRIMARY KEY,
@@ -118,6 +117,8 @@ CREATE TABLE IF NOT EXISTS public.auth_rate_limits (
   window_start   BIGINT NOT NULL,
   updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE INDEX IF NOT EXISTS auth_rate_limits_window_idx ON public.auth_rate_limits (window_start);
 
 ALTER TABLE public.auth_challenges ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.auth_rate_limits ENABLE ROW LEVEL SECURITY;
@@ -377,12 +378,23 @@ CREATE INDEX IF NOT EXISTS idx_expenses_member_wallets ON public.expenses USING 
 CREATE INDEX IF NOT EXISTS idx_expenses_creator        ON public.expenses (created_by_wallet);
 CREATE INDEX IF NOT EXISTS idx_expenses_created_at     ON public.expenses (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_expenses_settled        ON public.expenses (settled);
+CREATE INDEX IF NOT EXISTS idx_expenses_creator_created_at
+  ON public.expenses (created_by_wallet, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_expenses_settled_created_at
+  ON public.expenses (settled, created_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_trips_member_wallets    ON public.trips USING GIN (member_wallets);
 CREATE INDEX IF NOT EXISTS idx_trips_creator           ON public.trips (created_by_wallet);
 CREATE INDEX IF NOT EXISTS idx_trips_created_at        ON public.trips (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_trips_settled           ON public.trips (settled);
 CREATE INDEX IF NOT EXISTS idx_trips_expense_ids       ON public.trips USING GIN (expense_ids);
+CREATE INDEX IF NOT EXISTS idx_trips_creator_created_at
+  ON public.trips (created_by_wallet, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_trips_settled_created_at
+  ON public.trips (settled, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS auth_challenges_address_created_at_idx
+  ON public.auth_challenges (address, created_at ASC);
 
 
 -- ============================================================================
@@ -608,6 +620,63 @@ create table if not exists public.sponsored_accounts (
   created_at       timestamptz not null default now()
 );
 
+-- Reconcile the legacy sponsored_accounts shape used by early installs before
+-- creating indexes on the current ledger columns.
+DO $sponsored_accounts_shape$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+     WHERE table_schema = 'public' AND table_name = 'sponsored_accounts'
+       AND column_name = 'account_id'
+  ) AND NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+     WHERE table_schema = 'public' AND table_name = 'sponsored_accounts'
+       AND column_name = 'account'
+  ) THEN
+    ALTER TABLE public.sponsored_accounts RENAME COLUMN account_id TO account;
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+     WHERE table_schema = 'public' AND table_name = 'sponsored_accounts'
+       AND column_name = 'sponsor'
+  ) AND NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+     WHERE table_schema = 'public' AND table_name = 'sponsored_accounts'
+       AND column_name = 'sponsored_by'
+  ) THEN
+    ALTER TABLE public.sponsored_accounts RENAME COLUMN sponsor TO sponsored_by;
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+     WHERE table_schema = 'public' AND table_name = 'sponsored_accounts'
+       AND column_name = 'operation_id'
+  ) THEN
+    ALTER TABLE public.sponsored_accounts ALTER COLUMN operation_id DROP NOT NULL;
+  END IF;
+END
+$sponsored_accounts_shape$;
+
+ALTER TABLE public.sponsored_accounts
+  ADD COLUMN IF NOT EXISTS locked_stroops NUMERIC(30) NOT NULL DEFAULT 1
+    CHECK (locked_stroops > 0),
+  ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active'
+    CHECK (status IN ('active', 'revoked', 'reclaimed')),
+  ADD COLUMN IF NOT EXISTS created_at_ms BIGINT,
+  ADD COLUMN IF NOT EXISTS last_active_at_ms BIGINT,
+  ADD COLUMN IF NOT EXISTS sponsored_by TEXT NOT NULL DEFAULT '',
+  ADD COLUMN IF NOT EXISTS revoked_at_ms BIGINT;
+
+UPDATE public.sponsored_accounts
+   SET created_at_ms = COALESCE(created_at_ms, (extract(epoch FROM created_at) * 1000)::BIGINT),
+       last_active_at_ms = COALESCE(last_active_at_ms, (extract(epoch FROM created_at) * 1000)::BIGINT)
+ WHERE created_at_ms IS NULL OR last_active_at_ms IS NULL;
+
+ALTER TABLE public.sponsored_accounts
+  ALTER COLUMN created_at_ms SET NOT NULL,
+  ALTER COLUMN last_active_at_ms SET NOT NULL;
+
 -- The cap is computed by summing active rows, so this index is what keeps that
 -- read cheap enough to run on every sponsorship request.
 create index if not exists sponsored_accounts_status_idx
@@ -674,6 +743,8 @@ CREATE TABLE IF NOT EXISTS public.trip_invites (
 CREATE INDEX IF NOT EXISTS idx_trip_invites_token_hash ON public.trip_invites (token_hash);
 CREATE INDEX IF NOT EXISTS idx_trip_invites_trip_id    ON public.trip_invites (trip_id);
 CREATE INDEX IF NOT EXISTS idx_trip_invites_creator    ON public.trip_invites (created_by_wallet);
+CREATE INDEX IF NOT EXISTS idx_trip_invites_trip_created_at
+  ON public.trip_invites (trip_id, created_at DESC);
 
 ALTER TABLE public.trip_invites ENABLE ROW LEVEL SECURITY;
 
@@ -731,7 +802,8 @@ CREATE TRIGGER trg_01_trip_invites_set_updated_at
 CREATE OR REPLACE FUNCTION public.claim_trip_invite(
   p_token_hash TEXT,
   p_claiming_wallet TEXT,
-  p_selected_member_id TEXT DEFAULT NULL
+  p_selected_member_id TEXT DEFAULT NULL,
+  p_expected_trip_id TEXT DEFAULT NULL
 )
 RETURNS JSONB
 LANGUAGE plpgsql
@@ -747,6 +819,8 @@ DECLARE
   v_member JSONB;
   v_found BOOLEAN := FALSE;
   v_already_claimed BOOLEAN := FALSE;
+  v_normalized_wallet TEXT;
+  v_existing_wallet TEXT;
   v_idx INT;
   v_len INT;
 BEGIN
@@ -754,6 +828,7 @@ BEGIN
   IF p_claiming_wallet IS NULL OR btrim(p_claiming_wallet) = '' THEN
     RAISE EXCEPTION 'Claiming wallet address is required';
   END IF;
+  v_normalized_wallet := upper(btrim(p_claiming_wallet));
 
   -- 2. Lock and validate the invite row
   SELECT *
@@ -778,6 +853,13 @@ BEGIN
     RAISE EXCEPTION 'INVITE_EXHAUSTED: This invitation has already reached its maximum uses';
   END IF;
 
+  -- Validate expected trip id if provided
+  IF p_expected_trip_id IS NOT NULL AND btrim(p_expected_trip_id) <> '' THEN
+    IF v_invite.trip_id <> btrim(p_expected_trip_id) THEN
+      RAISE EXCEPTION 'TRIP_MISMATCH: Invitation token does not belong to the specified trip';
+    END IF;
+  END IF;
+
   -- 3. Lock and retrieve the trip row
   SELECT *
     INTO v_trip
@@ -794,6 +876,27 @@ BEGIN
   v_members := COALESCE(v_trip.members, '[]'::jsonb);
   v_len := jsonb_array_length(v_members);
 
+  -- 5. Single-membership check: ensure claiming wallet does not already hold another member slot in this trip
+  FOR v_idx IN 0..(v_len - 1) LOOP
+    v_member := v_members -> v_idx;
+    v_existing_wallet := upper(btrim(COALESCE(v_member ->> 'walletAddress', '')));
+    IF v_existing_wallet <> '' AND v_existing_wallet = v_normalized_wallet THEN
+      -- If the wallet already belongs to the target member slot, it's an idempotent retry
+      IF v_target_member_id IS NOT NULL AND (v_member ->> 'id') = v_target_member_id THEN
+        RETURN jsonb_build_object(
+          'success', true,
+          'trip_id', v_trip.id,
+          'trip_name', v_trip.name,
+          'member_id', v_target_member_id,
+          'member_name', v_member ->> 'name',
+          'message', 'Already claimed by this wallet'
+        );
+      ELSE
+        RAISE EXCEPTION 'WALLET_ALREADY_MEMBER: This wallet is already a member of this trip';
+      END IF;
+    END IF;
+  END LOOP;
+
   IF v_target_member_id IS NOT NULL THEN
     -- Look for specified member slot
     FOR v_idx IN 0..(v_len - 1) LOOP
@@ -804,7 +907,7 @@ BEGIN
         
         -- Check if already claimed
         IF (v_member ->> 'walletAddress') IS NOT NULL AND btrim(v_member ->> 'walletAddress') <> '' THEN
-          IF (v_member ->> 'walletAddress') = p_claiming_wallet THEN
+          IF upper(btrim(v_member ->> 'walletAddress')) = v_normalized_wallet THEN
             -- Idempotent retry by the same wallet
             RETURN jsonb_build_object(
               'success', true,
@@ -853,12 +956,12 @@ BEGIN
     END IF;
   END IF;
 
-  -- 5. Update trip members JSONB (triggers sync_member_wallets)
+  -- 6. Update trip members JSONB (triggers sync_member_wallets)
   UPDATE public.trips
      SET members = v_updated_members
    WHERE id = v_trip.id;
 
-  -- 6. Update expenses linked to this trip
+  -- 7. Update expenses linked to this trip
   -- Update members and shares for this member_id to attach walletAddress
   UPDATE public.expenses
      SET members = (
@@ -881,7 +984,7 @@ BEGIN
          )
    WHERE (id::text = ANY(v_trip.expense_ids) OR v_trip.id::text = ANY(member_wallets) OR members @> jsonb_build_array(jsonb_build_object('id', v_target_member_id)));
 
-  -- 7. Increment invite uses
+  -- 8. Increment invite uses
   UPDATE public.trip_invites
      SET uses = uses + 1
    WHERE id = v_invite.id;
@@ -896,7 +999,123 @@ BEGIN
 END;
 $fn$;
 
-GRANT EXECUTE ON FUNCTION public.claim_trip_invite(TEXT, TEXT, TEXT) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.claim_trip_invite(TEXT, TEXT, TEXT, TEXT) TO anon, authenticated;
+
+-- ── Public Invite Verification (ISSUE #221) ─────────────────────────────────
+-- Receiving an invite link happens before you are a member of the trip, and
+-- usually before you have a session at all. Both trip_invites_select_members
+-- and trips_select_members gate SELECT on member_wallets containing
+-- current_wallet(), so the prospective member fails both: unauthenticated,
+-- current_wallet() is NULL; signed in, they are not yet in member_wallets.
+-- Reading the invite directly therefore always returned zero rows, which the
+-- app surfaced as "Invalid or unrecognized invitation link."
+--
+-- Relaxing those policies is not an option — a policy loose enough for a
+-- stranger to read one invite row is loose enough to enumerate them all. This
+-- function answers exactly one question ("is this token hash valid, and what may
+-- its bearer see?") and returns only the fields /join renders. Possession of the
+-- token is the capability; nothing else is reachable through it.
+CREATE OR REPLACE FUNCTION public.verify_trip_invite(p_token_hash TEXT)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+-- Pinned so a SECURITY DEFINER body can never resolve a name through a
+-- caller-controlled schema.
+SET search_path = public, pg_temp
+STABLE
+AS $fn$
+DECLARE
+  v_invite RECORD;
+  v_trip RECORD;
+  v_member_name TEXT;
+  v_unclaimed JSONB;
+BEGIN
+  IF p_token_hash IS NULL OR btrim(p_token_hash) = '' THEN
+    RAISE EXCEPTION 'INVITE_NOT_FOUND: Invitation token is required';
+  END IF;
+
+  -- 1. Resolve the capability. token_hash is UNIQUE and the caller only ever
+  --    holds the pre-image, so this is the one lookup the token authorizes.
+  SELECT id, trip_id, member_id, created_by_wallet, expires_at, max_uses, uses, revoked
+    INTO v_invite
+    FROM public.trip_invites
+   WHERE token_hash = p_token_hash;
+
+  -- Same error for "no such token" as for a malformed one: a caller guessing
+  -- hashes learns nothing from the difference.
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'INVITE_NOT_FOUND: Invalid or unrecognized invitation link';
+  END IF;
+
+  -- 2. Validity, reported distinctly on purpose: someone holding a real-but-
+  --    expired link needs to know to ask for a new one.
+  IF v_invite.revoked THEN
+    RAISE EXCEPTION 'INVITE_REVOKED: This invitation has been revoked';
+  END IF;
+
+  IF v_invite.expires_at <= NOW() THEN
+    RAISE EXCEPTION 'INVITE_EXPIRED: This invitation has expired';
+  END IF;
+
+  IF v_invite.uses >= v_invite.max_uses THEN
+    RAISE EXCEPTION 'INVITE_EXHAUSTED: This invitation has already reached its maximum uses';
+  END IF;
+
+  -- 3. Trip metadata: only the columns /join renders.
+  SELECT id, name, description, members
+    INTO v_trip
+    FROM public.trips
+   WHERE id = v_invite.trip_id;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'TRIP_NOT_FOUND: The trip associated with this invite no longer exists';
+  END IF;
+
+  -- 4. Unclaimed slots reduced to {id, name}. The raw members array carries every
+  --    existing member's wallet address; projecting here means an invite link can
+  --    never harvest the roster of a trip you have not joined.
+  SELECT COALESCE(jsonb_agg(jsonb_build_object('id', m ->> 'id', 'name', m ->> 'name')), '[]'::jsonb)
+    INTO v_unclaimed
+    FROM jsonb_array_elements(COALESCE(v_trip.members, '[]'::jsonb)) AS m
+   WHERE (m ->> 'walletAddress') IS NULL
+      OR btrim(m ->> 'walletAddress') = '';
+
+  -- 5. When the invite names a specific slot, surface that slot's display name.
+  IF v_invite.member_id IS NOT NULL THEN
+    SELECT m ->> 'name'
+      INTO v_member_name
+      FROM jsonb_array_elements(COALESCE(v_trip.members, '[]'::jsonb)) AS m
+     WHERE (m ->> 'id') = v_invite.member_id
+     LIMIT 1;
+  END IF;
+
+  -- The validity flags are false by construction: every true case raised above.
+  -- Returned anyway because TripInviteSummary declares them.
+  RETURN jsonb_build_object(
+    'invite_id', v_invite.id,
+    'trip_id', v_trip.id,
+    'trip_name', v_trip.name,
+    'trip_description', v_trip.description,
+    'member_id', v_invite.member_id,
+    'member_name', v_member_name,
+    'inviter_wallet', v_invite.created_by_wallet,
+    'expires_at', v_invite.expires_at,
+    'unclaimed_members', v_unclaimed,
+    'is_expired', FALSE,
+    'is_revoked', FALSE,
+    'is_exhausted', FALSE
+  );
+END;
+$fn$;
+
+COMMENT ON FUNCTION public.verify_trip_invite(TEXT) IS
+  'Validates an invite token hash and returns only the public metadata /join renders. '
+  'SECURITY DEFINER because the prospective member is not yet a trip member and so '
+  'cannot pass the RLS policies on trip_invites or trips. Possession of the token is '
+  'the capability; no other row is reachable through this function.';
+
+-- anon is the point: the recipient has no session when they open the link.
+GRANT EXECUTE ON FUNCTION public.verify_trip_invite(TEXT) TO anon, authenticated;
 
 -- ============================================================================
 -- 12. CONCURRENT EXPENSE EDITING (ISSUE #203)
@@ -1443,6 +1662,7 @@ CREATE TABLE IF NOT EXISTS public.settlement_intents (
   -- The UNIQUE constraint is the concurrency guarantee — two simultaneous
   -- attempts to settle one debt collide here and exactly one proceeds.
   idempotency_key   TEXT        NOT NULL,
+  request_id        UUID        NOT NULL DEFAULT gen_random_uuid(),
 
   trip_id           TEXT        NOT NULL,
   expense_id        TEXT        NOT NULL,
@@ -1481,9 +1701,19 @@ CREATE TABLE IF NOT EXISTS public.settlement_intents (
 CREATE INDEX IF NOT EXISTS settlement_intents_member_status_idx
   ON public.settlement_intents (member_wallet, status);
 
+CREATE INDEX IF NOT EXISTS settlement_intents_member_status_created_at_idx
+  ON public.settlement_intents (member_wallet, status, created_at DESC);
+
 -- fetchSettlementIntentByExpenseAndMember orders by created_at within the pair.
 CREATE INDEX IF NOT EXISTS settlement_intents_expense_member_idx
   ON public.settlement_intents (expense_id, member_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS settlement_intents_request_id_idx
+  ON public.settlement_intents (request_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS settlement_intents_tx_expense_member_asset_idx
+  ON public.settlement_intents (tx_hash, expense_id, member_id, currency)
+  WHERE tx_hash IS NOT NULL;
 
 -- ─── UPDATED_AT TRIGGER ──────────────────────────────────────────────────────
 DROP TRIGGER IF EXISTS settlement_intents_set_updated_at ON public.settlement_intents;
@@ -1541,7 +1771,8 @@ VALUES
   ('0001', '0001_baseline', 'baseline_initial_checksum'),
   ('0002', '0002_explicit_trigger_pipeline', 'trigger_pipeline_checksum'),
   ('0003', '0003_trip_invitations_capabilities', 'trip_invites_capability_checksum'),
-  ('0004', '0004_settlement_intents', 'settlement_intents_v1')
+  ('0004', '0004_settlement_intents', 'settlement_intents_v1'),
+  ('0005', '0005_verify_trip_invite_rpc', 'verify_trip_invite_v1'),
+  ('0006', '0006_settlement_request_ids', 'settlement_request_ids_v1'),
+  ('0007', '0007_composite_query_indexes', 'composite_query_indexes_v1')
 ON CONFLICT (version) DO NOTHING;
-
-

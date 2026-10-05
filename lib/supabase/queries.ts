@@ -28,6 +28,7 @@ import {
   mergeExpenseUpdates,
   type ConflictDetails,
 } from "@/lib/expense/conflictResolver";
+import type { QueryCacheDomain } from "./cacheInvalidation";
 
 export { ExpenseConflictError, type ConflictDetails };
 
@@ -40,6 +41,67 @@ export interface UserProfile {
   createdAt: string;
   updatedAt: string;
   lastLoginAt: string;
+}
+
+// ─── Pagination ───────────────────────────────────────────────────────────────
+
+export const DEFAULT_PAGE_SIZE = 20;
+export const MAX_PAGE_SIZE = 100;
+
+export interface PaginationParams {
+  /** Maximum number of records to return (capped by MAX_PAGE_SIZE, default 20). */
+  limit?: number;
+  /** ISO timestamp cursor for cursor-based pagination (fetches items created before cursor). */
+  cursor?: string | null;
+  /** Offset for offset-based pagination. */
+  offset?: number;
+}
+
+export interface PaginatedResponse<T> {
+  data: T[];
+  pagination: {
+    limit: number;
+    nextCursor: string | null;
+    hasMore: boolean;
+  };
+}
+
+export function parsePaginationParams(params: {
+  limit?: string | number | null;
+  cursor?: string | null;
+  offset?: string | number | null;
+}): { limit: number; cursor: string | null; offset?: number } {
+  let limit = DEFAULT_PAGE_SIZE;
+  if (params.limit !== undefined && params.limit !== null && params.limit !== "") {
+    const parsed = typeof params.limit === "number" ? params.limit : Number(params.limit);
+    if (!Number.isInteger(parsed) || parsed < 1) {
+      throw new Error("Invalid limit: must be a positive integer.");
+    }
+    limit = Math.min(parsed, MAX_PAGE_SIZE);
+  }
+
+  let cursor: string | null = null;
+  if (params.cursor) {
+    const trimmed = params.cursor.trim();
+    if (trimmed) {
+      const parsedDate = new Date(trimmed);
+      if (isNaN(parsedDate.getTime())) {
+        throw new Error("Invalid cursor: must be a valid ISO 8601 date string.");
+      }
+      cursor = parsedDate.toISOString();
+    }
+  }
+
+  let offset: number | undefined = undefined;
+  if (params.offset !== undefined && params.offset !== null && params.offset !== "") {
+    const parsedOffset = typeof params.offset === "number" ? params.offset : Number(params.offset);
+    if (!Number.isInteger(parsedOffset) || parsedOffset < 0) {
+      throw new Error("Invalid offset: must be a non-negative integer.");
+    }
+    offset = parsedOffset;
+  }
+
+  return { limit, cursor, offset };
 }
 
 // ─── Error translation ────────────────────────────────────────────────────────
@@ -170,6 +232,7 @@ export function rowToTrip(row: TripRow): Trip {
 export interface SettlementIntent {
   id: string;
   idempotencyKey: string;
+  requestId: string;
   tripId: string;
   expenseId: string;
   memberId: string;
@@ -192,6 +255,7 @@ export function rowToSettlementIntent(row: SettlementIntentRow): SettlementInten
   return {
     id: row.id,
     idempotencyKey: row.idempotency_key,
+    requestId: row.request_id,
     tripId: row.trip_id,
     expenseId: row.expense_id,
     memberId: row.member_id,
@@ -311,10 +375,11 @@ export async function fetchUserByWallet(
   walletAddress: string,
   client: StellarStarClient = requireSupabaseClient()
 ): Promise<UserProfile | null> {
+  const normalized = walletAddress?.trim().toUpperCase();
   const { data, error } = await client
     .from("users")
     .select(USER_COLUMNS)
-    .eq("wallet_address", walletAddress)
+    .eq("wallet_address", normalized)
     .maybeSingle();
 
   // `maybeSingle` returns null rather than erroring when nothing matched, so a
@@ -328,7 +393,7 @@ export async function fetchUsersByWallets(
   walletAddresses: string[],
   client: StellarStarClient = requireSupabaseClient()
 ): Promise<UserProfile[]> {
-  const unique = [...new Set(walletAddresses.filter(Boolean))];
+  const unique = [...new Set(walletAddresses.filter(Boolean).map((a) => a.trim().toUpperCase()))];
   if (unique.length === 0) return [];
 
   const { data, error } = await client
@@ -354,11 +419,12 @@ export async function upsertUserProfile(
   client: StellarStarClient = requireAuthenticatedClient()
 ): Promise<UserProfile> {
   const now = new Date().toISOString();
+  const normalized = walletAddress.trim().toUpperCase();
   const result = await client
     .from("users")
     .upsert(
       {
-        wallet_address: walletAddress,
+        wallet_address: normalized,
         display_name: displayName,
         last_login_at: now,
         updated_at: now,
@@ -412,15 +478,74 @@ export async function updateUserDisplayName(
  * duplicating that filter in the client would be a second place to get wrong.
  */
 export async function fetchExpenses(
-  client: StellarStarClient = requireAuthenticatedClient()
+  client: StellarStarClient = requireAuthenticatedClient(),
+  options?: PaginationParams
 ): Promise<Expense[]> {
-  const { data, error } = await client
+  let query = client
     .from("expenses")
     .select(EXPENSE_COLUMNS)
-    .order("created_at", { ascending: false });
+    .order("created_at", { ascending: false })
+    .order("id", { ascending: false });
 
+  if (options?.cursor) {
+    query = query.lt("created_at", options.cursor);
+  }
+
+  if (options?.offset !== undefined && options.offset > 0) {
+    const limit = options.limit ? Math.min(Math.max(1, options.limit), MAX_PAGE_SIZE) : DEFAULT_PAGE_SIZE;
+    query = query.range(options.offset, options.offset + limit - 1);
+  } else if (options?.limit) {
+    query = query.limit(Math.min(Math.max(1, options.limit), MAX_PAGE_SIZE));
+  }
+
+  const { data, error } = await query;
   if (error) throw toDatabaseError(error, "load expenses");
   return (data ?? []).map((row) => rowToExpense(row as ExpenseRow));
+}
+
+/**
+ * Fetches a paginated page of expenses with stable ordering and cursor tracking.
+ */
+export async function fetchExpensesPaginated(
+  params?: PaginationParams,
+  client: StellarStarClient = requireAuthenticatedClient(),
+  filters?: { tripId?: string }
+): Promise<PaginatedResponse<Expense>> {
+  const { limit, cursor, offset } = parsePaginationParams(params ?? {});
+
+  let query = client
+    .from("expenses")
+    .select(EXPENSE_COLUMNS)
+    .order("created_at", { ascending: false })
+    .order("id", { ascending: false });
+
+  if (cursor) {
+    query = query.lt("created_at", cursor);
+  }
+
+  if (offset !== undefined && offset > 0) {
+    query = query.range(offset, offset + limit);
+  } else {
+    // Read limit + 1 to detect if another page exists without count(*) overhead
+    query = query.limit(limit + 1);
+  }
+
+  const { data, error } = await query;
+  if (error) throw toDatabaseError(error, "load expenses");
+
+  const rows = (data ?? []).map((row) => rowToExpense(row as ExpenseRow));
+  const hasMore = rows.length > limit;
+  const items = hasMore ? rows.slice(0, limit) : rows;
+  const nextCursor = hasMore && items.length > 0 ? items[items.length - 1].createdAt : null;
+
+  return {
+    data: items,
+    pagination: {
+      limit,
+      nextCursor,
+      hasMore,
+    },
+  };
 }
 
 export async function fetchExpenseById(
@@ -676,6 +801,20 @@ export async function createSettlementIntentRow(
   return rowToSettlementIntent(unwrap(result, "record settlement intent") as SettlementIntentRow);
 }
 
+export async function upsertSettlementIntentRow(
+  payload: SettlementIntentInsert,
+  client: StellarStarClient = requireAuthenticatedClient(),
+  onConflict: string = "idempotency_key"
+): Promise<SettlementIntent> {
+  const result = await client
+    .from("settlement_intents")
+    .upsert(payload, { onConflict })
+    .select(SETTLEMENT_INTENT_COLUMNS)
+    .single();
+
+  return rowToSettlementIntent(unwrap(result, "upsert settlement intent") as SettlementIntentRow);
+}
+
 export async function updateSettlementIntentRow(
   id: string,
   updates: Partial<SettlementIntentUpdate>,
@@ -695,6 +834,8 @@ export async function fetchActiveSettlementIntents(
   walletAddress: string,
   client: StellarStarClient = requireAuthenticatedClient()
 ): Promise<SettlementIntent[]> {
+  // Covered in this exact order by
+  // settlement_intents_member_status_created_at_idx.
   const { data, error } = await client
     .from("settlement_intents")
     .select(SETTLEMENT_INTENT_COLUMNS)
@@ -749,6 +890,48 @@ export async function fetchSettlementIntentByExpenseAndMember(
   return data ? rowToSettlementIntent(data as SettlementIntentRow) : null;
 }
 
+export async function fetchSettlementIntentByTxHash(
+  txHash: string,
+  client: StellarStarClient = requireAuthenticatedClient()
+): Promise<SettlementIntent | null> {
+  const { data, error } = await client
+    .from("settlement_intents")
+    .select(SETTLEMENT_INTENT_COLUMNS)
+    .eq("tx_hash", txHash)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    if (isMissingTable(error)) return null;
+    throw toDatabaseError(error, "load settlement intent by txHash");
+  }
+  return data ? rowToSettlementIntent(data as SettlementIntentRow) : null;
+}
+
+export async function fetchSettlementIntentByPayment(
+  txHash: string,
+  expenseId: string,
+  memberId: string,
+  client: StellarStarClient = requireAuthenticatedClient()
+): Promise<SettlementIntent | null> {
+  const { data, error } = await client
+    .from("settlement_intents")
+    .select(SETTLEMENT_INTENT_COLUMNS)
+    .eq("tx_hash", txHash)
+    .eq("expense_id", expenseId)
+    .eq("member_id", memberId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    if (isMissingTable(error)) return null;
+    throw toDatabaseError(error, "load settlement intent by payment");
+  }
+  return data ? rowToSettlementIntent(data as SettlementIntentRow) : null;
+}
+
 export async function deleteSettlementIntentRow(
   id: string,
   client: StellarStarClient = requireAuthenticatedClient()
@@ -760,15 +943,73 @@ export async function deleteSettlementIntentRow(
 // ─── Trips ────────────────────────────────────────────────────────────────────
 
 export async function fetchTrips(
-  client: StellarStarClient = requireAuthenticatedClient()
+  client: StellarStarClient = requireAuthenticatedClient(),
+  options?: PaginationParams
 ): Promise<Trip[]> {
-  const { data, error } = await client
+  let query = client
     .from("trips")
     .select(TRIP_COLUMNS)
-    .order("created_at", { ascending: false });
+    .order("created_at", { ascending: false })
+    .order("id", { ascending: false });
 
+  if (options?.cursor) {
+    query = query.lt("created_at", options.cursor);
+  }
+
+  if (options?.offset !== undefined && options.offset > 0) {
+    const limit = options.limit ? Math.min(Math.max(1, options.limit), MAX_PAGE_SIZE) : DEFAULT_PAGE_SIZE;
+    query = query.range(options.offset, options.offset + limit - 1);
+  } else if (options?.limit) {
+    query = query.limit(Math.min(Math.max(1, options.limit), MAX_PAGE_SIZE));
+  }
+
+  const { data, error } = await query;
   if (error) throw toDatabaseError(error, "load trips");
   return (data ?? []).map((row) => rowToTrip(row as TripRow));
+}
+
+/**
+ * Fetches a paginated page of trips with stable ordering and cursor tracking.
+ */
+export async function fetchTripsPaginated(
+  params?: PaginationParams,
+  client: StellarStarClient = requireAuthenticatedClient()
+): Promise<PaginatedResponse<Trip>> {
+  const { limit, cursor, offset } = parsePaginationParams(params ?? {});
+
+  let query = client
+    .from("trips")
+    .select(TRIP_COLUMNS)
+    .order("created_at", { ascending: false })
+    .order("id", { ascending: false });
+
+  if (cursor) {
+    query = query.lt("created_at", cursor);
+  }
+
+  if (offset !== undefined && offset > 0) {
+    query = query.range(offset, offset + limit);
+  } else {
+    // Read limit + 1 to detect if another page exists without count(*) overhead
+    query = query.limit(limit + 1);
+  }
+
+  const { data, error } = await query;
+  if (error) throw toDatabaseError(error, "load trips");
+
+  const rows = (data ?? []).map((row) => rowToTrip(row as TripRow));
+  const hasMore = rows.length > limit;
+  const items = hasMore ? rows.slice(0, limit) : rows;
+  const nextCursor = hasMore && items.length > 0 ? items[items.length - 1].createdAt : null;
+
+  return {
+    data: items,
+    pagination: {
+      limit,
+      nextCursor,
+      hasMore,
+    },
+  };
 }
 
 export async function insertTrip(

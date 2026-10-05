@@ -90,8 +90,8 @@ describe("TripForm — duplicate wallet validation", () => {
     fireEvent.change(nameInput, { target: { value: "Euro Trip" } });
 
     fillName(container, 1, "Bob");
-    // Same address again — SDK only accepts uppercase, so duplicate detection uses exact match
-    fillWallet(container, 1, ADDR_A);
+    // Canonical Stellar addresses are case-insensitive; duplicate detection flags lowercased input
+    fillWallet(container, 1, ADDR_A.toLowerCase());
 
     submit(container);
 

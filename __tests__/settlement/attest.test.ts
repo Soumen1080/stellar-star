@@ -44,7 +44,7 @@ function baseClaim(): SettlementClaim {
 }
 
 function sign(claim: SettlementClaim, keypair = ORACLE): Buffer {
-  return keypair.sign(buildClaimMessage(claim));
+  return Buffer.from(keypair.sign(buildClaimMessage(claim)));
 }
 
 function verifies(claim: SettlementClaim, signature: Buffer, keypair = ORACLE): boolean {

@@ -58,6 +58,7 @@ export class RateCache {
     const stale = ageMs >= entry.ttlMs;
     return {
       rate: entry.rate,
+      rateDecimal: entry.rateDecimal ?? String(entry.rate),
       source: entry.source,
       fetchedAt: entry.fetchedAt,
       stale,
@@ -74,10 +75,12 @@ export class RateCache {
     source: string,
     policy: FreshnessPolicy,
     fetchedAt: number = Date.now(),
+    rateDecimal: string = String(rate),
   ): void {
     const key = cacheKey(from, to);
     this.entries.set(key, {
       rate,
+      rateDecimal,
       source,
       fetchedAt,
       ttlMs: policy.ttlMs,

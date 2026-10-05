@@ -21,6 +21,7 @@ export async function POST(request: NextRequest) {
   let body: {
     token?: string;
     selectedMemberId?: string;
+    tripId?: string;
   };
 
   try {
@@ -45,7 +46,16 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(result);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to claim invitation.";
-    const status = message.includes("SLOT_ALREADY_CLAIMED") ? 409 : 400;
+    let status = 400;
+    if (message.includes("SLOT_ALREADY_CLAIMED") || message.includes("WALLET_ALREADY_MEMBER")) {
+      status = 409;
+    } else if (message.includes("TRIP_MISMATCH") || message.includes("INVITE_MEMBER_MISMATCH")) {
+      status = 403;
+    } else if (/revoked|expired|maximum uses/i.test(message)) {
+      status = 410;
+    } else if (/not found/i.test(message)) {
+      status = 404;
+    }
     return NextResponse.json({ error: message }, { status });
   }
 }

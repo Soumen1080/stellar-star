@@ -11,7 +11,8 @@
  *    Stellar asset, and no payment is ever denominated in it.
  *  - **`totalAmount` / `share.amount`** are **always already converted to the
  *    settlement asset** at expense-creation time, using `exchangeRate` (see
- *    `hooks/useExpenseForm.ts`: `finalXlmAmount = amount * rate`).
+ *    `hooks/useExpenseForm.ts`, which routes the conversion through the exact
+ *    asset-precision layer rather than multiplying JavaScript floats).
  *
  * Reading `currency` as if it were the settlement asset produces three distinct
  * failures, all of which this module prevents:

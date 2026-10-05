@@ -11,6 +11,9 @@ import {
   setSession,
   clearSession,
   subscribe,
+  isExpiringSoon,
+  refreshSession,
+  SESSION_REFRESH_WINDOW_MS,
   __resetSessionForTests,
 } from "@/lib/supabase/session";
 
@@ -62,6 +65,11 @@ describe("wallet session store", () => {
       expect(claims?.wallet_address).toBe(WALLET);
       expect(claims?.role).toBe("authenticated");
       expect(typeof claims?.exp).toBe("number");
+    });
+
+    it("normalizes a lowercased or untrimmed wallet address in token claims", () => {
+      const claims = decodeClaims(mintToken({ wallet: `  ${WALLET.toLowerCase()}  ` }));
+      expect(claims?.wallet_address).toBe(WALLET);
     });
 
     it("returns null for a token that is not a JWT", () => {
@@ -116,9 +124,39 @@ describe("wallet session store", () => {
     });
 
     it("keeps a token with plenty of life left", () => {
-      localStorage.setItem(LS_AUTH_TOKEN, mintToken({ expiresInSeconds: 3600 }));
+      localStorage.setItem(LS_AUTH_TOKEN, mintToken({ expiresInSeconds: 7200 }));
 
       expect(getAccessToken()).not.toBeNull();
+    });
+
+    it("detects when a session is expiring soon within the refresh window", () => {
+      const claimsSoon = decodeClaims(mintToken({ expiresInSeconds: 1800 }))!;
+      const claimsPlenty = decodeClaims(mintToken({ expiresInSeconds: 7200 }))!;
+      const claimsExpired = decodeClaims(mintToken({ expiresInSeconds: -10 }))!;
+
+      expect(isExpiringSoon(claimsSoon)).toBe(true);
+      expect(isExpiringSoon(claimsPlenty)).toBe(false);
+      expect(isExpiringSoon(claimsExpired)).toBe(false);
+    });
+
+    it("silently refreshes the session when /api/auth/refresh responds with a new token", async () => {
+      const originalToken = mintToken({ expiresInSeconds: 1800 });
+      const renewedToken = mintToken({ expiresInSeconds: 86400 });
+      setSession(originalToken);
+
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({ token: renewedToken, expiresIn: 86400 }),
+      }) as any;
+
+      const result = await refreshSession();
+      expect(result?.token).toBe(renewedToken);
+      expect(getAccessToken()).toBe(renewedToken);
+      expect(localStorage.getItem(LS_AUTH_TOKEN)).toBe(renewedToken);
+      expect(globalThis.fetch).toHaveBeenCalledWith("/api/auth/refresh", expect.objectContaining({
+        method: "POST",
+      }));
     });
   });
 
@@ -127,6 +165,8 @@ describe("wallet session store", () => {
       setSession(mintToken({ wallet: WALLET }));
 
       expect(hasSessionFor(WALLET)).toBe(true);
+      expect(hasSessionFor(WALLET.toLowerCase())).toBe(true);
+      expect(hasSessionFor(`  ${WALLET.toLowerCase()}  `)).toBe(true);
       expect(hasSessionFor("GBSOMEOTHERWALLET")).toBe(false);
       expect(hasSessionFor(null)).toBe(false);
     });

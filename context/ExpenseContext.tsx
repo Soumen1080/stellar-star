@@ -3,6 +3,7 @@
 import React, { createContext, useCallback, useContext, useMemo, useRef } from "react";
 import type { Expense } from "@/types/expense";
 import { LS_EXPENSES } from "@/lib/utils/constants";
+import { useToast } from "@/components/ui/Toast";
 import {
   fetchExpenses,
   insertExpense,
@@ -10,9 +11,11 @@ import {
   deleteExpenseRow,
   detachExpenseFromTrips,
   markSharePaidRow,
+  cacheDomainsForMutation,
   rowToExpense,
 } from "@/lib/supabase/queries";
 import { useRealtimeCollection } from "@/lib/supabase/useRealtimeCollection";
+import { invalidateQueryCaches } from "@/lib/supabase/cacheInvalidation";
 import { useWalletContext } from "./WalletContext";
 
 interface ExpenseContextType {
@@ -36,6 +39,7 @@ const getExpenseId = (expense: Expense) => expense.id;
 
 export function ExpenseProvider({ children }: { children: React.ReactNode }) {
   const { publicKey } = useWalletContext();
+  const { error: toastError } = useToast();
 
   const { items: expenses, isLoading, isOffline, error, needsSetup, refresh, mutate, wallet } =
     useRealtimeCollection<Expense>({
@@ -54,12 +58,27 @@ export function ExpenseProvider({ children }: { children: React.ReactNode }) {
     async (expense: Expense) => {
       if (!wallet) throw new Error("Sign in with your wallet before adding an expense.");
 
-      const saved = await insertExpense(expense, wallet);
       mutate((previous) =>
-        previous.some((e) => e.id === saved.id) ? previous : [saved, ...previous]
+        previous.some((e) => e.id === expense.id) ? previous : [expense, ...previous]
       );
+
+      try {
+        const saved = await insertExpense(expense, wallet);
+        mutate((previous) =>
+          previous.map((e) => (e.id === saved.id ? saved : e))
+        );
+        invalidateQueryCaches({
+          wallet,
+          domains: cacheDomainsForMutation("expense_write"),
+          expenseId: saved.id,
+        });
+      } catch (err: any) {
+        mutate((previous) => previous.filter((e) => e.id !== expense.id));
+        toastError("Failed to add expense", "An error occurred while saving.");
+        throw err;
+      }
     },
-    [wallet, mutate]
+    [wallet, mutate, toastError]
   );
 
   const updateExpense = useCallback(
@@ -73,13 +92,33 @@ export function ExpenseProvider({ children }: { children: React.ReactNode }) {
 
   const deleteExpense = useCallback(
     async (id: string) => {
-      // Unlink first: if the delete succeeds but the unlink does not, trips are
-      // left pointing at an expense that no longer exists.
-      await detachExpenseFromTrips(id);
-      await deleteExpenseRow(id);
+      const snapshot = expenses.find((e) => e.id === id);
+      if (!snapshot) return;
+
       mutate((previous) => previous.filter((e) => e.id !== id));
+
+      try {
+        // Unlink first: if the delete succeeds but the unlink does not, trips are
+        // left pointing at an expense that no longer exists.
+        await detachExpenseFromTrips(id);
+        await deleteExpenseRow(id);
+        if (wallet) {
+          invalidateQueryCaches({
+            wallet,
+            domains: cacheDomainsForMutation("expense_write"),
+            expenseId: id,
+          });
+        }
+      } catch (err: any) {
+        mutate((previous) => {
+          if (previous.some((e) => e.id === id)) return previous;
+          return [...previous, snapshot];
+        });
+        toastError("Failed to delete expense", "Reverting to previous state.");
+        throw err;
+      }
     },
-    [mutate]
+    [expenses, mutate, toastError, wallet]
   );
 
   /**
@@ -95,8 +134,15 @@ export function ExpenseProvider({ children }: { children: React.ReactNode }) {
     async (expenseId: string, memberId: string, txHash: string) => {
       const saved = await markSharePaidRow(expenseId, memberId, txHash);
       mutate((previous) => previous.map((e) => (e.id === expenseId ? saved : e)));
+      if (wallet) {
+        invalidateQueryCaches({
+          wallet,
+          domains: cacheDomainsForMutation("expense_write"),
+          expenseId,
+        });
+      }
     },
-    [mutate]
+    [mutate, wallet]
   );
 
   const getExpense = useCallback((id: string) => expensesRef.current.find((e) => e.id === id), []);

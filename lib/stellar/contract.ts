@@ -7,13 +7,13 @@ import {
   scValToNative,
   Address,
   xdr,
+  NotFoundError,
 } from "@stellar/stellar-sdk";
 import type { Attestation } from "@/lib/settlement/attest";
 import { sorobanServer } from "./soroban";
 import { server } from "./client";
 import { signXDR } from "@/lib/freighter";
 import {
-  HORIZON_URL,
   SOROBAN_RPC_URL,
   CONTRACT_ID,
   SETTLEMENT_ASSET_ID,
@@ -110,6 +110,30 @@ export function decodePoolError(raw: string): string {
   }
 }
 
+/**
+ * Loads an account's current sequence number from Horizon.
+ *
+ * Goes through the SDK's `Horizon.Server` rather than calling `fetch` directly.
+ * Two reasons:
+ *
+ *   1. Environment safety. The SDK transports over axios, which works on any
+ *      supported Node version and under Jest's jsdom/node runners. A bare
+ *      `fetch` call threw `ReferenceError: fetch is not defined` wherever the
+ *      global is absent or unpolyfilled, breaking tests and server contexts.
+ *   2. The shared client carries the configured Horizon URL, `allowHttp`, and
+ *      the SDK's own error handling, so this helper no longer reimplements
+ *      transport concerns or drifts from the rest of the app's Horizon access.
+ *
+ * Freshness: the previous implementation appended a `_ts` cache-buster and
+ * `no-store` headers. Those were compensating for the browser HTTP cache, which
+ * the SDK's axios client is not subject to — it issues a fresh request per call
+ * — so the sequence number is still read live rather than from a cache.
+ *
+ * A missing account (404) is a designed state, not a failure: an unfunded
+ * address is absent from Horizon, and callers that pass `fallbackSequence` want
+ * a synthetic `Account` so read-only simulations still work. Any other transport
+ * or HTTP error propagates as a diagnosable message.
+ */
 async function loadAccount(
   publicKey: string,
   fallbackSequence?: string,
@@ -253,6 +277,7 @@ function attestationToScVal(attestation: Attestation): xdr.ScVal {
 }
 
 export interface RecordPaymentParams {
+  requestId?: string;
   memberPublicKey: string;
   tripId: string;
   expenseId: string;
@@ -477,6 +502,7 @@ export async function recordPaymentOnChain(
     txHash,
     attestation,
     onStatus,
+    requestId,
   } = params;
 
   try {
@@ -529,7 +555,7 @@ export async function recordPaymentOnChain(
     return { success: true, ledger };
   } catch (err) {
     const message = err instanceof Error ? err.message : "Contract call failed.";
-    reportError("contract.recordPaymentOnChain", err, { message });
+    reportError("contract.recordPaymentOnChain", err, { message }, "error", requestId);
     return { success: false, error: message };
   }
 }
@@ -547,6 +573,7 @@ export interface NetSettlementDebt {
 }
 
 export interface RecordNetSettlementParams {
+  requestId?: string;
   memberPublicKey: string;
   tripId: string;
   payerPublicKey: string;
@@ -569,6 +596,7 @@ export async function recordNetSettlementOnChain(
     txHash,
     debts,
     onStatus,
+    requestId,
   } = params;
 
   try {
@@ -621,7 +649,7 @@ export async function recordNetSettlementOnChain(
     return { success: true, ledger };
   } catch (err) {
     const message = err instanceof Error ? err.message : "Contract call failed.";
-    reportError("contract.recordNetSettlementOnChain", err, { message });
+    reportError("contract.recordNetSettlementOnChain", err, { message }, "error", requestId);
     return { success: false, error: message };
   }
 }

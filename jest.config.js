@@ -7,17 +7,21 @@ const config = {
     "^@/(.*)$": "<rootDir>/$1",
   },
   transform: {
-    "^.+\\.tsx?$": [
+    "^.+\\.(t|j)sx?$": [
       "ts-jest",
       {
         tsconfig: {
           module: "commonjs",
           esModuleInterop: true,
           jsx: "react-jsx",
+          allowJs: true,
         },
       },
     ],
   },
+  transformIgnorePatterns: [
+    "/node_modules/(?!(@stellar|@noble|@exodus|uint8array-extras)/)",
+  ],
   testMatch: [
     "**/__tests__/**/*.test.ts",
     "**/__tests__/**/*.test.tsx",

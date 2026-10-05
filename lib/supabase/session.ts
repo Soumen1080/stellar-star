@@ -66,15 +66,32 @@ export function decodeClaims(token: string): SessionClaims | null {
     ) {
       return null;
     }
-    return claims as SessionClaims;
+    return {
+      ...claims,
+      wallet_address: claims.wallet_address.trim().toUpperCase(),
+    } as SessionClaims;
   } catch {
     return null;
   }
 }
 
+export const SESSION_REFRESH_WINDOW_MS = 60 * 60 * 1000;
+
 export function isExpired(claims: SessionClaims, skewMs = EXPIRY_SKEW_MS): boolean {
   return claims.exp * 1000 - skewMs <= Date.now();
 }
+
+/**
+ * Checks whether the session is valid and within its renewal window (default: 1 hour).
+ */
+export function isExpiringSoon(
+  claims: SessionClaims,
+  windowMs = SESSION_REFRESH_WINDOW_MS
+): boolean {
+  if (isExpired(claims)) return false;
+  return claims.exp * 1000 - Date.now() <= windowMs;
+}
+
 
 // ─── Store ────────────────────────────────────────────────────────────────────
 
@@ -119,6 +136,15 @@ export function getSession(): Session | null {
     clearSession();
     return null;
   }
+  if (
+    current &&
+    typeof window !== "undefined" &&
+    typeof fetch === "function" &&
+    !inFlightRefresh &&
+    isExpiringSoon(current.claims)
+  ) {
+    void refreshSession(current.token);
+  }
   return current;
 }
 
@@ -138,7 +164,9 @@ export function getSessionWallet(): string | null {
  */
 export function hasSessionFor(walletAddress: string | null | undefined): boolean {
   if (!walletAddress) return false;
-  return getSessionWallet() === walletAddress;
+  const sessionWallet = getSessionWallet();
+  if (!sessionWallet) return false;
+  return sessionWallet.trim().toUpperCase() === walletAddress.trim().toUpperCase();
 }
 
 export function setSession(token: string): Session {
@@ -205,9 +233,57 @@ export function getServerTokenSnapshot(): string | null {
   return null;
 }
 
+let inFlightRefresh: Promise<Session | null> | null = null;
+
+/**
+ * Silently renews the active session via POST /api/auth/refresh when within
+ * the renewal window. Deduplicates concurrent in-flight refresh requests.
+ */
+export async function refreshSession(currentToken?: string): Promise<Session | null> {
+  if (inFlightRefresh) {
+    return inFlightRefresh;
+  }
+
+  const token = currentToken ?? current?.token;
+  if (!token) return null;
+
+  inFlightRefresh = (async () => {
+    try {
+      const res = await fetch("/api/auth/refresh", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ token }),
+      });
+
+      if (res.ok) {
+        const data = await res.json().catch(() => null);
+        if (data?.token && typeof data.token === "string") {
+          return setSession(data.token);
+        }
+      } else if (res.status === 401) {
+        // Token is expired or invalid on the server
+        clearSession();
+        return null;
+      }
+      return current;
+    } catch (err) {
+      console.warn("[session] Silent session renewal request failed:", err);
+      return current;
+    } finally {
+      inFlightRefresh = null;
+    }
+  })();
+
+  return inFlightRefresh;
+}
+
 /** Test hook: drops in-memory state so a fresh hydrate happens on next read. */
 export function __resetSessionForTests(): void {
   current = null;
   hydrated = false;
+  inFlightRefresh = null;
   listeners.clear();
 }

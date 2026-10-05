@@ -133,6 +133,7 @@ describe("usePayment — concurrency and durable intents", () => {
       intent: {
         id: "intent-1",
         idempotencyKey: "settle:trip-1:exp-1:member-1",
+        requestId: "11111111-1111-4111-8111-111111111111",
         tripId: "trip-1",
         expenseId: "exp-1",
         memberId: "member-1",
@@ -173,6 +174,7 @@ describe("usePayment — concurrency and durable intents", () => {
 
     // Intent was acquired
     expect(acquireSettlementIntent).toHaveBeenCalledWith({
+      requestId: expect.any(String),
       tripId: "trip-1",
       expenseId: "exp-1",
       memberId: "member-1",
@@ -195,6 +197,7 @@ describe("usePayment — concurrency and durable intents", () => {
       intent: {
         id: "intent-locked",
         idempotencyKey: "settle:trip-1:exp-1:member-1",
+        requestId: "22222222-2222-4222-8222-222222222222",
         tripId: "trip-1",
         expenseId: "exp-1",
         memberId: "member-1",

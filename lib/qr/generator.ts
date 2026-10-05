@@ -55,5 +55,6 @@ export function buildQRPaymentURI({
     params.set("memo", finalMemo);
     params.set("memo_type", "MEMO_TEXT");
   }
+
   return `web+stellar:pay?${params.toString()}`;
 }

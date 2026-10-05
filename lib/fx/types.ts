@@ -32,6 +32,9 @@ export interface RateResult {
    */
   rate: number | null;
 
+  /** Exact decimal representation used by settlement conversion code. */
+  rateDecimal?: string | null;
+
   /** Which provider produced this rate. */
   source: string | null;
 
@@ -85,6 +88,7 @@ export interface FxProvider {
 /** An entry stored in the two-level in-process cache. */
 export interface CacheEntry {
   rate: number;
+  rateDecimal?: string;
   source: string;
   fetchedAt: number;
   /** TTL in milliseconds; entries younger than this are "fresh". */

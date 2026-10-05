@@ -10,7 +10,14 @@ import React, {
 } from "react";
 import { isSupabaseConfigured, resetSupabaseClient } from "@/lib/supabase/client";
 import { fetchUserByWallet, updateUserDisplayName, DatabaseError } from "@/lib/supabase/queries";
-import { setSession, clearSession, getSessionWallet } from "@/lib/supabase/session";
+import {
+  setSession,
+  clearSession,
+  getSessionWallet,
+  isExpiringSoon,
+  refreshSession,
+  decodeClaims,
+} from "@/lib/supabase/session";
 import { useAccessToken } from "@/lib/supabase/useSession";
 import { useWalletContext } from "./WalletContext";
 import { LS_USER, LS_PUBLIC_KEY } from "@/lib/utils/constants";
@@ -36,8 +43,10 @@ interface AuthContextType {
   signIn: () => Promise<void>;
   signOut: () => void;
   updateProfile: (updates: Partial<Pick<User, "displayName">>) => Promise<void>;
-  /** Re-reads the profile from the database. */
+  /** Re-reads the profile from the database and checks for session refresh if near expiry. */
   refresh: () => Promise<void>;
+  /** Explicitly triggers a silent session renewal if the session is nearing expiry. */
+  renewSession: () => Promise<boolean>;
 }
 
 const AuthContext = createContext<AuthContextType | null>(null);
@@ -245,6 +254,44 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     void loadProfile(publicKey);
   }, [publicKey, token, isHydrated, loadProfile]);
 
+  // ── Silent session renewal ────────────────────────────────────────────────
+  // Periodically and on tab focus, silently renews unexpired sessions nearing expiry
+  // so users aren't abruptly signed out after 24 hours while using the app.
+  useEffect(() => {
+    if (!token || !publicKey) return;
+
+    const checkAndRenew = async () => {
+      const claims = decodeClaims(token);
+      if (claims && isExpiringSoon(claims)) {
+        await refreshSession();
+      }
+    };
+
+    void checkAndRenew();
+
+    const interval = setInterval(() => {
+      void checkAndRenew();
+    }, 5 * 60 * 1000);
+
+    const onVisibilityChange = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "visible") {
+        void checkAndRenew();
+      }
+    };
+
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", onVisibilityChange);
+    }
+
+    return () => {
+      clearInterval(interval);
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", onVisibilityChange);
+      }
+    };
+  }, [token, publicKey]);
+
+
   // ── Sign up ───────────────────────────────────────────────────────────────
 
   const signUp = useCallback(
@@ -319,8 +366,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     [publicKey, user]
   );
 
+  const renewSession = useCallback(async (): Promise<boolean> => {
+    if (!token) return false;
+    const res = await refreshSession();
+    return Boolean(res);
+  }, [token]);
+
   const refresh = useCallback(async () => {
     if (!publicKey || !token) return;
+    const claims = decodeClaims(token);
+    if (claims && isExpiringSoon(claims)) {
+      await refreshSession();
+    }
     await loadProfile(publicKey);
   }, [publicKey, token, loadProfile]);
 
@@ -334,6 +391,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     signOut,
     updateProfile,
     refresh,
+    renewSession,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
