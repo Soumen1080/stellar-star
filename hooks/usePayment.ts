@@ -45,7 +45,6 @@ import {
   reconcileSettlementIntent,
   reconcilePendingIntentsForWallet,
 } from "@/lib/settlement/reconcile";
-import { isInFlight, runOnce } from "@/lib/settlement/inflight";
 import { validateAmount } from "@/lib/expense/validation";
 import type { SplitShare } from "@/types/expense";
 
@@ -348,7 +347,7 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
   // payShare — persists pending record on partial failure
   // ---------------------------------------------------------------------------
 
-  const performPayShare = useCallback(
+  const payShare = useCallback(
     async ({ share, expenseTitle, payerWalletAddress, tripId }: PayShareParams) => {
       const requestId = createRequestId();
 
@@ -648,33 +647,6 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
       buildAndPersistPending,
       network,
     ],
-  );
-
-  /**
-   * Runs `performPayShare` at most once at a time per (trip, expense, member).
-   *
-   * `acquireSettlementIntent` deliberately lets the same wallet resume an intent
-   * it already owns, so a resumed tab or a retry is not locked out of its own
-   * settlement. That same allowance lets a double-tapped button through twice:
-   * both calls build a transaction with their own source sequence number, and
-   * Horizon accepts both. The single-flight key mirrors the pre-submit
-   * idempotency key so the guard covers exactly the share the intent row covers.
-   */
-  const payShare = useCallback(
-    async (params: PayShareParams) => {
-      const inflightKey = `settle:${params.tripId ?? "none"}:${expenseId}:${params.share.memberId}`;
-
-      if (isInFlight(inflightKey)) {
-        toastInfo(
-          "Payment already in progress",
-          "Waiting for the current payment to finish.",
-        );
-        return;
-      }
-
-      await runOnce(inflightKey, () => performPayShare(params));
-    },
-    [performPayShare, expenseId, toastInfo],
   );
 
   // ---------------------------------------------------------------------------
