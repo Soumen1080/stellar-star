@@ -138,44 +138,48 @@ async function loadAccount(
   publicKey: string,
   fallbackSequence?: string,
 ): Promise<Account> {
-  try {
-    const account = await server.loadAccount(publicKey);
-    return new Account(publicKey, account.sequenceNumber());
-  } catch (err) {
-    if (isNotFound(err)) {
-      if (fallbackSequence !== undefined) {
+  if (typeof fetch === "function") {
+    try {
+      const res = await fetch(
+        `${HORIZON_URL}/accounts/${publicKey}?_ts=${Date.now()}`,
+        { cache: "no-store", headers: { "Cache-Control": "no-cache" } },
+      );
+      if (res.status === 404 && fallbackSequence !== undefined) {
         return new Account(publicKey, fallbackSequence);
       }
-      throw new Error(
-        "Failed to load Stellar account (404). Verify your address is funded on testnet.",
-      );
+      if (res.ok) {
+        const data = (await res.json()) as { sequence: string };
+        return new Account(publicKey, data.sequence);
+      }
+    } catch (err) {
+      if (typeof fetch === "undefined" || (err instanceof ReferenceError)) {
+        // Fall back to server.loadAccount
+      } else {
+        throw err;
+      }
     }
+  }
 
-    const status = httpStatusOf(err);
+  try {
+    return (await server.loadAccount(publicKey)) as unknown as Account;
+  } catch (err: unknown) {
+    const is404 =
+      (typeof err === "object" &&
+        err !== null &&
+        "response" in err &&
+        (err as { response?: { status?: number } }).response?.status === 404) ||
+      (typeof err === "object" &&
+        err !== null &&
+        "name" in err &&
+        (err as { name?: string }).name === "NotFoundError");
+
+    if (is404 && fallbackSequence !== undefined) {
+      return new Account(publicKey, fallbackSequence);
+    }
     throw new Error(
-      status !== null
-        ? `Failed to load Stellar account (${status}). Verify your address is funded on testnet.`
-        : `Failed to load Stellar account: ${err instanceof Error ? err.message : String(err)}`,
+      `Failed to load Stellar account. Verify your address is funded on testnet.`,
     );
   }
-}
-
-/** Reads the HTTP status off an SDK `NetworkError`, if the error carries one. */
-function httpStatusOf(err: unknown): number | null {
-  const status = (err as { response?: { status?: unknown } } | null)?.response?.status;
-  return typeof status === "number" ? status : null;
-}
-
-/**
- * True when Horizon reported the account as absent.
- *
- * Checks the SDK's `NotFoundError` type and the raw 404 status. Both, because
- * the type check alone would miss an error surfaced by a mocked or wrapped
- * client in tests, and the status check alone would miss an SDK build that
- * omits the response object.
- */
-function isNotFound(err: unknown): boolean {
-  return err instanceof NotFoundError || httpStatusOf(err) === 404;
 }
 
 /**

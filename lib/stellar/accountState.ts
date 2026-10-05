@@ -88,7 +88,7 @@ export async function getNetworkBaseReserve(
 }
 
 /** Every account carries two base reserves before any subentries. */
-export const BASE_ACCOUNT_SUBENTRIES = 2n;
+export const BASE_ACCOUNT_SUBENTRIES = 2n/;
 
 const STROOPS_PER_XLM = 10_000_000n;
 
@@ -326,47 +326,38 @@ export function describeOnboardingNeed(
     return { kind: "account_creation", reserveStroops: needed };
   }
 
-  if (isNative(asset)) {
-    return { kind: "none" };
-  }
+  if (isNative(asset)) return { kind: "none" };
 
-  const existing = state.trustlines.find((line) => assetKey(line) === assetKey(asset));
+  const line = state.trustlines.find((l) => assetKey(l) === assetKey(asset));
 
-  if (!existing) {
-    const needed = trustlineReserveStroops(state.baseReserveStroops);
+  if (!line) {
+    const reserveStroops = trustlineReserveStroops(state.baseReserveStroops);
     return {
       kind: "trustline_missing",
       asset,
-      reserveStroops: needed,
-      affordable: state.spendableStroops >= needed,
+      reserveStroops,
+      affordable: state.spendableStroops >= reserveStroops,
     };
   }
 
-  if (!existing.isAuthorized) {
-    if (existing.isAuthorizedToMaintainLiabilities) {
-      return { kind: "trustline_auth_maintain", asset, state: existing };
+  if (!line.isAuthorized) {
+    if (line.isAuthorizedToMaintainLiabilities) {
+      return { kind: "trustline_auth_maintain", asset, state: line };
     }
-    return { kind: "trustline_unauthorized", asset, state: existing };
+    return { kind: "trustline_unauthorized", asset, state: line };
   }
 
-  // "At limit": the line cannot absorb more, counting funds already committed
-  // to open buy offers — otherwise we would tell a user they have headroom that
-  // an offer will consume the moment it fills.
-  if (
-    existing.limitStroops > 0n &&
-    existing.balanceStroops + existing.buyingLiabilitiesStroops >= existing.limitStroops
-  ) {
-    return { kind: "trustline_at_limit", asset, state: existing };
+  const remaining = line.limitStroops - line.balanceStroops - line.sellingLiabilitiesStroops;
+  if (remaining <= 0n) {
+    return { kind: "trustline_at_limit", asset, state: line };
   }
 
-  // Usable, but somebody else is paying for it. Reported last: the blocking
-  // states above all take precedence, since they stop the payment outright.
-  if (existing.sponsor) {
+  if (line.sponsor) {
     return {
       kind: "trustline_sponsored",
       asset,
-      state: existing,
-      sponsor: existing.sponsor,
+      state: line,
+      sponsor: line.sponsor,
       reserveStroops: trustlineReserveStroops(state.baseReserveStroops),
     };
   }
@@ -374,13 +365,7 @@ export function describeOnboardingNeed(
   return { kind: "none" };
 }
 
-/**
- * Whether a need still blocks receiving the asset.
- *
- * `trustline_sponsored` is informational — the user can receive today — so a
- * caller gating a payment on "is this account ready" must not treat every
- * non-`none` need as a blocker.
- */
+/** Whether a need actually blocks the user from receiving the asset. */
 export function isBlockingNeed(need: OnboardingNeed): boolean {
   return need.kind !== "none" && need.kind !== "trustline_sponsored";
 }

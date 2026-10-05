@@ -34,9 +34,19 @@ describe("Seam S2 Money Arithmetic Property Tests", () => {
   });
 
   it("Invariant 3: Addition is associative and commutative over any permutation", () => {
+    // Generate amounts sized such that sum of up to 30 items never exceeds MAX_AMOUNT_STROOPS
+    const safeAmountArb = fc
+      .bigInt({ min: 1n, max: MAX_AMOUNT_STROOPS / 35n })
+      .map((stroops) => {
+        const str = stroops.toString().padStart(8, "0");
+        const whole = str.slice(0, -7);
+        const frac = str.slice(-7);
+        return `${whole || "0"}.${frac}`;
+      });
+
     fc.assert(
       fc.property(
-        fc.array(validAmountStringArb, { minLength: 2, maxLength: 30 }),
+        fc.array(safeAmountArb, { minLength: 2, maxLength: 30 }),
         (amountStrings) => {
           const amounts = amountStrings.map((s) => parse(s));
 

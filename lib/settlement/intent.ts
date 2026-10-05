@@ -217,10 +217,6 @@ export async function acquireSettlementIntent(
 
     // If in progress and not yet expired, lock out concurrent payers
     if (!isExpired && (existing.status === "pending" || existing.status === "submitting")) {
-      // If created by the same wallet very recently, allow resuming the intent
-      if (existing.createdByWallet === params.memberWallet) {
-        return { ok: true, intent: existing };
-      }
       return {
         ok: false,
         code: "IN_PROGRESS",

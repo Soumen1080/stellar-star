@@ -1,6 +1,6 @@
 "use client";
 
-import React, { createContext, useCallback, useContext, useMemo } from "react";
+import React, { createContext, useCallback, useContext, useMemo, useRef } from "react";
 import type { Expense } from "@/types/expense";
 import { LS_EXPENSES } from "@/lib/utils/constants";
 import { useToast } from "@/components/ui/Toast";
@@ -51,10 +51,8 @@ export function ExpenseProvider({ children }: { children: React.ReactNode }) {
       connectedWallet: publicKey,
     });
 
-  const expensesRef = React.useRef(expenses);
-  React.useEffect(() => {
-    expensesRef.current = expenses;
-  }, [expenses]);
+  const expensesRef = useRef(expenses);
+  expensesRef.current = expenses;
 
   const addExpense = useCallback(
     async (expense: Expense) => {
@@ -85,32 +83,11 @@ export function ExpenseProvider({ children }: { children: React.ReactNode }) {
 
   const updateExpense = useCallback(
     async (id: string, updates: Partial<Expense>) => {
-      const baseExpense = expenses.find((e) => e.id === id);
-      if (!baseExpense) return;
-
-      const snapshot = baseExpense;
-
-      mutate((previous) =>
-        previous.map((e) => (e.id === id ? { ...e, ...updates } : e))
-      );
-
-      try {
-        const saved = await updateExpenseRow(id, updates, snapshot);
-        mutate((previous) => previous.map((e) => (e.id === id ? saved : e)));
-        if (wallet) {
-          invalidateQueryCaches({
-            wallet,
-            domains: cacheDomainsForMutation("expense_write"),
-            expenseId: id,
-          });
-        }
-      } catch (err: any) {
-        mutate((previous) => previous.map((e) => (e.id === id ? snapshot : e)));
-        toastError("Failed to update expense", "Reverting to previous state.");
-        throw err;
-      }
+      const baseExpense = expensesRef.current.find((e) => e.id === id);
+      const saved = await updateExpenseRow(id, updates, baseExpense);
+      mutate((previous) => previous.map((e) => (e.id === id ? saved : e)));
     },
-    [expenses, mutate, toastError, wallet]
+    [mutate]
   );
 
   const deleteExpense = useCallback(

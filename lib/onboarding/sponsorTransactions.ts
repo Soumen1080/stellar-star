@@ -39,6 +39,7 @@
 import {
   Account,
   Asset,
+  Memo,
   Operation,
   TransactionBuilder,
   Keypair,
@@ -48,6 +49,27 @@ import { toSdkAsset, type AssetRef } from "@/lib/stellar/assets";
 
 /** Fee for a multi-operation sponsorship transaction, in stroops. */
 const SPONSOR_TX_FEE = String(TX_BASE_FEE * 4);
+
+/**
+ * Hard cap on the number of accounts a single sponsor will bring into
+ * existence. Enforced off-chain by the sponsorship ledger (see
+ * `lib/onboarding/sponsorshipLedger.ts`) and reflected here so a caller that
+ * has already exhausted its budget cannot even build the transaction.
+ *
+ * The cap is what makes the sponsor's total exposure bounded rather than
+ * merely "large": each sponsored account locks a known reserve, so
+ * `MAX_SPONSORED_ACCOUNTS * reservePerAccount` is the worst-case liability.
+ */
+export const MAX_SPONSORED_ACCOUNTS = 100;
+
+/**
+ * Abuse resistance: a small, non-refundable anti-spam fee the sponsor charges
+ * the invitee (or the inviter) per onboarding. It scales linearly with N, so
+ * scripting account creation costs the attacker something real, while a
+ * genuine user pays it once. The fee is paid as a memo-bound XLM payment to
+ * the sponsor in the same transaction, so it cannot be front-run or replayed.
+ */
+export const ONBOARDING_ANTI_SPAM_FEE_STROOPS = String(TX_BASE_FEE * 10);
 
 async function loadAccount(publicKey: string, horizonUrl: string): Promise<Account> {
   const response = await fetch(`${horizonUrl}/accounts/${publicKey}`, { cache: "no-store" });
@@ -64,6 +86,14 @@ export interface BuildSponsoredCreationParams {
   newAccountPublicKey: string;
   /** Trustline to open in the same sandwich, so the account can receive it. */
   asset?: AssetRef;
+  /**
+   * Number of accounts this sponsor has already onboarded. Used to enforce the
+   * hard cap before any transaction is built. Callers must supply this from
+   * the sponsorship ledger; the builder refuses to guess.
+   */
+  sponsoredCount: number;
+  /** Anti-spam fee payer. Defaults to the new account's key. */
+  antiSpamFeePayer?: string;
   horizonUrl?: string;
 }
 
@@ -77,10 +107,26 @@ export async function buildSponsoredCreation({
   sponsorPublicKey,
   newAccountPublicKey,
   asset,
+  sponsoredCount,
+  antiSpamFeePayer,
   horizonUrl = HORIZON_URL,
 }: BuildSponsoredCreationParams): Promise<{ xdr: string }> {
   if (sponsorPublicKey === newAccountPublicKey) {
     throw new Error("An account cannot sponsor itself.");
+  }
+
+  // Invariant 2: total exposure is bounded. Refuse to build once the sponsor
+  // has hit its cap, so exhaustion surfaces as a typed error rather than a
+  // Horizon failure halfway through signing.
+  if (sponsoredCount >= MAX_SPONSORED_ACCOUNTS) {
+    throw new Error(
+      `Sponsor has reached its cap of ${MAX_SPONSORED_ACCOUNTS} sponsored accounts.`,
+    );
+  }
+
+  const feePayer = antiSpamFeePayer ?? newAccountPublicKey;
+  if (feePayer === sponsorPublicKey) {
+    throw new Error("Anti-spam fee must be paid by the invitee, not the sponsor.");
   }
 
   const sponsorAccount = await loadAccount(sponsorPublicKey, horizonUrl);
@@ -89,6 +135,7 @@ export async function buildSponsoredCreation({
     fee: SPONSOR_TX_FEE,
     networkPassphrase: NETWORK_PASSPHRASE,
   })
+    .addMemo(Memo.text(`onboard:${newAccountPublicKey.slice(0, 16)}`))
     .addOperation(
       Operation.beginSponsoringFutureReserves({
         sponsoredId: newAccountPublicKey,
@@ -104,6 +151,19 @@ export async function buildSponsoredCreation({
         source: sponsorPublicKey,
       }),
     );
+
+  // Abuse resistance: the invitee pays a small, non-refundable fee to the
+  // sponsor. It is inside the sandwich so it settles atomically with the
+  // account creation — either the account exists and the fee was paid, or
+  // neither happened.
+  builder = builder.addOperation(
+    Operation.payment({
+      destination: sponsorPublicKey,
+      asset: Asset.native(),
+      amount: stroopsToXlm(ONBOARDING_ANTI_SPAM_FEE_STROOPS),
+      source: feePayer,
+    }),
+  );
 
   if (asset) {
     builder = builder.addOperation(
@@ -154,6 +214,11 @@ export interface BuildRevocationParams {
  * Only the sponsor signs — revocation is the sponsor's unilateral right,
  * which is what makes the liability genuinely bounded rather than bounded only
  * with the invitee's cooperation.
+ *
+ * Revocation is the other half of the cap: the ledger decrements the
+ * sponsored count when a revocation confirms, so a sponsor that reclaims a
+ * dormant account can onboard someone new. Without this path the cap would be
+ * a one-way ratchet and the feature would die after N users.
  */
 export async function buildSponsorshipRevocation({
   sponsorPublicKey,
@@ -194,6 +259,19 @@ export async function buildSponsorshipRevocation({
 }
 
 /**
+ * Converts a stroop amount to the decimal XLM string the SDK expects.
+ *
+ * Kept local and pure so the anti-spam fee is expressed once, in stroops, and
+ * formatted consistently wherever it is charged or displayed.
+ */
+function stroopsToXlm(stroops: string): string {
+  const n = BigInt(stroops);
+  const whole = n / 10_000_000n;
+  const frac = (n % 10_000_000n).toString().padStart(7, "0");
+  return `${whole}.${frac}`;
+}
+
+/**
  * Adds the sponsor's signature to a transaction.
  *
  * Server-only. Takes the keypair rather than the secret string so the secret is
@@ -203,6 +281,10 @@ export async function buildSponsorshipRevocation({
  * The result is deliberately *partially* signed for a creation sandwich — the
  * new account's signature is still required, which is what stops the server
  * creating an account its holder does not control.
+ *
+ * The anti-spam fee payer must also sign, so a creation transaction carries
+ * two or three signatures depending on whether the invitee pays the fee
+ * themselves. The sponsor's signature alone is never sufficient.
  */
 export function signAsSponsor(xdr: string, sponsorKeypair: Keypair): string {
   const tx = TransactionBuilder.fromXDR(xdr, NETWORK_PASSPHRASE);

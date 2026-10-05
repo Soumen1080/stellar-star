@@ -12,13 +12,13 @@ import { trimToMemoBytes } from "@/lib/stellar/buildTransaction";
 export interface QRPaymentData {
   /** Destination Stellar address (G...) */
   destination: string;
-  /** Payment amount as string e.g. "300.0000000" */
+  /** Amount as string e.g. "300.0000000" */
   amount: string;
   /** Human-readable memo - will be truncated to 28 bytes */
   memo?: string;
-  /** Asset code for non-native assets (e.g. "USDC") */
+  /** Optional asset code (e.g. "USDC") for non-native payments */
   assetCode?: string;
-  /** Account ID of the asset issuer for non-native assets */
+  /** Optional asset issuer public key for non-native payments */
   assetIssuer?: string;
 }
 
@@ -33,25 +33,21 @@ export function buildQRPaymentURI({
   assetCode,
   assetIssuer,
 }: QRPaymentData): string {
-  if (!StrKey.isValidEd25519PublicKey(destination)) {
-    throw new Error(`Invalid destination address: "${destination}". Must be a valid Stellar public key.`);
-  }
-
-  if (assetIssuer && !StrKey.isValidEd25519PublicKey(assetIssuer)) {
-    throw new Error(`Invalid asset issuer address: "${assetIssuer}". Must be a valid Stellar public key.`);
+  const cleanDest = (destination ?? "").trim();
+  if (cleanDest && !StrKey.isValidEd25519PublicKey(cleanDest)) {
+    throw new Error(`Invalid destination Stellar address: ${destination}`);
   }
 
   const params = new URLSearchParams({
-    destination,
+    destination: cleanDest,
     amount,
   });
 
-  if (assetCode) {
+  if (assetCode && assetCode !== "XLM" && assetCode !== "native") {
     params.set("asset_code", assetCode);
-  }
-
-  if (assetIssuer) {
-    params.set("asset_issuer", assetIssuer);
+    if (assetIssuer) {
+      params.set("asset_issuer", assetIssuer);
+    }
   }
 
   if (memo) {

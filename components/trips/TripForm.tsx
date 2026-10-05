@@ -101,7 +101,7 @@ export function TripForm({ onSubmit, onCancel, initialData, currentUserPublicKey
         .map((m) => ({
           ...m,
           name: m.name.trim(),
-          walletAddress: m.walletAddress ? m.walletAddress.trim().toUpperCase() : undefined,
+          walletAddress: m.walletAddress?.trim() ? m.walletAddress.trim().toUpperCase() : undefined,
         })),
     });
   };

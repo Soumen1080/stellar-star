@@ -1,6 +1,6 @@
 # StellarStar GitHub Issues Backlog
 
-This document contains 20 production-ready GitHub issues identified across the StellarStar codebase, categorized by area (Security, Bug, Performance, Feature, Accessibility, Architecture). Each issue includes a clear title, problem description, affected files, impact analysis, and recommended fix.
+This document contains 40 production-ready GitHub issues identified across the StellarStar codebase, categorized by area (Security, Bug, Performance, Feature, Accessibility, Architecture). Each issue includes a clear title, problem description, affected files, impact analysis, and recommended fix.
 
 ---
 
@@ -521,3 +521,305 @@ There is no unifying trace identifier or correlation ID (`x-request-id`) generat
 
 ### Recommended Fix
 Generate an `X-Request-Id` UUID on each settlement interaction. Propagate this header through API route calls, attach it to `SettlementIntentRow` and `reportError` payloads, and include it in structured server log output.
+
+---
+
+## 21. [Bug] `usePollBudget` interval continues after unmount, causing duplicate polling loops
+
+### Description
+`hooks/usePollBudget.ts` starts a polling interval for wallet or trip balances but does not always cancel it when the component unmounts or when the dependency set changes. In multi-tab or tab-switch scenarios, multiple intervals remain alive, each re-fetching budget state and causing duplicate network calls and stale UI values.
+
+### Affected Files
+- `hooks/usePollBudget.ts`
+- `components/dashboard/` (budget consumers)
+
+### Recommended Fix
+Use a cleanup function that clears the polling timer inside `useEffect`, and guard against overlapping intervals with a cancellation flag or a single `AbortController` per refresh cycle.
+
+---
+
+## 22. [Bug] Inconsistent wallet address normalization lets duplicates slip into member lists
+
+### Description
+Member wallet addresses are compared using inconsistent casing and trimming logic. If one user joins with `GABC...` and another with `gabc...`, the system may treat them as distinct members even though Stellar addresses are case-insensitive in canonical form. This can create duplicate members, wrong settlement splits, and lookup failures in invite membership checks.
+
+### Affected Files
+- `lib/auth/session.ts`
+- `lib/trip/members.ts`
+- `components/trips/MemberList.tsx`
+
+### Recommended Fix
+Normalize addresses once at the boundary using `publicKey.trim().toUpperCase()` or a canonical Stellar helper before saving, comparing, or indexing member records.
+
+---
+
+## 23. [Performance] Trip and expense list endpoints read full tables without pagination or cursor limits
+
+### Description
+API routes that list trips, members, or expenses appear to fetch unbounded result sets without an explicit `limit`, `offset`, or cursor. Large datasets create slow response times, excessive memory use, and poor UX on dashboards with many records. This also amplifies downstream database cost because clients receive entire relation snapshots instead of pages.
+
+### Affected Files
+- `app/api/trips/route.ts`
+- `app/api/expenses/route.ts`
+- `lib/supabase/queries.ts`
+
+### Recommended Fix
+Add server-side pagination with `limit`, `cursor`, and a maximum page size; validate client input and return stable ordering by creation timestamp or ID.
+
+---
+
+## 24. [Security] User-controlled route parameters are reflected unsafely in page metadata and error messages
+
+### Description
+Some trip or share URLs are built from user-supplied data such as trip names, wallet addresses, or invite tokens and then interpolated into HTML or toast text without escaping. If a malicious trip name contains HTML markup or script-like content, a rendered page or toast can inject markup and produce a stored XSS condition in shared dashboards or error reporting flows.
+
+### Affected Files
+- `app/trips/[id]/page.tsx`
+- `components/system/Toast.tsx`
+- `lib/utils.ts`
+
+### Recommended Fix
+Escape all dynamic text before rendering in HTML and apply a safe content policy for server-rendered metadata, including sanitizing trip names and wallet labels before use in page metadata.
+
+---
+
+## 25. [Security] Missing authorization check in invite claim flow allows token replay across different trips
+
+### Description
+The invite claim flow verifies token existence but may not ensure that the `selectedMemberId` belongs to the same trip as the invite token or that the claiming wallet is eligible for exactly one invite claim. A malicious user could replay a valid invite token against a different trip or attempt multiple claims before the invite is invalidated, resulting in membership corruption and privilege escalation.
+
+### Affected Files
+- `lib/invitations/claim.ts`
+- `app/api/invitations/claim/route.ts`
+- `app/api/invitations/verify/route.ts`
+
+### Recommended Fix
+Perform a single transaction that validates the invite token, matches its trip ID to the selected member record, and enforces one-time claim semantics before updating trip membership.
+
+---
+
+## 26. [Bug] Duplicate settlement intents are created when the same payment is re-synced after a network retry
+
+### Description
+The settlement reconciliation flow can create multiple intent rows for the same underlying payment when the client retries the submission or the backend reprocesses a webhook event. Because deduplication is based only on a weak subset of fields, identical payments can appear multiple times in the settlement ledger and cause double-application of settlements.
+
+### Affected Files
+- `lib/settlement/intent.ts`
+- `app/api/settlement/reconcile/route.ts`
+- `hooks/usePayment.ts`
+
+### Recommended Fix
+Introduce a deterministic idempotency key such as `txHash + expenseId + memberId + assetCode` and enforce uniqueness at the database level with a unique index and an upsert path.
+
+---
+
+## 27. [Performance] Repeated transaction submissions do not use request deduplication or idempotency keys
+
+### Description
+`submitSignedTransaction` and related payment routes can be called multiple times for the same signed XDR. Without an idempotency key or deduplication cache, retries create duplicate transactions or double-accounting in settlement flows. This is especially harmful on flaky mobile connections or when users tap the submit button repeatedly.
+
+### Affected Files
+- `lib/stellar/submitTransaction.ts`
+- `app/api/settlement/submit/route.ts`
+- `hooks/usePayment.ts`
+
+### Recommended Fix
+Add a client-generated idempotency token and persist it in the settlement record so repeated requests with the same token are ignored or deduplicated instead of resubmitted.
+
+---
+
+## 28. [Bug] Expense updates can leave optimistic state stale after a failed mutation
+
+### Description
+`context/ExpenseContext.tsx` performs optimistic updates to local expense state, but if the server mutation fails, there is no rollback path. The UI continues to show updated local values while the backend keeps the original state, leading to inconsistent totals and confusion for users editing expenses across multiple tabs.
+
+### Affected Files
+- `context/ExpenseContext.tsx`
+- `lib/expense/update.ts`
+- `hooks/useExpenseForm.ts`
+
+### Recommended Fix
+Wrap optimistic mutations in a rollback mechanism that restores the previous state from a snapshot when the server call rejects, and surface the error in a user-visible toast.
+
+---
+
+## 29. [Bug] Amount validation accepts `NaN`, negative values, and zero-value edge cases
+
+### Description
+The expense and payment forms validate a subset of numeric values but do not consistently reject `NaN`, negative totals, or zero-amount edge cases where the business rule prohibits them. These invalid values propagate into settlement calculations and can corrupt trip balances or allow zero-value split entries.
+
+### Affected Files
+- `hooks/useExpenseForm.ts`
+- `hooks/usePayment.ts`
+- `lib/expense/validation.ts`
+
+### Recommended Fix
+Use a shared numeric validator that accepts only finite positive numbers greater than zero for settlement-critical forms and returns a clear user-facing error for invalid values.
+
+---
+
+## 30. [Performance] Contract event polling is unbounded and causes excessive CPU usage during idle periods
+
+### Description
+The app polls for contract events or transaction status updates on a fixed interval without backoff, deduplication, or pause logic when the trip is not active. Idle trip pages continue to burn CPU time and network bandwidth, especially when many users are open on the same dashboard or when event watchers are reinitialized frequently.
+
+### Affected Files
+- `hooks/useContractEvents.ts`
+- `lib/stellar/contract.ts`
+- `context/TripContext.tsx`
+
+### Recommended Fix
+Add exponential backoff for repeated retries, pause polling when the tab is hidden, and cancel stale polls before launching a new watcher for the same trip or account.
+
+---
+
+## 31. [Bug] `formatMoney` rounding differs across currencies and creates split mismatches
+
+### Description
+Currency formatting functions appear to round amounts at different precision thresholds depending on locale and asset code. A split that totals `100.00 USD` may display as `99.99 USD` in one component and `100.01 USD` in another, creating discrepancies between the amounts shown to users and the actual settlement ledger values.
+
+### Affected Files
+- `lib/utils.ts`
+- `components/ui/AmountInput.tsx`
+- `hooks/useExpenseForm.ts`
+
+### Recommended Fix
+Centralize currency precision logic so all components use the same rounding mode, display decimals, and settlement precision rules for each asset.
+
+---
+
+## 32. [Bug] Trustline setup race condition permits duplicate asset registration for the same wallet
+
+### Description
+When multiple pending transactions attempt to create or update a trustline for the same asset, there is a race between checking whether the trustline exists and creating it. This creates duplicate trustline attempts or conflicting state that is not handled cleanly when the wallet or Horizon responds with intermittent errors.
+
+### Affected Files
+- `hooks/useTrustline.ts`
+- `lib/stellar/trustline.ts`
+- `lib/settlement/intent.ts`
+
+### Recommended Fix
+Add a transaction-state guard and server-side idempotent trustline creation flow so repeated registration attempts for the same asset result in the same final state instead of conflicting writes.
+
+---
+
+## 33. [Security] API routes rely on bearer checks but do not verify wallet-origin or session binding
+
+### Description
+Protected routes validate a bearer token or wallet session but do not always confirm that the wallet address associated with the session matches the expected request origin or that the session is bound to a trusted client. This leaves room for token reuse across different browser sessions or malicious clients that obtain a leaked token.
+
+### Affected Files
+- `app/api/auth/verify/route.ts`
+- `lib/supabase/serverAuth.ts`
+- `lib/supabase/session.ts`
+
+### Recommended Fix
+Bind session tokens to device or wallet metadata when possible and verify the claim against the current request context before accepting privileged actions.
+
+---
+
+## 34. [Security] Error payloads and debug logs may leak wallet addresses, memo data, or settlement details
+
+### Description
+The application captures runtime errors and forwards them to log sinks, but some payload fields are not sanitized before logging. Wallet addresses, memo strings, raw transaction hashes, and settlement metadata may end up in public console output or incident reports, creating privacy and compliance risks.
+
+### Affected Files
+- `lib/observability/reportError.ts`
+- `app/api/error-report/route.ts`
+- `context/AuthContext.tsx`
+
+### Recommended Fix
+Redact or hash wallet addresses, strip memo text, and provide a structured log schema that excludes raw settlement details unless explicitly allowed in a secure environment.
+
+---
+
+## 35. [Bug] Realtime subscriptions leak when components unmount or route changes quickly
+
+### Description
+Supabase Realtime subscriptions are created in several contexts without a consistent unsubscribe path. On route transitions, modal close events, or rapid trip switching, subscribers remain active and continue to emit stale updates, causing duplicate renders and memory growth in the browser.
+
+### Affected Files
+- `context/TripContext.tsx`
+- `context/ExpenseContext.tsx`
+- `context/WalletContext.tsx`
+
+### Recommended Fix
+Track each subscription in a cleanup lifecycle, unsubscribe on unmount, and guard against duplicate subscription registration for the same trip or wallet.
+
+---
+
+## 36. [Bug] SSR hydration mismatch occurs when locale/timezone formatting differs between server and client
+
+### Description
+Some formatted amounts, dates, and wallet labels are rendered on the server using one locale and then on the client using another. This creates hydration mismatch warnings and can temporarily show stale or shifted values after the first user interaction, especially when the locale or timezone differs from the server environment.
+
+### Affected Files
+- `context/LocaleContext.tsx`
+- `app/layout.tsx`
+- `lib/utils.ts`
+
+### Recommended Fix
+Use a stable locale source for server and client rendering or defer locale-sensitive output until after hydration, and freeze timestamps when necessary to avoid mismatch warnings.
+
+---
+
+## 37. [Performance] Cache invalidation is incomplete after trip member or expense mutation
+
+### Description
+The app invalidates cache entries after some writes, but not all dependent records. For example, after a member is added to a trip or an expense is edited, stale list data remains in memory for a subset of views. Users may see inconsistent trip totals until a hard refresh or a full page reload occurs.
+
+### Affected Files
+- `context/TripContext.tsx`
+- `context/ExpenseContext.tsx`
+- `lib/supabase/queries.ts`
+
+### Recommended Fix
+Use a centralized cache invalidation strategy keyed by trip and wallet identity, and invalidate all dependent queries on write operations rather than only the direct record entry.
+
+---
+
+## 38. [Bug] Cross-asset settlement logic mixes display precision with contract precision
+
+### Description
+The app stores and displays amounts using a mix of human-readable decimals and stroops or integer units, but does not consistently convert when preparing settlement instructions. This creates rounding drift in multi-asset settlements and can cause slight mismatch errors when the final amounts are converted back into the ledger view.
+
+### Affected Files
+- `lib/settlement/settle.ts`
+- `lib/fx/rateService.ts`
+- `hooks/useNetPayment.ts`
+
+### Recommended Fix
+Introduce a single asset conversion layer with explicit precision rules for native XLM, USDC, and fiat values so all calculations use the same units before display or ledger submission.
+
+---
+
+## 39. [UX] Search and filter inputs update on every keystroke without debouncing
+
+### Description
+Search bars and filter fields are triggered on each keystroke, causing expensive list queries and unnecessary rerenders. On larger trip or expense lists, this can create noticeable lag, network thrash, and poor perceived performance especially on mobile devices.
+
+### Affected Files
+- `components/trips/TripSearch.tsx`
+- `components/expenses/ExpenseFilters.tsx`
+- `hooks/useTrip.ts`
+
+### Recommended Fix
+Debounce user input with a modest delay and only send queries after the user pauses typing, while keeping the immediate local filtering fallback for low-latency interactions.
+
+---
+
+## 40. [Database] Missing composite indexes on common trip and expense queries slow down dashboards
+
+### Description
+Common queries such as filtering expenses by `trip_id` and `created_at`, listing members by `trip_id` with status, or loading settlement intents by `wallet_address` and `status` are missing composite index coverage. This becomes extremely visible when trip membership grows and dashboards begin to time out or block on repeated queries.
+
+### Affected Files
+- `supabase-setup.sql`
+- `migrations/`
+- `lib/supabase/queries.ts`
+
+### Recommended Fix
+Add composite indexes for the most common query patterns and verify query plans with benchmark tests or database analyzer output before shipping to production.
+
+---
+

@@ -215,6 +215,26 @@ describe("Exactly-Once Settlement Recording & Concurrency (Issue #156 / Epic #50
     expect(secondAttempt.message).toContain("Another client is currently settling");
   });
 
+  it("Invariant 3: Blocks same-wallet retries while an intent is active", async () => {
+    const params = {
+      tripId: "trip-retry-active",
+      expenseId: "exp-retry-active",
+      memberId: "alice-1",
+      payerWallet: WALLET_PAYER,
+      memberWallet: WALLET_ALICE,
+      amount: "2.5",
+    };
+
+    const firstAttempt = await acquireSettlementIntent(params);
+    expect(firstAttempt.ok).toBe(true);
+
+    const retryAttempt = await acquireSettlementIntent(params);
+    expect(retryAttempt.ok).toBe(false);
+    if (retryAttempt.ok) return;
+    expect(retryAttempt.code).toBe("IN_PROGRESS");
+    expect(mockIntentsDb.size).toBe(1);
+  });
+
   // ===========================================================================
   // Invariant 4: No lost updates on shares under concurrent writes
   // ===========================================================================

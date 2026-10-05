@@ -53,27 +53,50 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { defaultRateService } from "@/lib/fx/rateService";
-import { normalizeCurrency, SUPPORTED_CURRENCIES } from "@/lib/fx/currencies";
 import { checkRateLimit, getClientIp } from "@/lib/auth/rateLimiter";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/**
- * Requests allowed per IP per minute.
- *
- * Generous relative to real use — the converter refetches on a 60 s crypto TTL —
- * but low enough that a single client cannot walk the whole pair space fast
- * enough to matter.
- */
-const RATE_LIMIT_MAX = 60;
-const RATE_LIMIT_WINDOW_MS = 60_000;
+/** Whitelist of supported fiat and crypto currencies to prevent cache-busting DoS. */
+const SUPPORTED_CURRENCIES = new Set([
+  "XLM",
+  "USD",
+  "EUR",
+  "GBP",
+  "INR",
+  "USDC",
+  "JPY",
+  "CAD",
+  "AUD",
+  "CHF",
+  "CNY",
+  "NZD",
+  "BRL",
+  "SGD",
+  "HKD",
+  "KRW",
+  "MXN",
+  "SEK",
+  "NOK",
+]);
+
+/** Validated ISO 4217-like currency code: 2–6 uppercase letters or digits. */
+function isValidCurrencyCode(code: unknown): code is string {
+  return typeof code === "string" && /^[A-Za-z]{2,6}$/.test(code);
+}
 
 function jsonError(message: string, status: number) {
   return NextResponse.json({ error: message }, { status, headers: { "Cache-Control": "no-store" } });
 }
 
 export async function GET(request: NextRequest) {
+  const clientIp = getClientIp(request);
+  const rateLimit = await checkRateLimit(`fx:ip:${clientIp}`, 60, 60_000);
+  if (!rateLimit.allowed) {
+    return jsonError("Too many rate requests. Please try again shortly.", 429);
+  }
+
   const { searchParams } = request.nextUrl;
   const from = searchParams.get("from");
   const to = searchParams.get("to");
@@ -132,8 +155,18 @@ export async function GET(request: NextRequest) {
     );
   }
 
+  const upperFrom = from.toUpperCase();
+  const upperTo = to.toUpperCase();
+
+  if (!SUPPORTED_CURRENCIES.has(upperFrom) || !SUPPORTED_CURRENCIES.has(upperTo)) {
+    return jsonError(
+      `Unsupported currency code. Supported: ${Array.from(SUPPORTED_CURRENCIES).join(", ")}`,
+      400,
+    );
+  }
+
   // getRate never throws — it degrades to { unavailable: true }.
-  const result = await defaultRateService.getRate(fromCode, toCode);
+  const result = await defaultRateService.getRate(upperFrom, upperTo);
 
   // Fresh results may be cached at the CDN edge.
   const cacheControl =

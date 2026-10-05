@@ -49,6 +49,17 @@ const memoryLedger =
   globalThis.stellarStarAttestations ?? new Map<string, AttestationLedgerEntry>();
 globalThis.stellarStarAttestations = memoryLedger;
 
+let memoryLock = Promise.resolve();
+
+function withMemoryLock<T>(fn: () => Promise<T>): Promise<T> {
+  const next = memoryLock.then(fn, fn);
+  memoryLock = next.then(
+    () => {},
+    () => {},
+  );
+  return next;
+}
+
 function entryKey(txHash: string, expenseId: string, member: string): string {
   return `${txHash}:${expenseId}:${member}`;
 }
@@ -157,11 +168,13 @@ export async function commitAttestation(
     return entry;
   }
 
-  const key = entryKey(entry.txHash, entry.expenseId, entry.member);
-  const already = memoryLedger.get(key);
-  if (already) return already;
-  memoryLedger.set(key, entry);
-  return entry;
+  return withMemoryLock(async () => {
+    const key = entryKey(entry.txHash, entry.expenseId, entry.member);
+    const already = memoryLedger.get(key);
+    if (already) return already;
+    memoryLedger.set(key, entry);
+    return entry;
+  });
 }
 
 /**

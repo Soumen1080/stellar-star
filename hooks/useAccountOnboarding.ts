@@ -20,7 +20,7 @@ import { useCallback, useState } from "react";
 import { getAccountState, type AccountState, type OnboardingNeed } from "@/lib/stellar/accountState";
 import { describeOnboardingNeed, isBlockingNeed } from "@/lib/stellar/accountState";
 import { assetKey, NATIVE_ASSET, type AssetRef } from "@/lib/stellar/assets";
-import { signXDR } from "@/lib/freighter";
+import { signXDR } from "@/lib/freeighter";
 import { submitSignedTransaction } from "@/lib/stellar/submitTransaction";
 import { getAccessToken } from "@/lib/supabase/session";
 import { NETWORK_PASSPHRASE } from "@/lib/utils/constants";

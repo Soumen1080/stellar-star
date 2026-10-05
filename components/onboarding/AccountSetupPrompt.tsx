@@ -166,7 +166,7 @@ export function AccountSetupPrompt({
           <Button variant="ghost-white" onClick={reset}>
             Dismiss
           </Button>
-          <Button onClick={() => checkAccount(publicKey)}>I&apos;ve funded it — recheck</Button>
+          <Button onClick={() => checkAccount(publicKey)}>I&#39;ve funded it — recheck</Button>
         </div>
       </div>
     );

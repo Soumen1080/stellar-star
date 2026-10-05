@@ -206,12 +206,7 @@ export function useNetPayment({ tripId }: UseNetPaymentOpts) {
         setDepositLoading(false);
       }
     },
-    // `locale` is read via formatMoney above. Without it the callback keeps the
-    // locale from the render that created it — and LocaleProvider starts at
-    // "en-US" and only corrects to the saved or browser locale in a mount
-    // effect, so a de-DE user's deposit toast reported "1,234.57" instead of
-    // "1.234,57" without them having changed any setting.
-    [publicKey, loadPoolBalance, locale, toastError, toastSuccess],
+    [publicKey, loadPoolBalance, toastError, toastSuccess, locale],
   );
 
   const reset = useCallback((payerPublicKey: string) => {

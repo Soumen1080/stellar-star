@@ -1,8 +1,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
-import { Copy, Check, Link, Loader2, QrCode } from "lucide-react";
-import { Modal } from "@/components/ui/Modal";
+import { Copy, Check, X, Link, Shield, Trash2, Loader2, UserPlus, QrCode } from "lucide-react";
 import { useToast } from "@/components/ui/Toast";
 import { useSession } from "@/lib/supabase/useSession";
 import { QRCodeSVG } from "qrcode.react";
@@ -24,19 +23,12 @@ export function InviteMemberModal({ trip, isOpen, onClose }: InviteMemberModalPr
   const [loading, setLoading] = useState(false);
   const [showQR, setShowQR] = useState(false);
 
-  const unclaimedMembers = useMemo(
+  const unclaimedMembers = useMemo<Member[]>(
     () =>
       (trip.members || []).filter(
-        (m) => !m.walletAddress || m.walletAddress.trim() === "",
+        (m: Member) => !m.walletAddress || m.walletAddress.trim() === "",
       ),
     [trip.members],
-  );
-
-  // Identity of the unclaimed set, so realtime updates that replace `trip.members`
-  // with an equivalent array don't churn the selection, while an actual claim does.
-  const unclaimedKey = useMemo(
-    () => unclaimedMembers.map((m) => m.id).join(","),
-    [unclaimedMembers],
   );
 
   // Reset transient link state and default the selection each time the modal opens.
@@ -47,15 +39,16 @@ export function InviteMemberModal({ trip, isOpen, onClose }: InviteMemberModalPr
       setShowQR(false);
       setSelectedMemberId(unclaimedMembers.length > 0 ? unclaimedMembers[0].id : "");
     }
-    // Intentionally keyed on `isOpen` only: this is the open transition. Keeping the
-    // selection valid afterwards is the next effect's job.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen]);
+  }, [isOpen, unclaimedMembers]);
 
-  // Keep the selection pointing at a slot that is still unclaimed. Runs on open and
-  // whenever the unclaimed set changes underneath us (e.g. a Supabase Realtime claim).
   useEffect(() => {
     if (!isOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isOpen, onClose]);
 
     setSelectedMemberId((current) => {
       // "" is the General Group Invite option, always valid.
@@ -105,12 +98,22 @@ export function InviteMemberModal({ trip, isOpen, onClose }: InviteMemberModalPr
   };
 
   return (
-    <Modal open={isOpen} onClose={onClose} title="Invite to Trip" size="md">
-      <div className="space-y-4">
-        <div>
-          <label
-            htmlFor="invite-member-slot"
-            className="block text-xs font-semibold text-[#444] uppercase tracking-wide mb-1.5"
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="invite-modal-title"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-fade-in"
+    >
+      <div className="bg-white rounded-2xl border border-[#EEEEEE] shadow-xl w-full max-w-md overflow-hidden animate-scale-in">
+        <div className="flex items-center justify-between p-4 border-b border-[#F0F0F0]">
+          <div className="flex items-center gap-2">
+            <UserPlus size={18} className="text-[#2DD4BF]" />
+            <h3 id="invite-modal-title" className="text-base font-bold text-[#0F0F14]">Invite to Trip</h3>
+          </div>
+          <button
+            onClick={onClose}
+            aria-label="Close dialog"
+            className="p-1 rounded-lg text-[#888] hover:text-[#0F0F14] hover:bg-[#F5F5F5] transition-colors"
           >
             Select Member Slot to Invite
           </label>

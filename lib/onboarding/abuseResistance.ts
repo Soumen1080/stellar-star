@@ -18,7 +18,7 @@
  *    real funded account — the very thing sponsorship provides — so the attack
  *    does not bootstrap itself.
  *
- * 2. **A per-inviter quota.** One wallet can sponsor a bounded number of
+ * 2. ** Aper-inviter quota.** One wallet can sponsor a bounded number of
  *    accounts. N accounts needs N/quota distinct funded inviters, so cost grows
  *    linearly in N rather than being amortised to nothing.
  *
@@ -157,7 +157,7 @@ export async function checkEligibility(
       reason: "inviter_quota_exceeded",
       message:
         `You have sponsored ${invites.length} accounts, the maximum per wallet. ` +
-        "Ask another group member to send the invite.",
+        "A Ask another group member to send the invite.",
     };
   }
 
