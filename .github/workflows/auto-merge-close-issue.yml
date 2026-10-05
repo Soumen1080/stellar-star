@@ -36,8 +36,6 @@ jobs:
 
             core.setOutput("has_closing_issue_reference", String(hasClosingIssueReference));
             core.setOutput("mergeable_state", freshPr.mergeable_state || "unknown");
-            core.setOutput("head_ref", freshPr.head.ref);
-            core.setOutput("base_ref", freshPr.base.ref);
             core.setOutput("is_same_repo", String(freshPr.head.repo.full_name === freshPr.base.repo.full_name));
             core.setOutput("pull_number", String(freshPr.number));
 
@@ -45,35 +43,29 @@ jobs:
         if: steps.pr.outputs.has_closing_issue_reference != 'true'
         run: echo "Skipping auto-merge because the PR description does not include close/fix/resolve #<issue>."
 
-      - name: Checkout repository for conflict resolution
-        if: steps.pr.outputs.has_closing_issue_reference == 'true' && steps.pr.outputs.mergeable_state == 'dirty' && steps.pr.outputs.is_same_repo == 'true'
-        uses: actions/checkout@v4
+      - name: Skip forks for safety
+        if: steps.pr.outputs.has_closing_issue_reference == 'true' && steps.pr.outputs.is_same_repo != 'true'
+        run: echo "Skipping auto-merge because this PR branch is from a forked repository."
+
+      - name: Update PR branch from base when needed
+        if: steps.pr.outputs.has_closing_issue_reference == 'true' && steps.pr.outputs.is_same_repo == 'true' && (steps.pr.outputs.mergeable_state == 'behind' || steps.pr.outputs.mergeable_state == 'dirty')
+        uses: actions/github-script@v7
         with:
-          fetch-depth: 0
+          script: |
+            const pull_number = Number("${{ steps.pr.outputs.pull_number }}");
 
-      - name: Resolve merge conflicts by updating PR branch
-        if: steps.pr.outputs.has_closing_issue_reference == 'true' && steps.pr.outputs.mergeable_state == 'dirty' && steps.pr.outputs.is_same_repo == 'true'
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          git fetch origin "${{ steps.pr.outputs.base_ref }}" "${{ steps.pr.outputs.head_ref }}"
-          git checkout "${{ steps.pr.outputs.head_ref }}"
-
-          if ! git merge "origin/${{ steps.pr.outputs.base_ref }}" -X ours --no-edit; then
-            echo "Unable to auto-resolve merge conflicts for PR #${{ steps.pr.outputs.pull_number }}"
-            git merge --abort || true
-            exit 1
-          fi
-
-          git push origin "HEAD:${{ steps.pr.outputs.head_ref }}"
-
-      - name: Wait for mergeability refresh
-        if: steps.pr.outputs.has_closing_issue_reference == 'true' && steps.pr.outputs.mergeable_state == 'dirty' && steps.pr.outputs.is_same_repo == 'true'
-        run: sleep 10
+            try {
+              await github.rest.pulls.updateBranch({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number,
+              });
+            } catch (error) {
+              core.warning(`Unable to update PR #${pull_number} automatically: ${error.message}`);
+            }
 
       - name: Merge pull request
-        if: steps.pr.outputs.has_closing_issue_reference == 'true'
+        if: steps.pr.outputs.has_closing_issue_reference == 'true' && steps.pr.outputs.is_same_repo == 'true'
         uses: actions/github-script@v7
         with:
           script: |
@@ -84,6 +76,11 @@ jobs:
               repo: context.repo.repo,
               pull_number,
             });
+
+            if (pr.mergeable_state === "dirty") {
+              core.setFailed(`PR #${pull_number} still has merge conflicts after auto-update.`);
+              return;
+            }
 
             if (!pr.mergeable) {
               core.setFailed(`PR #${pull_number} is not mergeable (state: ${pr.mergeable_state}).`);
