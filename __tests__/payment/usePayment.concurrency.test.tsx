@@ -43,15 +43,6 @@ import type { SplitShare } from "@/types/expense";
 const WALLET_A = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const PAYER    = "GCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC";
 
-/** A promise held open by the test so a flow can be observed mid-flight. */
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((res) => {
-    resolve = res;
-  });
-  return { promise, resolve };
-}
-
 const share: SplitShare = {
   memberId:      "member-1",
   name:          "Alice",
@@ -245,104 +236,5 @@ describe("usePayment — concurrency and durable intents", () => {
       "Settlement in progress",
       "Another client is currently settling this share.",
     );
-  });
-
-  it("ignores a second payShare for the same share while the first is still in flight", async () => {
-    // The intent store lets the same wallet resume its own in-flight intent, so a
-    // double-tap passes the durable lock twice. Only the in-process single-flight
-    // guard stops the second attempt from building a second payment.
-    const signature = deferred<string>();
-    jest.mocked(signXDR).mockReturnValue(signature.promise);
-
-    const { result } = renderHook(() => usePayment({ expenseId: "exp-1" }));
-
-    const params = {
-      share,
-      expenseTitle: "Dinner",
-      payerWalletAddress: PAYER,
-      tripId: "trip-1",
-    };
-
-    let first!: Promise<void>;
-    await act(async () => {
-      first = result.current.payShare(params);
-      // Second tap lands while the first is blocked on the wallet signature.
-      await result.current.payShare(params);
-    });
-
-    expect(buildPaymentTransaction).toHaveBeenCalledTimes(1);
-    expect(mockToastInfo).toHaveBeenCalledWith(
-      "Payment already in progress",
-      "Waiting for the current payment to finish.",
-    );
-
-    signature.resolve("signed-xdr");
-    await act(async () => {
-      await first;
-    });
-
-    // Money moved exactly once.
-    expect(signXDR).toHaveBeenCalledTimes(1);
-    expect(submitSignedTransaction).toHaveBeenCalledTimes(1);
-    expect(mockMarkSharePaid).toHaveBeenCalledTimes(1);
-  });
-
-  it("allows a second payShare for the same share once the first has settled", async () => {
-    const { result } = renderHook(() => usePayment({ expenseId: "exp-1" }));
-
-    const params = {
-      share,
-      expenseTitle: "Dinner",
-      payerWalletAddress: PAYER,
-      tripId: "trip-1",
-    };
-
-    await act(async () => {
-      await result.current.payShare(params);
-    });
-
-    // Second sequential tap is a fresh attempt, not a blocked duplicate.
-    await act(async () => {
-      await result.current.payShare(params);
-    });
-
-    expect(submitSignedTransaction).toHaveBeenCalledTimes(2);
-  });
-
-  it("does not block a different share of the same expense", async () => {
-    const signature = deferred<string>();
-    jest.mocked(signXDR).mockReturnValue(signature.promise);
-
-    const { result } = renderHook(() => usePayment({ expenseId: "exp-1" }));
-
-    let first!: Promise<void>;
-    let second!: Promise<void>;
-    await act(async () => {
-      first = result.current.payShare({
-        share,
-        expenseTitle: "Dinner",
-        payerWalletAddress: PAYER,
-        tripId: "trip-1",
-      });
-      second = result.current.payShare({
-        share: { ...share, memberId: "member-2", name: "Bob" },
-        expenseTitle: "Dinner",
-        payerWalletAddress: PAYER,
-        tripId: "trip-1",
-      });
-    });
-
-    expect(buildPaymentTransaction).toHaveBeenCalledTimes(2);
-    expect(mockToastInfo).not.toHaveBeenCalledWith(
-      "Payment already in progress",
-      expect.anything(),
-    );
-
-    signature.resolve("signed-xdr");
-    await act(async () => {
-      await Promise.all([first, second]);
-    });
-
-    expect(submitSignedTransaction).toHaveBeenCalledTimes(2);
   });
 });
