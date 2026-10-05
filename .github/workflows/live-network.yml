@@ -39,6 +39,7 @@ jobs:
     env:
       NEXT_PUBLIC_SUPABASE_URL: https://example.supabase.co
       NEXT_PUBLIC_SUPABASE_ANON_KEY: ci-placeholder-key
+      SUPABASE_JWT_SECRET: dev-local-jwt-secret-not-for-production-use
       # Injected from secrets — live tests skip gracefully if absent
       TESTNET_PAYER_SECRET: ${{ secrets.TESTNET_PAYER_SECRET }}
       TESTNET_RECIPIENT_SECRET: ${{ secrets.TESTNET_RECIPIENT_SECRET }}
@@ -58,7 +59,7 @@ jobs:
 
       # ── Optional re-provisioning (manual dispatch only) ─────────────────────
       - name: Provision testnet accounts
-        if: github.event.inputs.re_provision == 'true'
+        if: ${{ inputs.re_provision == 'true' || github.event.inputs.re_provision == 'true' }}
         run: npm run e2e:provision
         env:
           # Provisioning uses Friendbot — no secrets needed

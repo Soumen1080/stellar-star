@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerAnonClient } from "@/lib/supabase/server";
 import { verifyTripInvite } from "@/lib/invitations/claim";
+import { createServiceRoleClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -14,12 +15,9 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    // Verifying an invite is deliberately unauthenticated — the recipient has
-    // no session yet. It still needs a *server* client: the browser one reads
-    // its token from localStorage, which does not exist in this runtime.
-    const summary = await verifyTripInvite(token.trim(), createServerAnonClient(), tripId);
-    // Per-token and never public: keep it out of shared caches.
-    return NextResponse.json(summary, { headers: { "Cache-Control": "no-store" } });
+    const serviceClient = createServiceRoleClient();
+    const summary = await verifyTripInvite(token.trim(), serviceClient ?? undefined);
+    return NextResponse.json(summary);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Invalid or unrecognized invitation.";
     if (message.includes("TRIP_MISMATCH")) {

@@ -35,16 +35,12 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    // This handler runs in the Node.js runtime, where the browser client's
-    // localStorage-backed session does not exist. The helper must be given a
-    // client built from the bearer token that was just verified, so PostgREST
-    // applies the same RLS policies the browser would have been subject to.
+    const serverClient = createServerClientForToken(token);
     const result = await claimTripInvite(
       body.token,
       session.wallet_address,
       body.selectedMemberId,
-      createServerClientForToken(token),
-      body.tripId,
+      serverClient,
     );
 
     return NextResponse.json(result);

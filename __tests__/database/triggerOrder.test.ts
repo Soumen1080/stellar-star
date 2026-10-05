@@ -124,4 +124,25 @@ describe("Database Trigger Pipeline & Execution Order (Issue #159 / Epic #53)", 
     const invertedStage1 = syncMemberWallets(MALICIOUS_NEW);
     expect(invertedStage1.member_wallets).toContain("G_ATTACKER_EVE"); // BUG: Forged creator leaked into RLS array!
   });
+
+  it("Invariant 5: the database trigger freezes every debt-defining expense field", () => {
+    const setupSql = fs.readFileSync(setupSqlPath, "utf8");
+    const migrationSql = fs.readFileSync(
+      path.join(ROOT, "migrations", "0005_freeze_expense_exchange_rate.sql"),
+      "utf8",
+    );
+
+    for (const sql of [setupSql, migrationSql]) {
+      expect(sql).toContain("jsonb_build_object('total_amount', old_json -> 'total_amount')");
+      expect(sql).toContain("jsonb_build_object('currency', old_json -> 'currency')");
+      expect(sql).toContain("jsonb_build_object('exchange_rate', old_json -> 'exchange_rate')");
+      expect(sql).toContain(
+        "jsonb_build_object('exchange_rate_timestamp', old_json -> 'exchange_rate_timestamp')",
+      );
+    }
+
+    expect(setupSql).not.toContain("IF old_json ? 'exchange_rate'");
+    expect(migrationSql).toContain("ADD COLUMN IF NOT EXISTS exchange_rate TEXT");
+    expect(migrationSql).toContain("ADD COLUMN IF NOT EXISTS exchange_rate_timestamp TIMESTAMPTZ");
+  });
 });

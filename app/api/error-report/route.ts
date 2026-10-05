@@ -20,11 +20,6 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { checkRateLimit, getClientIp } from "@/lib/auth/rateLimiter";
-import {
-  REQUEST_ID_HEADER,
-  createRequestId,
-  parseRequestId,
-} from "@/lib/observability/requestId";
 
 interface IncomingReport {
   requestId?: string;
@@ -36,6 +31,7 @@ interface IncomingReport {
   network?: string;
   appVersion?: string;
   timestamp?: string;
+  requestId?: string;
 }
 
 const ALLOWED_KEYS: (keyof IncomingReport)[] = [
@@ -47,6 +43,7 @@ const ALLOWED_KEYS: (keyof IncomingReport)[] = [
   "network",
   "appVersion",
   "timestamp",
+  "requestId",
 ];
 
 /** Reports accepted per IP per minute. A real client reports single failures. */
@@ -133,65 +130,10 @@ function sanitizeContext(value: unknown): Record<string, unknown> | undefined {
 }
 
 export async function POST(req: NextRequest) {
-  const headerRequestId = parseRequestId(req.headers.get(REQUEST_ID_HEADER));
-  let requestId = headerRequestId ?? createRequestId();
-  const responseHeaders = (extra?: Record<string, string>) => ({
-    "Cache-Control": "no-store",
-    [REQUEST_ID_HEADER]: requestId,
-    ...extra,
-  });
-
-  // Rate limit before reading the body: an abusive caller should not get to
-  // spend server memory on a payload we are about to discard anyway.
   const clientIp = getClientIp(req);
-  const ipLimit = await checkRateLimit(
-    `error-report:ip:${clientIp}`,
-    RATE_LIMIT_MAX,
-    RATE_LIMIT_WINDOW_MS,
-  );
-  if (!ipLimit.allowed) {
-    return NextResponse.json(
-      {
-        ok: false,
-        error: "Too many error reports. Please try again later.",
-        requestId,
-      },
-      {
-        status: 429,
-        headers: responseHeaders({
-          "Retry-After": String(Math.ceil(ipLimit.resetMs / 1000)),
-        }),
-      },
-    );
-  }
-
-  // Reject oversized payloads on the declared length when we have one, so the
-  // common case costs nothing to refuse.
-  const declaredLength = Number(req.headers.get("content-length"));
-  if (Number.isFinite(declaredLength) && declaredLength > MAX_BODY_BYTES) {
-    return NextResponse.json(
-      { ok: false, error: "payload too large", requestId },
-      { status: 413, headers: responseHeaders() },
-    );
-  }
-
-  // Content-Length is client-supplied and optional (e.g. chunked uploads), so
-  // measure what actually arrived rather than trusting the header.
-  let raw: string;
-  try {
-    raw = await req.text();
-  } catch {
-    return NextResponse.json(
-      { ok: false, error: "invalid body", requestId },
-      { status: 400, headers: responseHeaders() },
-    );
-  }
-
-  if (raw.length > MAX_BODY_BYTES) {
-    return NextResponse.json(
-      { ok: false, error: "payload too large", requestId },
-      { status: 413, headers: responseHeaders() },
-    );
+  const rateLimit = await checkRateLimit(`error-report:ip:${clientIp}`, 20, 60_000);
+  if (!rateLimit.allowed) {
+    return NextResponse.json({ ok: false, error: "Too many error reports" }, { status: 429 });
   }
 
   let body: IncomingReport;
@@ -218,20 +160,19 @@ export async function POST(req: NextRequest) {
   const receivedAt = new Date().toISOString();
   const clean: Record<string, unknown> = { requestId, receivedAt };
   for (const key of ALLOWED_KEYS) {
-    const value = body[key];
-    if (value === undefined) continue;
-
-    if (key === "context") {
-      const context = sanitizeContext(value);
-      if (context && Object.keys(context).length > 0) clean.context = context;
-      continue;
+    if (body[key] !== undefined) {
+      const val = body[key];
+      if (typeof val === "string") {
+        clean[key] = val.slice(0, key === "stack" ? 4000 : 2000);
+      } else {
+        clean[key] = val;
+      }
     }
+  }
 
-    if (typeof value === "string") {
-      clean[key] = sanitizeString(value, MAX_LENGTHS[key] ?? 200);
-    }
-    // Non-string values on string fields are dropped rather than coerced: a
-    // report that lies about its own shape has nothing worth logging.
+  if (!clean.requestId) {
+    const headerReqId = req.headers.get("x-request-id");
+    if (headerReqId) clean.requestId = headerReqId.slice(0, 100);
   }
 
   // Stable, machine-parseable marker so log pipelines can route/alert on it.
@@ -247,9 +188,7 @@ export async function POST(req: NextRequest) {
           [REQUEST_ID_HEADER]: requestId,
         },
         body: JSON.stringify(clean),
-        // Without this, a hung incident hook holds the request open and each
-        // report ties up a server slot until the platform kills it.
-        signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS),
+        signal: AbortSignal.timeout(5000),
       });
     } catch {
       // Forwarding is best-effort; the server log above already captured it.
