@@ -30,6 +30,7 @@ export interface ReportedError {
   network: string;
   appVersion: string;
   timestamp: string;
+  requestId?: string;
   /** True when the report reached the internal sink (best-effort only). */
   reported?: boolean;
 }
@@ -62,9 +63,17 @@ export function buildReport(
   name: string,
   error: unknown,
   context?: Record<string, unknown>,
-  severity: ErrorSeverity = "error"
+  severity: ErrorSeverity = "error",
+  requestId?: string,
 ): ReportedError {
   const { message, stack } = toMessage(error);
+  const reqId =
+    requestId ||
+    (typeof context?.requestId === "string" ? context.requestId : undefined) ||
+    (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : undefined);
+
   return {
     name,
     message,
@@ -74,6 +83,7 @@ export function buildReport(
     network: STELLAR_NETWORK,
     appVersion: APP_VERSION,
     timestamp: new Date().toISOString(),
+    ...(reqId ? { requestId: reqId } : {}),
   };
 }
 

@@ -214,7 +214,7 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
         setDepositLoading(false);
       }
     },
-    [publicKey, loadPoolBalance, toastError, toastSuccess],
+    [publicKey, loadPoolBalance, toastError, toastSuccess, locale],
   );
 
   // ---------------------------------------------------------------------------

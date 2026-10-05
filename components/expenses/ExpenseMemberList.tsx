@@ -163,11 +163,12 @@ function ExpenseMemberRow({
 }
 
 function getDuplicateWalletOwner(members: Member[], index: number) {
-  const address = members[index].walletAddress?.trim();
+  const address = members[index].walletAddress?.trim().toUpperCase();
   if (!address || !isValidStellarAddress(address)) return null;
 
   const duplicateIndex = members.findIndex(
-    (member, memberIndex) => memberIndex !== index && member.walletAddress?.trim() === address,
+    (member, memberIndex) =>
+      memberIndex !== index && member.walletAddress?.trim().toUpperCase() === address,
   );
 
   if (duplicateIndex === -1) return null;

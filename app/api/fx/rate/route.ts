@@ -37,9 +37,33 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { defaultRateService } from "@/lib/fx/rateService";
+import { checkRateLimit, getClientIp } from "@/lib/auth/rateLimiter";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+/** Whitelist of supported fiat and crypto currencies to prevent cache-busting DoS. */
+const SUPPORTED_CURRENCIES = new Set([
+  "XLM",
+  "USD",
+  "EUR",
+  "GBP",
+  "INR",
+  "USDC",
+  "JPY",
+  "CAD",
+  "AUD",
+  "CHF",
+  "CNY",
+  "NZD",
+  "BRL",
+  "SGD",
+  "HKD",
+  "KRW",
+  "MXN",
+  "SEK",
+  "NOK",
+]);
 
 /** Validated ISO 4217-like currency code: 2–6 uppercase letters or digits. */
 function isValidCurrencyCode(code: unknown): code is string {
@@ -51,6 +75,12 @@ function jsonError(message: string, status: number) {
 }
 
 export async function GET(request: NextRequest) {
+  const clientIp = getClientIp(request);
+  const rateLimit = await checkRateLimit(`fx:ip:${clientIp}`, 60, 60_000);
+  if (!rateLimit.allowed) {
+    return jsonError("Too many rate requests. Please try again shortly.", 429);
+  }
+
   const { searchParams } = request.nextUrl;
   const from = searchParams.get("from");
   const to = searchParams.get("to");
@@ -62,8 +92,18 @@ export async function GET(request: NextRequest) {
     return jsonError('Query param "to" must be a 2–6 letter currency code.', 400);
   }
 
+  const upperFrom = from.toUpperCase();
+  const upperTo = to.toUpperCase();
+
+  if (!SUPPORTED_CURRENCIES.has(upperFrom) || !SUPPORTED_CURRENCIES.has(upperTo)) {
+    return jsonError(
+      `Unsupported currency code. Supported: ${Array.from(SUPPORTED_CURRENCIES).join(", ")}`,
+      400,
+    );
+  }
+
   // getRate never throws — it degrades to { unavailable: true }.
-  const result = await defaultRateService.getRate(from.toUpperCase(), to.toUpperCase());
+  const result = await defaultRateService.getRate(upperFrom, upperTo);
 
   // Fresh results may be cached at the CDN edge.
   const cacheControl =

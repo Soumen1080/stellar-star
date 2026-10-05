@@ -222,6 +222,7 @@ export function useExpenseForm({
     },
     [
       addExpense,
+      currency,
       description,
       members,
       onSuccess,
@@ -229,6 +230,7 @@ export function useExpenseForm({
       splitMode,
       title,
       toastError,
+      toastInfo,
       toastSuccess,
       totalAmount,
       validate,

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyWalletSession } from "@/lib/supabase/serverAuth";
+import { createServerClientForToken } from "@/lib/supabase/server";
 import { claimTripInvite } from "@/lib/invitations/claim";
 
 export const runtime = "nodejs";
@@ -33,10 +34,12 @@ export async function POST(request: NextRequest) {
   }
 
   try {
+    const serverClient = createServerClientForToken(token);
     const result = await claimTripInvite(
       body.token,
       session.wallet_address,
       body.selectedMemberId,
+      serverClient,
     );
 
     return NextResponse.json(result);

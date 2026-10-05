@@ -12,6 +12,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
+import { checkRateLimit, getClientIp } from "@/lib/auth/rateLimiter";
 
 interface IncomingReport {
   name?: string;
@@ -22,6 +23,7 @@ interface IncomingReport {
   network?: string;
   appVersion?: string;
   timestamp?: string;
+  requestId?: string;
 }
 
 const ALLOWED_KEYS: (keyof IncomingReport)[] = [
@@ -33,9 +35,16 @@ const ALLOWED_KEYS: (keyof IncomingReport)[] = [
   "network",
   "appVersion",
   "timestamp",
+  "requestId",
 ];
 
 export async function POST(req: NextRequest) {
+  const clientIp = getClientIp(req);
+  const rateLimit = await checkRateLimit(`error-report:ip:${clientIp}`, 20, 60_000);
+  if (!rateLimit.allowed) {
+    return NextResponse.json({ ok: false, error: "Too many error reports" }, { status: 429 });
+  }
+
   let body: IncomingReport;
   try {
     body = (await req.json()) as IncomingReport;
@@ -46,7 +55,19 @@ export async function POST(req: NextRequest) {
   const receivedAt = new Date().toISOString();
   const clean: Record<string, unknown> = { receivedAt };
   for (const key of ALLOWED_KEYS) {
-    if (body[key] !== undefined) clean[key] = body[key];
+    if (body[key] !== undefined) {
+      const val = body[key];
+      if (typeof val === "string") {
+        clean[key] = val.slice(0, key === "stack" ? 4000 : 2000);
+      } else {
+        clean[key] = val;
+      }
+    }
+  }
+
+  if (!clean.requestId) {
+    const headerReqId = req.headers.get("x-request-id");
+    if (headerReqId) clean.requestId = headerReqId.slice(0, 100);
   }
 
   // Stable, machine-parseable marker so log pipelines can route/alert on it.
@@ -59,6 +80,7 @@ export async function POST(req: NextRequest) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(clean),
+        signal: AbortSignal.timeout(5000),
       });
     } catch {
       // Forwarding is best-effort; the server log above already captured it.

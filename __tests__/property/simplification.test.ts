@@ -80,7 +80,7 @@ describe("Simplification Property Tests", () => {
       fc.property(
         makeRawDebtsArb({ maxDebts: 45 }),
         ({ debts }) => {
-          const nettingPayments = computeNetPayments(debts);
+          const nettingPayments = simplifyDebts(debts, { mode: "pairwise" });
           const simplifiedPayments = simplifyDebts(debts);
 
           expect(simplifiedPayments.length).toBeLessThanOrEqual(nettingPayments.length);

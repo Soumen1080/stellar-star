@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyWalletSession } from "@/lib/supabase/serverAuth";
+import { createServerClientForToken } from "@/lib/supabase/server";
 import { revokeTripInvite } from "@/lib/invitations/claim";
 
 export const runtime = "nodejs";
@@ -32,7 +33,8 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    await revokeTripInvite(body.inviteId, session.wallet_address);
+    const serverClient = createServerClientForToken(token);
+    await revokeTripInvite(body.inviteId, session.wallet_address, serverClient);
     return NextResponse.json({ success: true });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to revoke invitation.";

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Copy, Check, X, Link, Shield, Trash2, Loader2, UserPlus, QrCode } from "lucide-react";
 import { useToast } from "@/components/ui/Toast";
 import { useSession } from "@/lib/supabase/useSession";
@@ -33,8 +33,12 @@ export function InviteMemberModal({ trip, isOpen, onClose }: InviteMemberModalPr
   const [loading, setLoading] = useState(false);
   const [showQR, setShowQR] = useState(false);
 
-  const unclaimedMembers = (trip.members || []).filter(
-    (m) => !m.walletAddress || m.walletAddress.trim() === "",
+  const unclaimedMembers = useMemo<Member[]>(
+    () =>
+      (trip.members || []).filter(
+        (m: Member) => !m.walletAddress || m.walletAddress.trim() === "",
+      ),
+    [trip.members],
   );
 
   useEffect(() => {
@@ -48,7 +52,16 @@ export function InviteMemberModal({ trip, isOpen, onClose }: InviteMemberModalPr
         setSelectedMemberId("");
       }
     }
-  }, [isOpen, trip.members]);
+  }, [isOpen, unclaimedMembers]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isOpen, onClose]);
 
   if (!isOpen) return null;
 
@@ -92,15 +105,21 @@ export function InviteMemberModal({ trip, isOpen, onClose }: InviteMemberModalPr
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-fade-in">
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="invite-modal-title"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-fade-in"
+    >
       <div className="bg-white rounded-2xl border border-[#EEEEEE] shadow-xl w-full max-w-md overflow-hidden animate-scale-in">
         <div className="flex items-center justify-between p-4 border-b border-[#F0F0F0]">
           <div className="flex items-center gap-2">
             <UserPlus size={18} className="text-[#2DD4BF]" />
-            <h3 className="text-base font-bold text-[#0F0F14]">Invite to Trip</h3>
+            <h3 id="invite-modal-title" className="text-base font-bold text-[#0F0F14]">Invite to Trip</h3>
           </div>
           <button
             onClick={onClose}
+            aria-label="Close dialog"
             className="p-1 rounded-lg text-[#888] hover:text-[#0F0F14] hover:bg-[#F5F5F5] transition-colors"
           >
             <X size={16} />

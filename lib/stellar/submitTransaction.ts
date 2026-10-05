@@ -29,8 +29,8 @@ export async function submitSignedTransaction(signedXDR: string): Promise<Stella
 
     if (extras?.result_codes) {
       const { transaction, operations } = extras.result_codes;
-      const opCode = operations?.[0];
-      if (opCode && opCode !== "op_success") throw new Error(friendlyOpError(opCode));
+      const failedOp = operations?.find((op) => op !== "op_success");
+      if (failedOp) throw new Error(friendlyOpError(failedOp));
       if (transaction === "tx_bad_seq")          throw new Error("Transaction sequence mismatch. Please try again.");
       if (transaction === "tx_insufficient_fee") throw new Error("Transaction fee too low. Please try again.");
       if (transaction !== "tx_success")          throw new Error(`Transaction failed: ${transaction}`);

@@ -203,7 +203,7 @@ export function useNetPayment({ tripId }: UseNetPaymentOpts) {
         setDepositLoading(false);
       }
     },
-    [publicKey, loadPoolBalance, toastError, toastSuccess],
+    [publicKey, loadPoolBalance, toastError, toastSuccess, locale],
   );
 
   const reset = useCallback((payerPublicKey: string) => {

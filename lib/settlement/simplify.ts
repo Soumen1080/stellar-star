@@ -339,8 +339,9 @@ export function simplifyDebts(
 ): NetPayment[] {
   if (debts.length === 0) return [];
 
+  const pairwise = computePairwisePayments(debts);
   if (options.mode === "pairwise") {
-    return computePairwisePayments(debts);
+    return pairwise;
   }
 
   const assetBalances = computeNetBalances(debts);
@@ -352,7 +353,18 @@ export function simplifyDebts(
   for (const asset of sortedAssets) {
     const participantsMap = assetBalances.get(asset)!;
     const simplified = simplifySingleAssetGraph(asset, participantsMap, debts);
-    result.push(...simplified);
+    const pairwiseForAsset = pairwise.filter((p) => normalizeAsset(p.asset) === asset);
+
+    // Invariant 4: Transfer count must never exceed pairwise deduplicated transfers
+    if (pairwiseForAsset.length > 0 && simplified.length > pairwiseForAsset.length) {
+      result.push(...pairwiseForAsset);
+    } else {
+      result.push(...simplified);
+    }
+  }
+
+  if (pairwise.length > 0 && result.length > pairwise.length) {
+    return pairwise;
   }
 
   return result;

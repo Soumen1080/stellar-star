@@ -10,6 +10,7 @@ import {
 } from "@stellar/stellar-sdk";
 import type { Attestation } from "@/lib/settlement/attest";
 import { sorobanServer } from "./soroban";
+import { server } from "./client";
 import { signXDR } from "@/lib/freighter";
 import {
   HORIZON_URL,
@@ -113,20 +114,48 @@ async function loadAccount(
   publicKey: string,
   fallbackSequence?: string,
 ): Promise<Account> {
-  const res = await fetch(
-    `${HORIZON_URL}/accounts/${publicKey}?_ts=${Date.now()}`,
-    { cache: "no-store", headers: { "Cache-Control": "no-cache" } }
-  );
-  if (res.status === 404 && fallbackSequence !== undefined) {
-    return new Account(publicKey, fallbackSequence);
+  if (typeof fetch === "function") {
+    try {
+      const res = await fetch(
+        `${HORIZON_URL}/accounts/${publicKey}?_ts=${Date.now()}`,
+        { cache: "no-store", headers: { "Cache-Control": "no-cache" } },
+      );
+      if (res.status === 404 && fallbackSequence !== undefined) {
+        return new Account(publicKey, fallbackSequence);
+      }
+      if (res.ok) {
+        const data = (await res.json()) as { sequence: string };
+        return new Account(publicKey, data.sequence);
+      }
+    } catch (err) {
+      if (typeof fetch === "undefined" || (err instanceof ReferenceError)) {
+        // Fall back to server.loadAccount
+      } else {
+        throw err;
+      }
+    }
   }
-  if (!res.ok) {
+
+  try {
+    return (await server.loadAccount(publicKey)) as unknown as Account;
+  } catch (err: unknown) {
+    const is404 =
+      (typeof err === "object" &&
+        err !== null &&
+        "response" in err &&
+        (err as { response?: { status?: number } }).response?.status === 404) ||
+      (typeof err === "object" &&
+        err !== null &&
+        "name" in err &&
+        (err as { name?: string }).name === "NotFoundError");
+
+    if (is404 && fallbackSequence !== undefined) {
+      return new Account(publicKey, fallbackSequence);
+    }
     throw new Error(
-      `Failed to load Stellar account (${res.status}). Verify your address is funded on testnet.`
+      `Failed to load Stellar account. Verify your address is funded on testnet.`,
     );
   }
-  const data = (await res.json()) as { sequence: string };
-  return new Account(publicKey, data.sequence);
 }
 
 /**
