@@ -1,4 +1,4 @@
-import { Map, QrCode, ReceiptText, Zap } from "lucide-react";
+import { Contact, Map, QrCode, ReceiptText, Zap } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
 export interface DashboardFeature {
@@ -38,6 +38,13 @@ export function getDashboardFeatures(expenseCount: number, tripCount: number): D
       desc: "Group expenses & settle as a team.",
       href: "/trips",
       badge: `${tripCount}`,
+    },
+    {
+      icon: Contact,
+      title: "Contacts",
+      desc: "Saved people & verified wallets.",
+      href: "/contacts",
+      badge: "New",
     },
   ];
 }

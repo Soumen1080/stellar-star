@@ -167,17 +167,20 @@ function classifyExplorer(url: string): StellarNetwork | null {
 
 /**
  * Returns a list of actionable error messages describing every way the resolved
- * network configuration is inconsistent. An empty list means the configuration
- * is safe to run.
+ * network configuration is inconsistent or unsafe. An empty list means the
+ * configuration is safe to run.
  *
  * Detection rules:
+ *  - Network setting must be "TESTNET" or "PUBLIC".
  *  - An endpoint whose host clearly belongs to the *other* network than
  *    `STELLAR_NETWORK` is a hard misconfiguration (the app would sign against
  *    the wrong infrastructure).
  *  - Two or more endpoints that resolve to *different* networks from each other
  *    is internally contradictory regardless of `STELLAR_NETWORK`.
- * Endpoints on hosts we do not recognise are left alone — operators may run
- * private or third-party infrastructure we cannot classify.
+ *  - Rejects placeholder or invalid contract ID formats.
+ *  - Rejects testnet Circle USDC issuer when running on PUBLIC network.
+ *  - Rejects localhost site URLs when configured for PUBLIC network.
+ *  - Catches server secrets accidentally published via client-prefixed env vars.
  */
 export function getNetworkConfigErrors(): string[] {
   const expected = STELLAR_NETWORK;
@@ -189,6 +192,15 @@ export function getNetworkConfigErrors(): string[] {
 
   const errors: string[] = [];
 
+  // Check valid network string
+  const rawNetwork = process.env.NEXT_PUBLIC_STELLAR_NETWORK?.trim();
+  if (rawNetwork && rawNetwork !== "TESTNET" && rawNetwork !== "PUBLIC") {
+    errors.push(
+      `NEXT_PUBLIC_STELLAR_NETWORK must be "TESTNET" or "PUBLIC" (found "${rawNetwork}").`
+    );
+  }
+
+  // Check endpoints against expected network
   for (const [name, url, classified] of checks) {
     if (classified && classified !== expected) {
       errors.push(
@@ -198,6 +210,7 @@ export function getNetworkConfigErrors(): string[] {
     }
   }
 
+  // Check cross-endpoint consistency
   const classifiedNets = checks.map((c) => c[2]).filter(Boolean) as StellarNetwork[];
   const distinct = new Set(classifiedNets);
   if (distinct.size > 1) {
@@ -206,6 +219,90 @@ export function getNetworkConfigErrors(): string[] {
         ", "
       )}). HORIZON_URL, SOROBAN_RPC_URL and STELLAR_EXPLORER must all point at the same network.`
     );
+  }
+
+  // Check contract IDs
+  const TESTNET_DEMO_CONTRACT = "CBS2BJQ4ZC2ZSAZ5XS47BGC6Q7VTMJA4SE2PVHFXGXAZI5ES6H645WHO";
+  const isContractAddress = (val: string) => /^C[A-Z0-9]{55}$/.test(val);
+  const isPlaceholder = (val: string) => /placeholder|replace[-_]?me|TODO|test[-_]?contract|xxx/i.test(val);
+
+  if (CONTRACT_ID) {
+    if (isPlaceholder(CONTRACT_ID)) {
+      errors.push(
+        `NEXT_PUBLIC_CONTRACT_ID contains placeholder value "${CONTRACT_ID}". Set a valid contract address.`
+      );
+    } else if (!isContractAddress(CONTRACT_ID)) {
+      errors.push(
+        `NEXT_PUBLIC_CONTRACT_ID is not a valid Stellar contract address format (must be 56 uppercase alphanumeric chars starting with 'C').`
+      );
+    } else if (
+      (process.env.NODE_ENV === "production" || process.env.VALIDATE_PRODUCTION === "1") &&
+      expected === "PUBLIC" &&
+      CONTRACT_ID === TESTNET_DEMO_CONTRACT
+    ) {
+      errors.push(
+        `Production deployment cannot use testnet/demo contract ID: ${TESTNET_DEMO_CONTRACT}. Set NEXT_PUBLIC_CONTRACT_ID to a verified public mainnet contract address.`
+      );
+    }
+  }
+
+  // Check Circle USDC issuer cross-network matching
+  const CIRCLE_USDC_TESTNET = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
+  const CIRCLE_USDC_PUBLIC = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";
+  const rawUsdcIssuer = process.env.NEXT_PUBLIC_USDC_ISSUER?.trim();
+  const isPublicKey = (val: string) => /^G[A-Z0-9]{55}$/.test(val);
+
+  if (rawUsdcIssuer) {
+    if (!isPublicKey(rawUsdcIssuer)) {
+      errors.push(
+        `NEXT_PUBLIC_USDC_ISSUER is not a valid Stellar public key (must be 56 uppercase alphanumeric chars starting with 'G').`
+      );
+    } else if (expected === "PUBLIC" && rawUsdcIssuer === CIRCLE_USDC_TESTNET) {
+      errors.push(
+        `STELLAR_NETWORK is "PUBLIC" but NEXT_PUBLIC_USDC_ISSUER targets Circle's testnet issuer (${CIRCLE_USDC_TESTNET}). Use the public issuer (${CIRCLE_USDC_PUBLIC}) or remove the override.`
+      );
+    } else if (expected === "TESTNET" && rawUsdcIssuer === CIRCLE_USDC_PUBLIC) {
+      errors.push(
+        `STELLAR_NETWORK is "TESTNET" but NEXT_PUBLIC_USDC_ISSUER targets Circle's public issuer (${CIRCLE_USDC_PUBLIC}). Use the testnet issuer (${CIRCLE_USDC_TESTNET}) or remove the override.`
+      );
+    }
+  }
+
+  // Check public app URL
+  const rawSiteUrl = process.env.NEXT_PUBLIC_SITE_URL?.trim();
+  if (rawSiteUrl) {
+    try {
+      const parsed = new URL(rawSiteUrl);
+      if (expected === "PUBLIC" && (process.env.NODE_ENV === "production" || process.env.VALIDATE_PRODUCTION === "1")) {
+        if (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1") {
+          errors.push(
+            `STELLAR_NETWORK is "PUBLIC" but NEXT_PUBLIC_SITE_URL="${rawSiteUrl}" points to localhost. Production deployments must use a public HTTPS domain.`
+          );
+        } else if (parsed.protocol !== "https:") {
+          errors.push(
+            `STELLAR_NETWORK is "PUBLIC" but NEXT_PUBLIC_SITE_URL="${rawSiteUrl}" is not HTTPS. Production deployments require HTTPS.`
+          );
+        }
+      }
+    } catch {
+      errors.push(`NEXT_PUBLIC_SITE_URL is not a valid URL (found "${rawSiteUrl}").`);
+    }
+  }
+
+  // Secrets hygiene: Ensure server secrets are not published as client variables
+  const LEAKED_SECRETS = [
+    "NEXT_PUBLIC_SUPABASE_JWT_SECRET",
+    "NEXT_PUBLIC_SETTLEMENT_ORACLE_SECRET",
+    "NEXT_PUBLIC_SPONSOR_OPERATOR_SECRET",
+    "NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY",
+    "NEXT_PUBLIC_JWT_SECRET",
+  ];
+  for (const secretKey of LEAKED_SECRETS) {
+    if (process.env[secretKey]) {
+      errors.push(
+        `Security error: Server secret is exposed in client environment variable "${secretKey}". Remove this variable immediately.`
+      );
+    }
   }
 
   return errors;

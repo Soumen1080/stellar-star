@@ -5,7 +5,7 @@
 import React from "react";
 import { render, screen } from "@testing-library/react";
 import TripsPage from "@/app/trips/page";
-import { useTrip } from "@/hooks/useTrip";
+import { useTrip, useTripSearch } from "@/hooks/useTrip";
 import { useExpense } from "@/hooks/useExpense";
 import { useAuth } from "@/context/AuthContext";
 import { useWallet } from "@/hooks/useWallet";
@@ -41,6 +41,7 @@ jest.mock("@/components/ui/Modal", () => ({
 }));
 
 const mockUseTrip = useTrip as jest.Mock;
+const mockUseTripSearch = useTripSearch as jest.Mock;
 const mockUseExpense = useExpense as jest.Mock;
 const mockUseAuth = useAuth as jest.Mock;
 const mockUseWallet = useWallet as jest.Mock;
@@ -50,6 +51,19 @@ describe("TripsPage State Transitions", () => {
     mockUseAuth.mockReturnValue({ user: { displayName: "Test User" } });
     mockUseWallet.mockReturnValue({ publicKey: "G12345" });
     mockUseExpense.mockReturnValue({ expenses: [] });
+    mockUseTripSearch.mockImplementation(() => {
+      const data = mockUseTrip() ?? {};
+      return {
+        trips: [],
+        allTrips: [],
+        totalTrips: 0,
+        addTrip: jest.fn(),
+        deleteTrip: jest.fn(),
+        isLoading: false,
+        isOffline: false,
+        ...data,
+      };
+    });
   });
 
   afterEach(() => {

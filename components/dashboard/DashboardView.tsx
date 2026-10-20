@@ -12,6 +12,7 @@ import { DashboardStats } from "@/components/dashboard/DashboardStats";
 import { QuickAccessGrid } from "@/components/dashboard/QuickAccessGrid";
 import { RecentExpensesPanel } from "@/components/dashboard/RecentExpensesPanel";
 import { WelcomeBanner } from "@/components/dashboard/WelcomeBanner";
+import { ReminderInbox } from "@/components/reminders/ReminderInbox";
 import { getDashboardFeatures } from "@/data/dashboard";
 import { Spinner } from "@/components/ui/Spinner";
 
@@ -51,6 +52,12 @@ export function DashboardView() {
               </div>
               <RecentExpensesPanel expenses={expenses} />
             </div>
+
+            {user && (
+              <div className="mb-6">
+                <ReminderInbox />
+              </div>
+            )}
 
             <QuickAccessGrid features={features} />
 

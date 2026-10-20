@@ -30,6 +30,7 @@ import {
 } from "@/lib/supabase/queries";
 import { requireAuthenticatedClient, type StellarStarClient } from "@/lib/supabase/client";
 import { getOrCreateRequestId } from "@/lib/observability/requestId";
+import { installmentKeySuffix } from "@/lib/settlement/installments";
 
 export interface SettlementIntent {
   id: string;
@@ -83,6 +84,8 @@ export interface IdempotencyKeyParams {
   memberId: string;
   txHash?: string | null;
   assetCode?: string | null;
+  /** Installment sequence (#325); absent for a share paid in one payment. */
+  installmentSeq?: number | null;
 }
 
 /**
@@ -94,6 +97,11 @@ export interface IdempotencyKeyParams {
  *
  * Before a transaction is submitted to Horizon, falls back to:
  *   settle:tripId:expenseId:memberId
+ *
+ * An installment (#325) appends `:installment-<seq>` to either form, so each part of a
+ * share gets its own lock: two clients racing for the same installment still
+ * collide on the unique key, while the next installment is never blocked by
+ * the previous one's recorded intent.
  */
 export function deriveIdempotencyKey(
   tripIdOrParams: string | IdempotencyKeyParams,
@@ -101,23 +109,32 @@ export function deriveIdempotencyKey(
   memberId?: string,
   txHash?: string | null,
   assetCode?: string | null,
+  installmentSeq?: number | null,
 ): string {
   if (typeof tripIdOrParams === "object" && tripIdOrParams !== null) {
     const p = tripIdOrParams;
-    return deriveIdempotencyKey(p.tripId ?? "none", p.expenseId, p.memberId, p.txHash, p.assetCode);
+    return deriveIdempotencyKey(
+      p.tripId ?? "none",
+      p.expenseId,
+      p.memberId,
+      p.txHash,
+      p.assetCode,
+      p.installmentSeq,
+    );
   }
 
   const exp = expenseId ?? "";
   const mem = memberId ?? "";
   const cleanAsset = (assetCode || "XLM").trim().toUpperCase();
+  const suffix = installmentSeq ? installmentKeySuffix(installmentSeq) : "";
 
   if (txHash && txHash.trim()) {
     const cleanHash = txHash.trim().toLowerCase();
-    return `settle:${cleanHash}:${exp}:${mem}:${cleanAsset}`;
+    return `settle:${cleanHash}:${exp}:${mem}:${cleanAsset}${suffix}`;
   }
 
   const trip = tripIdOrParams || "none";
-  return `settle:${trip}:${exp}:${mem}`;
+  return `settle:${trip}:${exp}:${mem}${suffix}`;
 }
 
 /**
@@ -144,6 +161,8 @@ export interface AcquireIntentParams {
   currency?: string;
   assetCode?: string;
   txHash?: string | null;
+  /** Installment sequence (#325); absent for a share paid in one payment. */
+  installmentSeq?: number;
 }
 
 export type AcquireIntentResult =
@@ -171,6 +190,7 @@ export async function acquireSettlementIntent(
     params.memberId,
     params.txHash,
     params.txHash ? asset : undefined,
+    params.installmentSeq,
   );
   const requestId = getOrCreateRequestId(params.requestId);
 
@@ -183,13 +203,60 @@ export async function acquireSettlementIntent(
     }
     // Also check pre-submit key if txHash was not found
     if (!existing) {
-      const fallbackKey = deriveIdempotencyKey(params.tripId, params.expenseId, params.memberId);
+      const fallbackKey = deriveIdempotencyKey(
+        params.tripId,
+        params.expenseId,
+        params.memberId,
+        undefined,
+        undefined,
+        params.installmentSeq,
+      );
       if (fallbackKey !== idempotencyKey) {
         existing = await fetchSettlementIntentByIdempotencyKey(fallbackKey, client);
       }
     }
   } catch {
     // Non-fatal if table read fails; will attempt insert
+  }
+
+  // A one-shot payment of the whole share and a first installment lock
+  // different keys, so each must also respect the other's in-flight intent;
+  // otherwise both could move money against the same balance.
+  if (!existing && !params.txHash && (params.installmentSeq === undefined || params.installmentSeq === 1)) {
+    try {
+      const siblingKey = deriveIdempotencyKey(
+        params.tripId,
+        params.expenseId,
+        params.memberId,
+        undefined,
+        undefined,
+        params.installmentSeq === 1 ? undefined : 1,
+      );
+      const sibling = await fetchSettlementIntentByIdempotencyKey(siblingKey, client);
+      if (sibling) {
+        const siblingActive =
+          new Date(sibling.expiresAt).getTime() > Date.now() &&
+          (sibling.status === "pending" || sibling.status === "submitting");
+        if (sibling.txHash && (sibling.status === "submitted" || sibling.status === "submitting")) {
+          return {
+            ok: false,
+            code: "SUBMITTED_NEEDS_RECONCILIATION",
+            intent: sibling,
+            message: "A payment was already submitted on Stellar for this share. Reconciling...",
+          };
+        }
+        if (siblingActive) {
+          return {
+            ok: false,
+            code: "IN_PROGRESS",
+            intent: sibling,
+            message: "Another client is currently settling this share. Please wait a moment.",
+          };
+        }
+      }
+    } catch {
+      // Non-fatal, like the reads above.
+    }
   }
 
   if (existing) {
@@ -301,6 +368,8 @@ export interface UpsertIntentParams {
   ledger?: number | null;
   onChain?: boolean;
   createdByWallet?: string;
+  /** Installment sequence (#325); absent for a share paid in one payment. */
+  installmentSeq?: number;
 }
 
 /**
@@ -317,7 +386,14 @@ export async function upsertSettlementIntent(
   const cleanTxHash = params.txHash.trim().toLowerCase();
   const idempotencyKey =
     params.idempotencyKey ??
-    deriveIdempotencyKey(params.tripId ?? "none", params.expenseId, params.memberId, cleanTxHash, asset);
+    deriveIdempotencyKey(
+      params.tripId ?? "none",
+      params.expenseId,
+      params.memberId,
+      cleanTxHash,
+      asset,
+      params.installmentSeq,
+    );
   const requestId = getOrCreateRequestId(params.requestId);
 
   // Check if an existing intent row exists
@@ -329,7 +405,14 @@ export async function upsertSettlementIntent(
     }
     if (!existing) {
       // Check pre-submit key
-      const preSubmitKey = deriveIdempotencyKey(params.tripId ?? "none", params.expenseId, params.memberId);
+      const preSubmitKey = deriveIdempotencyKey(
+        params.tripId ?? "none",
+        params.expenseId,
+        params.memberId,
+        undefined,
+        undefined,
+        params.installmentSeq,
+      );
       existing = await fetchSettlementIntentByIdempotencyKey(preSubmitKey, client);
     }
   } catch {

@@ -6,20 +6,99 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-export function formatAddress(address: string, chars = 6): string {
-  if (!address) return "";
-  return `${address.slice(0, chars)}...${address.slice(-chars)}`;
+export function formatAddress(address: unknown, chars = 6): string {
+  if (!address || typeof address !== "string") return "";
+  const trimmed = address.trim();
+  if (!trimmed) return "";
+  if (trimmed.length <= chars * 2) return trimmed;
+  return `${trimmed.slice(0, chars)}...${trimmed.slice(-chars)}`;
 }
 
 /**
- * Formats an XLM amount for display.
+ * Stably formats a wallet address or member label for SSR and client rendering.
+ * Prevents hydration mismatch by ensuring deterministic output regardless of
+ * server environment or initial client state.
+ */
+export function formatWalletLabel(
+  walletAddress?: unknown,
+  customLabel?: unknown,
+  chars = 6
+): string {
+  if (customLabel && typeof customLabel === "string" && customLabel.trim()) {
+    return sanitizeWalletLabel(customLabel, 60);
+  }
+  if (walletAddress && typeof walletAddress === "string" && walletAddress.trim()) {
+    return formatAddress(walletAddress, chars);
+  }
+  return "";
+}
+
+/**
+ * Formats an XLM amount for display using a stable locale (en-US by default).
  *
  * Delegates to {@link formatMoney} so that rounding mode, decimal precision,
  * and grouping separators are all governed by a single source of truth.
- * Callers that need locale-awareness should use `formatMoney` directly.
+ * Callers that need dynamic locale-awareness should use `formatMoney` or `useLocale`.
  */
-export function formatXLM(amount: string | number): string {
-  return formatMoney(amount, "XLM", "en-US").formatted;
+export function formatXLM(amount: string | number, locale: string = "en-US"): string {
+  return formatMoney(amount, "XLM", locale).formatted;
+}
+
+const PRESET_DATE_OPTIONS: Record<string, Intl.DateTimeFormatOptions> = {
+  short: { month: "numeric", day: "numeric", year: "numeric" },
+  medium: { month: "short", day: "numeric", year: "numeric" },
+  long: { month: "long", day: "numeric", year: "numeric" },
+  full: { weekday: "long", month: "long", day: "numeric", year: "numeric" },
+};
+
+/**
+ * Stably formats dates using UTC timezone and default en-US locale.
+ * This guarantees deterministic server-side rendering and initial client hydration
+ * without mismatch warnings.
+ */
+export function formatDateStable(
+  dateInput: Date | string | number,
+  options?: Intl.DateTimeFormatOptions | "short" | "medium" | "long" | "full"
+): string {
+  const date = dateInput instanceof Date ? dateInput : new Date(dateInput);
+  if (Number.isNaN(date.getTime())) return "—";
+
+  const base =
+    typeof options === "string"
+      ? PRESET_DATE_OPTIONS[options] ?? PRESET_DATE_OPTIONS.medium
+      : options ?? PRESET_DATE_OPTIONS.medium;
+
+  const resolved: Intl.DateTimeFormatOptions = {
+    ...base,
+    timeZone: base.timeZone ?? "UTC",
+  };
+
+  try {
+    return new Intl.DateTimeFormat("en-US", resolved).format(date);
+  } catch {
+    return date.toISOString().split("T")[0];
+  }
+}
+
+/**
+ * Stably formats date and time frozen to UTC to prevent SSR hydration mismatches.
+ */
+export function formatDateTimeStable(dateInput: Date | string | number): string {
+  return formatDateStable(dateInput, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZone: "UTC",
+  });
+}
+
+/**
+ * Freezes a timestamp to a stable formatted UTC string safe for SSR hydration.
+ */
+export function formatStableTimestamp(timestamp: Date | string | number): string {
+  return formatDateTimeStable(timestamp);
 }
 
 /**

@@ -22,12 +22,15 @@
  * that a third-party outage cannot become an exception here. Returning null
  * rather than throwing keeps that design intact at the call site.
  */
-interface ExchangeQuote {
+export interface ExchangeQuote {
   rate: string;
   fetchedAtIso: string;
   stale: boolean;
   rateAgeMs: number;
   source: string | null;
+  /** Spread across corroborating providers, in basis points (#323). */
+  spreadBps?: number;
+  providers?: Array<{ source: string; rate: string }>;
 }
 
 /** Renders a rate age as something a person can judge staleness by. */
@@ -66,11 +69,15 @@ export async function fetchExchangeRate(
     rateAgeMs?: number | null;
     unavailable?: boolean;
     error?: string;
+    spreadBps?: number;
+    providers?: Array<{ source: string; rate: string }>;
   };
 
   try {
     const res = await fetchImpl(
-      `/api/fx/rate?from=${encodeURIComponent(currency)}&to=XLM`,
+      // Corroborated: the expense form locks this quote, so it is cross-checked
+      // against every provider and a disagreement can block conversion.
+      `/api/fx/rate?from=${encodeURIComponent(currency)}&to=XLM&corroborate=1`,
     );
     payload = await res.json();
   } catch {
@@ -91,5 +98,7 @@ export async function fetchExchangeRate(
     stale: payload.stale === true,
     rateAgeMs: payload.rateAgeMs ?? 0,
     source: payload.source ?? null,
+    spreadBps: typeof payload.spreadBps === "number" ? payload.spreadBps : undefined,
+    providers: Array.isArray(payload.providers) ? payload.providers : undefined,
   };
 }

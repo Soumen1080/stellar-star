@@ -54,6 +54,7 @@ import { CoinGeckoProvider } from "./providers/coingecko";
 import { ExchangeRateProvider } from "./providers/exchangerate";
 import { normalizeCurrency } from "./currencies";
 import { normalizeDecimalRate } from "@/lib/money/assetPrecision";
+import { PROVIDER_DISAGREEMENT_BPS, providerSpreadBps } from "./quoteLock";
 
 // ── Freshness policies ────────────────────────────────────────────────────────
 
@@ -209,6 +210,66 @@ export class FxRateService {
 
     // All providers failed.
     return null;
+  }
+
+  /**
+   * A quote cross-checked against every provider (#323).
+   *
+   * Used when a user locks a rate for an expense, so it pays for the extra
+   * upstream calls only on that explicit action. All providers are asked in
+   * parallel through their breakers; the first in chain order supplies the
+   * rate, and the spread across the others is reported so the caller can
+   * refuse to convert when they disagree. Never throws: with no live answer it
+   * falls back to the cache (flagged stale), then to `unavailable`.
+   */
+  async getCorroboratedRate(from: string, to: string): Promise<RateResult> {
+    const fromCode = normalizeCurrency(from);
+    const toCode = normalizeCurrency(to);
+    if (fromCode === null || toCode === null) return unavailableResult();
+    if (fromCode === toCode) return this.getRate(fromCode, toCode);
+
+    const answers = await Promise.all(
+      this.providers.map(async (provider) => {
+        const breaker = this.breakers.get(provider.name)!;
+        const rate = await breaker.call(() => provider.fetch(fromCode, toCode));
+        const rateDecimal = rate === null ? null : normalizeDecimalRate(rate);
+        return rate !== null && rateDecimal !== null
+          ? { source: provider.name, rate, rateDecimal }
+          : null;
+      }),
+    );
+    const live = answers.filter((a): a is NonNullable<typeof a> => a !== null);
+
+    if (live.length === 0) {
+      return this.cache.get(fromCode, toCode, this.now()) ?? unavailableResult();
+    }
+
+    const primary = live[0];
+    const fetchedAt = this.now();
+    this.cache.set(
+      fromCode,
+      toCode,
+      primary.rate,
+      primary.source,
+      policyFor(fromCode, toCode),
+      fetchedAt,
+      primary.rateDecimal,
+    );
+
+    const providers = live.map((a) => ({ source: a.source, rate: a.rateDecimal }));
+    const spreadBps = providerSpreadBps(providers);
+    return {
+      rate: primary.rate,
+      rateDecimal: primary.rateDecimal,
+      source: primary.source,
+      fetchedAt,
+      stale: false,
+      rateAgeMs: 0,
+      unavailable: false,
+      providers,
+      spreadBps,
+      disagreement: spreadBps !== undefined && spreadBps > PROVIDER_DISAGREEMENT_BPS,
+    };
   }
 
   /**

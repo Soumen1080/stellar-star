@@ -190,3 +190,26 @@ form submission. A rate service outage does not take the app down.
 | `__tests__/fx/rateCache.test.ts` | Cache tier + stampede tests |
 | `__tests__/fx/providers.test.ts` | Provider isolation tests |
 | `__tests__/fx/rateService.test.ts` | End-to-end service tests |
+
+## Locked quotes at expense entry (#323)
+
+The expense form now shows four separate facts (`components/expenses/ExpenseFxPanel.tsx`):
+the **entered currency and amount**, the **quote** (rate, provider, fetch time, lock
+age, provider spread), the **converted settlement amount**, and the **settlement
+asset** (Stellar native XLM).
+
+- The quote is fetched with `corroborate=1`: `FxRateService.getCorroboratedRate` asks
+  every provider in parallel and reports `spreadBps`. Above
+  `PROVIDER_DISAGREEMENT_BPS` (2%) the state is `disagreement`.
+- Users can **Refresh quote** at any time. Submit saves the quote on screen; it never
+  silently fetches a different one.
+- Only a `fresh` quote converts (`lib/fx/quoteLock.ts`). `stale` (service cache past
+  TTL), `expired` (locked more than 5 minutes ago), `disagreement` and `unavailable`
+  block conversion, with a one-click "Enter in XLM instead". Native XLM input needs no
+  quote and is only normalised to 7 decimals.
+- Saved with the expense and frozen by `freeze_row_identity` (migration 0010):
+  `entered_amount`, `currency`, `exchange_rate`, `exchange_rate_source`,
+  `exchange_rate_timestamp`, `total_amount`, `settlement_asset`. The expanded expense
+  card shows them as the conversion record.
+- All arithmetic is exact decimal/BigInt (half-even at ledger precision). The old
+  `parseFloat` division in the expense card was removed.

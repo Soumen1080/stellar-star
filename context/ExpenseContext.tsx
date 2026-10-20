@@ -11,12 +11,14 @@ import {
   deleteExpenseRow,
   detachExpenseFromTrips,
   markSharePaidRow,
+  recordShareInstallmentRow,
   cacheDomainsForMutation,
   rowToExpense,
 } from "@/lib/supabase/queries";
 import { useRealtimeCollection } from "@/lib/supabase/useRealtimeCollection";
 import { invalidateQueryCaches } from "@/lib/supabase/cacheInvalidation";
 import { useWalletContext } from "./WalletContext";
+import type { NewInstallment } from "@/lib/settlement/installments";
 
 interface ExpenseContextType {
   expenses: Expense[];
@@ -24,6 +26,12 @@ interface ExpenseContextType {
   updateExpense: (id: string, updates: Partial<Expense>) => Promise<void>;
   deleteExpense: (id: string) => Promise<void>;
   markSharePaid: (expenseId: string, memberId: string, txHash: string) => Promise<void>;
+  /** Appends one partial payment to a share; the share is paid only once fully covered. */
+  recordShareInstallment: (
+    expenseId: string,
+    memberId: string,
+    installment: NewInstallment,
+  ) => Promise<Expense>;
   getExpense: (id: string) => Expense | undefined;
   isLoading: boolean;
   isOffline: boolean;
@@ -145,6 +153,26 @@ export function ExpenseProvider({ children }: { children: React.ReactNode }) {
     [mutate, wallet]
   );
 
+  /**
+   * Records one installment against a share (#325). Never optimistic, for the
+   * same reason as `markSharePaid`; the RPC re-checks the remaining balance.
+   */
+  const recordShareInstallment = useCallback(
+    async (expenseId: string, memberId: string, installment: NewInstallment) => {
+      const saved = await recordShareInstallmentRow(expenseId, memberId, installment);
+      mutate((previous) => previous.map((e) => (e.id === expenseId ? saved : e)));
+      if (wallet) {
+        invalidateQueryCaches({
+          wallet,
+          domains: cacheDomainsForMutation("expense_write"),
+          expenseId,
+        });
+      }
+      return saved;
+    },
+    [mutate, wallet]
+  );
+
   const getExpense = useCallback((id: string) => expensesRef.current.find((e) => e.id === id), []);
 
   const value = useMemo<ExpenseContextType>(
@@ -154,6 +182,7 @@ export function ExpenseProvider({ children }: { children: React.ReactNode }) {
       updateExpense,
       deleteExpense,
       markSharePaid,
+      recordShareInstallment,
       getExpense,
       isLoading,
       isOffline,
@@ -167,6 +196,7 @@ export function ExpenseProvider({ children }: { children: React.ReactNode }) {
       updateExpense,
       deleteExpense,
       markSharePaid,
+      recordShareInstallment,
       getExpense,
       isLoading,
       isOffline,

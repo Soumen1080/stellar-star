@@ -35,7 +35,6 @@ export interface ReportedError {
   network: string;
   appVersion: string;
   timestamp: string;
-  requestId?: string;
   /** True when the report reached the internal sink (best-effort only). */
   reported?: boolean;
 }
@@ -52,15 +51,82 @@ export function setErrorReporter(reporter: ErrorReporter | null): void {
   customReporter = reporter;
 }
 
+/**
+ * Strips secret keys, JWTs, XDR payloads, and private tokens from error reports.
+ */
+export function redactSensitiveData(context?: Record<string, unknown>): Record<string, unknown> | undefined {
+  if (!context || typeof context !== "object") return context;
+
+  const out: Record<string, unknown> = {};
+
+  for (const [key, val] of Object.entries(context)) {
+    // Redact sensitive keys
+    if (/xdr|secret|private|token|jwt|auth|password|seed|credential/i.test(key)) {
+      out[key] = "[REDACTED]";
+      continue;
+    }
+
+    if (typeof val === "string") {
+      const trimmed = val.trim();
+      // Stellar secret key (starts with S, 56 chars)
+      if (/^S[A-Z0-9]{55}$/.test(trimmed)) {
+        out[key] = "[REDACTED_STELLAR_SECRET]";
+      }
+      // JWT token
+      else if (/^ey[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/.test(trimmed)) {
+        out[key] = "[REDACTED_JWT]";
+      }
+      // Stellar XDR payload (starts with AAAA or long base64 string)
+      else if (/^AAAA[A-Za-z0-9+/=]{40,}$/.test(trimmed) || (trimmed.length > 80 && /^[A-Za-z0-9+/=]+={0,2}$/.test(trimmed))) {
+        out[key] = "[REDACTED_XDR_PAYLOAD]";
+      } else {
+        // Redact any embedded secret keys in strings
+        out[key] = val
+          .replace(/S[A-Z0-9]{55}/g, "[REDACTED_STELLAR_SECRET]")
+          .replace(/ey[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, "[REDACTED_JWT]")
+          .replace(/AAAA[A-Za-z0-9+/=]{60,}/g, "[REDACTED_XDR_PAYLOAD]");
+      }
+    } else if (Array.isArray(val)) {
+      out[key] = val.map((item) =>
+        typeof item === "object" && item !== null
+          ? redactSensitiveData(item as Record<string, unknown>)
+          : typeof item === "string"
+          ? (/^S[A-Z0-9]{55}$/.test(item.trim())
+              ? "[REDACTED_STELLAR_SECRET]"
+              : /^AAAA[A-Za-z0-9+/=]{40,}$/.test(item.trim())
+              ? "[REDACTED_XDR_PAYLOAD]"
+              : item)
+          : item,
+      );
+    } else if (typeof val === "object" && val !== null) {
+      out[key] = redactSensitiveData(val as Record<string, unknown>);
+    } else {
+      out[key] = val;
+    }
+  }
+
+  return out;
+}
+
+function sanitizeText(text: string): string {
+  return text
+    .replace(/S[A-Z0-9]{55}/g, "[REDACTED_STELLAR_SECRET]")
+    .replace(/ey[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, "[REDACTED_JWT]")
+    .replace(/AAAA[A-Za-z0-9+/=]{60,}/g, "[REDACTED_XDR_PAYLOAD]");
+}
+
 function toMessage(error: unknown): { message: string; stack?: string } {
   if (error instanceof Error) {
-    return { message: error.message, stack: error.stack };
+    return {
+      message: sanitizeText(error.message),
+      stack: error.stack ? sanitizeText(error.stack) : undefined,
+    };
   }
-  if (typeof error === "string") return { message: error };
+  if (typeof error === "string") return { message: sanitizeText(error) };
   try {
-    return { message: JSON.stringify(error) };
+    return { message: sanitizeText(JSON.stringify(error)) };
   } catch {
-    return { message: String(error) };
+    return { message: sanitizeText(String(error)) };
   }
 }
 
@@ -72,24 +138,21 @@ export function buildReport(
   requestId?: string,
 ): ReportedError {
   const { message, stack } = toMessage(error);
-  const reqId =
+  const explicitRequestId =
     requestId ||
-    (typeof context?.requestId === "string" ? context.requestId : undefined) ||
-    (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
-      ? crypto.randomUUID()
-      : undefined);
+    (typeof context?.requestId === "string" ? context.requestId : undefined);
+  const resolvedRequestId = getOrCreateRequestId(explicitRequestId);
 
   return {
-    requestId: getOrCreateRequestId(requestId),
+    requestId: resolvedRequestId,
     name,
     message,
     stack,
     severity,
-    context,
+    context: redactSensitiveData(context),
     network: STELLAR_NETWORK,
     appVersion: APP_VERSION,
     timestamp: new Date().toISOString(),
-    ...(reqId ? { requestId: reqId } : {}),
   };
 }
 

@@ -11,6 +11,7 @@ import { WalletAddressBadge } from "@/components/ui/WalletAddressBadge";
 
 import { Money } from "@/components/ui/Money";
 import { type Money as MoneyType } from "@/lib/money";
+import { useLocale } from "@/context/LocaleContext";
 
 interface TripCardProps {
   trip: Trip;
@@ -29,8 +30,9 @@ export function TripCard({
   index = 0,
   connectedWalletAddress,
 }: TripCardProps) {
+  const { formatDate } = useLocale();
   const [isDeleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
-  const createdAt = new Date(trip.createdAt).toLocaleDateString("en-US", {
+  const createdAt = formatDate(trip.createdAt, {
     month: "short",
     day: "numeric",
     year: "numeric",

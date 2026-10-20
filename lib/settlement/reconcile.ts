@@ -18,13 +18,24 @@ import { type SettlementIntent, markIntentRecorded, markIntentFailed } from "@/l
 import {
   fetchActiveSettlementIntents,
   markSharePaidRow,
+  recordShareInstallmentRow,
   type DatabaseError,
 } from "@/lib/supabase/queries";
+import {
+  applyInstallment,
+  hasInstallments,
+  installmentClaimId,
+  installmentSeqFromKey,
+  installmentsOf,
+  parseInstallmentClaimId,
+  shareBalance,
+} from "@/lib/settlement/installments";
 import { verifyPaymentByHash } from "@/lib/settlement/horizonVerify";
 import { fetchAttestation } from "@/lib/settlement/settleOnChain";
 import { recordPaymentOnChain, checkIsPaid, getContractPayments } from "@/lib/stellar/contract";
 import { fetchContractEvents, buildPaymentEventKey } from "@/lib/stellar/events";
 import { CONTRACT_ID } from "@/lib/utils/constants";
+import { reportError } from "@/lib/observability/reportError";
 import { Money } from "@/lib/money";
 import {
   assetKey,
@@ -129,6 +140,18 @@ export async function reconcileSettlementIntent(
   } catch (err) {
     // If Horizon cannot find the transaction or verification fails
     const message = err instanceof Error ? err.message : "Horizon verification failed.";
+    reportError(
+      "reconciliation.failed",
+      err,
+      {
+        stage: "horizon-verify",
+        intentId: intent.id,
+        txHash: intent.txHash,
+        tripId: intent.tripId,
+      },
+      "warning",
+      intent.requestId,
+    );
     return {
       intentId: intent.id,
       reconciled: false,
@@ -139,17 +162,43 @@ export async function reconcileSettlementIntent(
     };
   }
 
+  // An installment intent (#325) is attested and recorded on-chain under its
+  // own claim id, and is applied to the share as an installment — never as
+  // "paid in full".
+  const installmentSeq = installmentSeqFromKey(intent.idempotencyKey ?? "");
+  const claimExpenseId = installmentSeq ? installmentClaimId(intent.expenseId, installmentSeq) : intent.expenseId;
+
+  if (installmentSeq) {
+    let intentStroops: bigint | null = null;
+    try {
+      intentStroops = Money.parse(intent.amount).toStroops();
+    } catch {
+      intentStroops = null;
+    }
+    if (intentStroops === null || verifiedPayment.amountStroops < intentStroops) {
+      return {
+        intentId: intent.id,
+        reconciled: false,
+        onChain: false,
+        status: intent.status,
+        message: "The transaction on Stellar paid less than this installment claims; it was not applied.",
+        intent,
+      };
+    }
+  }
+
   // 2. Horizon confirmed the transaction! Ensure contract is recorded if configured.
   let onChain = intent.onChain;
   let ledger = verifiedPayment.ledger;
   let needsSignature = false;
+  let attestationNonce: string | null = null;
 
   if (CONTRACT_ID && !onChain && intent.tripId) {
     try {
       // Check if already recorded on Soroban contract
       const alreadyOnChain = await checkIsPaid(
         intent.memberWallet,
-        intent.expenseId,
+        claimExpenseId,
         intent.memberWallet,
       );
 
@@ -160,7 +209,7 @@ export async function reconcileSettlementIntent(
         const attested = await fetchAttestation({
           requestId: intent.requestId,
           tripId: intent.tripId,
-          expenseId: intent.expenseId,
+          expenseId: claimExpenseId,
           payerPublicKey: intent.payerWallet,
           memberPublicKey: intent.memberWallet,
           amountXlm: intent.amount,
@@ -168,11 +217,13 @@ export async function reconcileSettlementIntent(
         });
 
         if (attested.ok) {
+          attestationNonce = attested.attestation?.claim?.nonce ?? null;
           if (options?.allowActiveSubmission ?? true) {
             const contractRes = await recordPaymentOnChain({
+              requestId: intent.requestId,
               memberPublicKey: intent.memberWallet,
               tripId: intent.tripId,
-              expenseId: intent.expenseId,
+              expenseId: claimExpenseId,
               payerPublicKey: intent.payerWallet,
               amountXlm: intent.amount,
               txHash: intent.txHash,
@@ -182,22 +233,76 @@ export async function reconcileSettlementIntent(
             if (contractRes.success) {
               onChain = true;
               if (contractRes.ledger) ledger = contractRes.ledger;
+            } else {
+              reportError(
+                "reconciliation.contract-recording-failed",
+                new Error(contractRes.error ?? "Contract recording failed during reconciliation"),
+                {
+                  intentId: intent.id,
+                  txHash: intent.txHash,
+                  tripId: intent.tripId,
+                },
+                "warning",
+                intent.requestId,
+              );
             }
           } else {
             needsSignature = true;
           }
+        } else {
+          reportError(
+            "reconciliation.attestation-failed",
+            new Error(attested.message),
+            {
+              intentId: intent.id,
+              txHash: intent.txHash,
+              tripId: intent.tripId,
+            },
+            "warning",
+            intent.requestId,
+          );
         }
       }
-    } catch {
+    } catch (err) {
       // Non-fatal: onChain remains false, but financial reality (Horizon payment) is authoritative
+      reportError(
+        "reconciliation.contract-recording-failed",
+        err,
+        {
+          intentId: intent.id,
+          txHash: intent.txHash,
+          tripId: intent.tripId,
+        },
+        "warning",
+        intent.requestId,
+      );
     }
   }
 
-  // 3. Mark the share paid in Supabase (atomically via markSharePaidRow)
+  // 3. Mark the share paid in Supabase (atomically via markSharePaidRow), or
+  //    append the installment — idempotent on the transaction hash.
   try {
-    await markSharePaidRow(intent.expenseId, intent.memberId, intent.txHash, client);
+    if (installmentSeq) {
+      await recordShareInstallmentRow(
+        intent.expenseId,
+        intent.memberId,
+        {
+          seq: installmentSeq,
+          amount: intent.amount,
+          txHash: intent.txHash,
+          claimId: claimExpenseId,
+          ledger,
+          attestationNonce,
+          verified: true,
+          onChain,
+        },
+        client,
+      );
+    } else {
+      await markSharePaidRow(intent.expenseId, intent.memberId, intent.txHash, client);
+    }
   } catch (err) {
-    console.warn("[reconcile] markSharePaidRow warning:", err);
+    console.warn("[reconcile] share settlement write warning:", err);
   }
 
   // 4. Mark intent recorded
@@ -241,6 +346,18 @@ export async function reconcilePendingIntentsForWallet(
       results.push(result);
     } catch (err) {
       console.warn(`[reconcile] Error reconciling intent ${intent.id}:`, err);
+      reportError(
+        "reconciliation.failed",
+        err,
+        {
+          stage: "reconcilePendingIntentsForWallet",
+          intentId: intent.id,
+          txHash: intent.txHash,
+          tripId: intent.tripId,
+        },
+        "error",
+        intent.requestId,
+      );
     }
   }
 
@@ -286,7 +403,9 @@ export async function reconcileTripWithChainState(
   for (const payment of onChainPayments) {
     if (payment.tripId && payment.tripId !== tripId) continue;
 
-    const expense = expenses.find((e) => e.id === payment.expenseId);
+    // Installments are recorded on-chain as `<expenseId>#<seq>` (#325).
+    const { expenseId: baseExpenseId, seq: installmentSeq } = parseInstallmentClaimId(payment.expenseId);
+    const expense = expenses.find((e) => e.id === baseExpenseId);
     if (!expense) continue;
 
     // The expense's SETTLEMENT asset. Matching on `expense.currency` compared
@@ -304,6 +423,47 @@ export async function reconcileTripWithChainState(
       : BigInt(payment.amountStroops ?? 0);
 
     const memberLower = (payment.member ?? "").trim().toLowerCase();
+
+    if (installmentSeq !== null) {
+      const share = expense.shares.find((s) => {
+        const shareWallet = (
+          s.walletAddress ||
+          expense.members.find((m) => m.id === s.memberId)?.walletAddress ||
+          ""
+        ).trim().toLowerCase();
+        return shareWallet === memberLower;
+      });
+      if (!share) continue;
+      const txHash = payment.txHash.trim().toLowerCase();
+      if (installmentsOf(share).some((i) => i.txHash.toLowerCase() === txHash)) continue;
+
+      const amount = Money.fromStroops(paymentAmountStroops).format();
+      // Pure pre-check: never repair a share past what it owes.
+      const applied = applyInstallment(share, {
+        seq: installmentSeq,
+        amount,
+        txHash,
+        claimId: payment.expenseId,
+      });
+      if (!applied.ok || applied.duplicate) continue;
+
+      try {
+        await recordShareInstallmentRow(
+          expense.id,
+          share.memberId,
+          { seq: installmentSeq, amount, txHash, claimId: payment.expenseId, verified: true, onChain: true },
+          client,
+        );
+        reconciledCount++;
+        if (!repairedExpenseIds.includes(expense.id)) {
+          repairedExpenseIds.push(expense.id);
+        }
+      } catch (err) {
+        console.warn(`[reconcile] Failed to repair installment for expense ${expense.id}:`, err);
+      }
+      continue;
+    }
+
     const share = expense.shares.find((s) => {
       if (s.paid) return false;
       const shareWallet = (
@@ -314,7 +474,11 @@ export async function reconcileTripWithChainState(
 
       if (shareWallet !== memberLower) return false;
 
-      const shareStroops = parseAmountToStroops(s.amount);
+      // A plain-id record settles the whole share; for a share already part
+      // paid that is its remaining balance, never the original amount.
+      const shareStroops = hasInstallments(s)
+        ? shareBalance(s).remainingStroops
+        : parseAmountToStroops(s.amount);
       return shareStroops === paymentAmountStroops;
     });
 

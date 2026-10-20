@@ -3,20 +3,13 @@
 import React, { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
-import { Menu, X, LogOut, User, LayoutDashboard, Receipt, Map, ChevronDown, Copy } from "lucide-react";
+import { Menu, X, LogOut, User, LayoutDashboard, Receipt, Map, ChevronDown, Copy, BarChart2, Code } from "lucide-react";
 import { useWallet } from "@/hooks/useWallet";
 import { useAuth } from "@/context/AuthContext";
 import { cn, formatAddress, copyToClipboard } from "@/lib/utils";
 import { StellarStarLogo } from "@/components/ui/Logo";
 import { useToast } from "@/components/ui/Toast";
 import { useLocale, type Locale } from "@/context/LocaleContext";
-
-const navLinks = [
-  // Anchor links must target the home page when the header is rendered on a subpage.
-  { label: "Features", href: "/#features" },
-  { label: "How It Works", href: "/#how-it-works" },
-  { label: "Pricing", href: "/#pricing" },
-];
 
 export default function Header() {
   const [isScrolled, setIsScrolled] = useState(false);
@@ -27,7 +20,14 @@ export default function Header() {
   const { isConnected, publicKey, disconnect } = useWallet();
   const { user, isAuthenticated, signOut } = useAuth();
   const { error: toastError } = useToast();
-  const { locale, setLocale } = useLocale();
+  const { locale, setLocale, t } = useLocale();
+
+  const navLinks = [
+    // Anchor links must target the home page when the header is rendered on a subpage.
+    { label: t("nav.features"), href: "/#features" },
+    { label: t("nav.howItWorks"), href: "/#how-it-works" },
+    { label: t("nav.pricing"), href: "/#pricing" },
+  ];
 
   const handleSignOut = () => {
     signOut();
@@ -45,7 +45,7 @@ export default function Header() {
     } else {
       toastError(
         "Copy unavailable",
-        "Clipboard access is blocked in this context. Please copy the address manually."
+        t("nav.copyUnavailable")
       );
     }
   };
@@ -122,6 +122,8 @@ export default function Header() {
                   <option value="de-DE">🇩🇪 DE</option>
                   <option value="hi-IN">🇮🇳 HI</option>
                   <option value="ja-JP">🇯🇵 JA</option>
+                  <option value="ar-SA">🇸🇦 AR</option>
+                  <option value="qps-ploc">🔤 PLOC</option>
                 </select>
                 {isAuthenticated ? (
                   <div ref={userMenuRef} className="relative">
@@ -150,21 +152,21 @@ export default function Header() {
                           animate={{ opacity: 1, scale: 1, y: 0 }}
                           exit={{ opacity: 0, scale: 0.96, y: -6 }}
                           transition={{ duration: 0.15, ease: "easeOut" }}
-                          className="absolute right-0 mt-2 w-60 bg-white border border-[#E5E5E5] rounded-2xl shadow-[0_8px_40px_-8px_rgba(0,0,0,0.18)] overflow-hidden z-50"
+                          className="absolute right-0 rtl:right-auto rtl:left-0 mt-2 w-60 bg-white border border-[#E5E5E5] rounded-2xl shadow-[0_8px_40px_-8px_rgba(0,0,0,0.18)] overflow-hidden z-50"
                         >
                           {/* Wallet address */}
                           <div className="px-4 pt-4 pb-3 border-b border-[#F0F0F0]">
-                            <p className="text-xs font-semibold text-[#888] uppercase tracking-wider mb-1.5">Wallet</p>
+                            <p className="text-xs font-semibold text-[#888] uppercase tracking-wider mb-1.5">{t("nav.wallet")}</p>
                             <button
                               onClick={copyAddress}
                               className="w-full flex items-center gap-2 px-2.5 py-1.5 bg-[#F6F6F6] hover:bg-[#EDEDED] rounded-lg transition-all group"
                             >
-                              <span className="text-xs font-mono text-[#0F0F14] truncate flex-1 text-left">
+                              <span className="text-xs font-mono text-[#0F0F14] truncate flex-1 text-left rtl:text-right">
                                 {publicKey ? formatAddress(publicKey, 8) : ''}
                               </span>
                               <Copy size={12} className="text-[#888] group-hover:text-[#0F0F14] shrink-0" />
                             </button>
-                            {copied && <p className="text-xs text-[#134E4A] mt-1 text-center">Copied!</p>}
+                            {copied && <p className="text-xs text-[#134E4A] mt-1 text-center">{t("nav.copied")}</p>}
                           </div>
 
                           {/* Navigation links */}
@@ -175,7 +177,7 @@ export default function Header() {
                               className="flex items-center gap-3 px-3 py-2.5 text-sm font-medium text-[#0F0F14] hover:bg-[#F6F6F6] rounded-xl transition-all"
                             >
                               <LayoutDashboard size={16} className="text-[#555]" />
-                              Dashboard
+                              {t("nav.dashboard")}
                             </Link>
                             <Link
                               href="/expenses"
@@ -183,7 +185,7 @@ export default function Header() {
                               className="flex items-center gap-3 px-3 py-2.5 text-sm font-medium text-[#0F0F14] hover:bg-[#F6F6F6] rounded-xl transition-all"
                             >
                               <Receipt size={16} className="text-[#555]" />
-                              Expenses
+                              {t("nav.expenses")}
                             </Link>
                             <Link
                               href="/trips"
@@ -191,7 +193,23 @@ export default function Header() {
                               className="flex items-center gap-3 px-3 py-2.5 text-sm font-medium text-[#0F0F14] hover:bg-[#F6F6F6] rounded-xl transition-all"
                             >
                               <Map size={16} className="text-[#555]" />
-                              Trips
+                              {t("nav.trips")}
+                            </Link>
+                            <Link
+                              href="/analytics"
+                              onClick={() => setUserMenuOpen(false)}
+                              className="flex items-center gap-3 px-3 py-2.5 text-sm font-medium text-[#0F0F14] hover:bg-[#F6F6F6] rounded-xl transition-all"
+                            >
+                              <BarChart2 size={16} className="text-[#555]" />
+                              Analytics
+                            </Link>
+                            <Link
+                              href="/developer"
+                              onClick={() => setUserMenuOpen(false)}
+                              className="flex items-center gap-3 px-3 py-2.5 text-sm font-medium text-[#0F0F14] hover:bg-[#F6F6F6] rounded-xl transition-all"
+                            >
+                              <Code size={16} className="text-[#555]" />
+                              Developer API
                             </Link>
                           </div>
 
@@ -202,7 +220,7 @@ export default function Header() {
                               className="w-full flex items-center gap-3 px-3 py-2.5 text-sm font-medium text-[#FF6B6B] hover:bg-[#FF6B6B]/8 rounded-xl transition-all"
                             >
                               <LogOut size={16} />
-                              Sign Out
+                              {t("nav.signOut")}
                             </button>
                           </div>
                         </motion.div>
@@ -214,7 +232,7 @@ export default function Header() {
                     href="/auth"
                     className="px-4 py-2 text-sm font-semibold text-white bg-[#0F0F14] hover:bg-[#333] rounded-xl transition-all"
                   >
-                    Sign In
+                    {t("nav.signIn")}
                   </Link>
                 )}
               </div>
@@ -260,7 +278,7 @@ export default function Header() {
             </nav>
             <div className="flex flex-col gap-2 pt-3 border-t border-[#E5E5E5]">
               <div className="flex items-center justify-between px-3 py-1.5 bg-black/5 rounded-xl mb-1">
-                <span className="text-sm font-semibold text-[#0F0F14]">Language</span>
+                <span className="text-sm font-semibold text-[#0F0F14]">{t("nav.language")}</span>
                 <select
                   value={locale}
                   onChange={(e) => setLocale(e.target.value as Locale)}
@@ -272,6 +290,8 @@ export default function Header() {
                   <option value="de-DE">🇩🇪 DE</option>
                   <option value="hi-IN">🇮🇳 HI</option>
                   <option value="ja-JP">🇯🇵 JA</option>
+                  <option value="ar-SA">🇸🇦 AR</option>
+                  <option value="qps-ploc">🔤 PLOC</option>
                 </select>
               </div>
               {isAuthenticated ? (
@@ -297,7 +317,7 @@ export default function Header() {
                     className="flex items-center gap-3 px-3 py-2.5 text-sm font-medium text-[#0F0F14] hover:bg-black/5 rounded-xl transition-all"
                   >
                     <LayoutDashboard size={16} className="text-[#555]" />
-                    Dashboard
+                    {t("nav.dashboard")}
                   </Link>
                   <Link
                     href="/expenses"
@@ -305,7 +325,7 @@ export default function Header() {
                     className="flex items-center gap-3 px-3 py-2.5 text-sm font-medium text-[#0F0F14] hover:bg-black/5 rounded-xl transition-all"
                   >
                     <Receipt size={16} className="text-[#555]" />
-                    Expenses
+                    {t("nav.expenses")}
                   </Link>
                   <Link
                     href="/trips"
@@ -313,14 +333,30 @@ export default function Header() {
                     className="flex items-center gap-3 px-3 py-2.5 text-sm font-medium text-[#0F0F14] hover:bg-black/5 rounded-xl transition-all"
                   >
                     <Map size={16} className="text-[#555]" />
-                    Trips
+                    {t("nav.trips")}
+                  </Link>
+                  <Link
+                    href="/analytics"
+                    onClick={() => setMobileOpen(false)}
+                    className="flex items-center gap-3 px-3 py-2.5 text-sm font-medium text-[#0F0F14] hover:bg-black/5 rounded-xl transition-all"
+                  >
+                    <BarChart2 size={16} className="text-[#555]" />
+                    Analytics
+                  </Link>
+                  <Link
+                    href="/developer"
+                    onClick={() => setMobileOpen(false)}
+                    className="flex items-center gap-3 px-3 py-2.5 text-sm font-medium text-[#0F0F14] hover:bg-black/5 rounded-xl transition-all"
+                  >
+                    <Code size={16} className="text-[#555]" />
+                    Developer API
                   </Link>
                   <button
                     onClick={handleSignOut}
                     className="flex items-center gap-3 px-3 py-2.5 text-sm font-medium text-[#FF6B6B] hover:bg-[#FF6B6B]/8 rounded-xl transition-all w-full"
                   >
                     <LogOut size={16} />
-                    Sign Out
+                    {t("nav.signOut")}
                   </button>
                 </>
               ) : (
@@ -329,7 +365,7 @@ export default function Header() {
                   onClick={() => setMobileOpen(false)}
                   className="px-4 py-3 text-sm font-semibold text-center text-white bg-[#0F0F14] hover:bg-[#333] rounded-xl transition-all w-full"
                 >
-                  Sign In
+                  {t("nav.signIn")}
                 </Link>
               )}
             </div>

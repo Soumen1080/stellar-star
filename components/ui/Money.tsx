@@ -27,8 +27,9 @@ export function Money({
   className,
   style,
 }: MoneyProps) {
-  const { locale } = useLocale();
-  const { formatted, a11y } = formatMoney(amount, asset, locale, { showExact });
+  const { locale, isHydrated } = useLocale();
+  const activeLocale = isHydrated ? locale : "en-US";
+  const { formatted, a11y } = formatMoney(amount, asset, activeLocale, { showExact });
 
   let visualPrefix = "";
   let directionText = "";
@@ -47,10 +48,11 @@ export function Money({
       className={cn("inline-flex items-center", className)}
       style={style}
       title={fullLabel}
+      suppressHydrationWarning
     >
-      <span aria-hidden="true" className="inline-flex items-center">
+      <span aria-hidden="true" className="inline-flex items-center" suppressHydrationWarning>
         {visualPrefix && <span className="mr-0.5 font-semibold select-none">{visualPrefix}</span>}
-        <span>{formatted}</span>
+        <span suppressHydrationWarning>{formatted}</span>
       </span>
       <span className="sr-only">{fullLabel}</span>
     </span>

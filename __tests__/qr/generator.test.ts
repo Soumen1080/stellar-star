@@ -15,7 +15,7 @@ describe("buildQRPaymentURI", () => {
   it("throws on invalid destination address", () => {
     expect(() =>
       buildQRPaymentURI({ destination: "INVALID_ADDR", amount }),
-    ).toThrow(/Invalid destination Stellar address/);
+    ).toThrow(/Invalid destination address/);
   });
 
   it("supports non-native asset codes and issuers", () => {

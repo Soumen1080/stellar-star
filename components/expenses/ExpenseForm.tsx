@@ -2,12 +2,15 @@
 
 import { Input } from "@/components/ui/Input";
 import { ExpenseDescriptionField } from "@/components/expenses/ExpenseDescriptionField";
+import { ExpenseLabelsFields } from "@/components/expenses/ExpenseLabelsFields";
 import { ExpenseFormActions } from "@/components/expenses/ExpenseFormActions";
+import { ExpenseFxPanel } from "@/components/expenses/ExpenseFxPanel";
 import { ExpenseMemberList } from "@/components/expenses/ExpenseMemberList";
 import { ExpensePayerSelect } from "@/components/expenses/ExpensePayerSelect";
 import { ExpenseSplitModeControl } from "@/components/expenses/ExpenseSplitModeControl";
 import { ExpenseSplitPreview } from "@/components/expenses/ExpenseSplitPreview";
 import { useExpenseForm } from "@/hooks/useExpenseForm";
+import type { ExpenseFormInitialValues } from "@/hooks/useExpenseForm";
 import type { Member } from "@/types/expense";
 
 interface ExpenseFormProps {
@@ -16,6 +19,7 @@ interface ExpenseFormProps {
   currentUserPublicKey?: string | null;
   currentUserName?: string | null;
   defaultMembers?: Member[];
+  initialValues?: ExpenseFormInitialValues;
 }
 
 export function ExpenseForm({
@@ -24,12 +28,14 @@ export function ExpenseForm({
   currentUserPublicKey,
   currentUserName,
   defaultMembers,
+  initialValues,
 }: ExpenseFormProps) {
   const form = useExpenseForm({
     onSuccess,
     currentUserPublicKey,
     currentUserName,
     defaultMembers,
+    initialValues,
   });
 
   return (
@@ -44,6 +50,15 @@ export function ExpenseForm({
       />
 
       <ExpenseDescriptionField value={form.description} onChange={form.setDescription} />
+
+      <ExpenseLabelsFields
+        category={form.category}
+        onCategoryChange={form.setCategory}
+        tagsInput={form.tagsInput}
+        onTagsInputChange={form.setTagsInput}
+        tags={form.tags}
+        error={form.errors.tags}
+      />
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <Input
@@ -73,6 +88,17 @@ export function ExpenseForm({
         <ExpenseSplitModeControl value={form.splitMode} onChange={form.setSplitMode} />
       </div>
 
+      <ExpenseFxPanel
+        enteredAmount={form.totalAmount}
+        currency={form.currency}
+        quote={form.quote}
+        state={form.quoteState}
+        settlementAmount={form.settlementPreview}
+        error={form.errors.quote}
+        onRefresh={() => void form.refreshQuote()}
+        onUseSettlementAsset={() => form.setCurrency("XLM")}
+      />
+
       <ExpenseMemberList
         members={form.members}
         splitMode={form.splitMode}
@@ -92,7 +118,7 @@ export function ExpenseForm({
         shares={form.shares}
         namedMembers={form.namedMembers}
         payerName={form.payerName}
-        totalAmount={form.totalAmount}
+        totalAmount={form.settlementPreview ?? form.totalAmount}
       />
 
       <ExpenseFormActions submitting={form.submitting} onCancel={onCancel} />

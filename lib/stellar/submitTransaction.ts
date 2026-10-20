@@ -2,6 +2,7 @@ import { TransactionBuilder } from "@stellar/stellar-sdk";
 import { createHorizonServer, server } from "./client";
 import { NETWORK_PASSPHRASE } from "@/lib/utils/constants";
 import type { StellarSubmitResult, HorizonErrorResponse } from "@/types/stellar";
+import { reportError } from "@/lib/observability/reportError";
 
 export type { StellarSubmitResult };
 
@@ -30,6 +31,17 @@ export async function submitSignedTransaction(
   } catch (err: unknown) {
     const horizonErr = err as { response?: { data?: HorizonErrorResponse } };
     const extras = horizonErr?.response?.data?.extras;
+
+    reportError(
+      "payment.submission-failed",
+      err,
+      {
+        operation: "submitSignedTransaction",
+        resultCodes: extras?.result_codes,
+      },
+      "error",
+      requestId,
+    );
 
     if (extras?.result_codes) {
       const { transaction, operations } = extras.result_codes;

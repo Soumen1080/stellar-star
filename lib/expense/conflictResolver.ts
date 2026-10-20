@@ -14,6 +14,7 @@
 import type { Expense, Member, SplitMode, SplitShare } from "@/types/expense";
 import { calculateEqualSplit, calculateCustomSplit, calculateSplit } from "@/lib/split/calculator";
 import { Money } from "@/lib/money";
+import { hasInstallments } from "@/lib/settlement/installments";
 
 export interface ConflictDetails {
   fields: string[];
@@ -60,8 +61,9 @@ export function recomputeSharesWithSettled(
     return [];
   }
 
-  // 1. Extract settled shares and their total
-  const settledShares = existingShares.filter((s) => s.paid);
+  // 1. Extract settled shares and their total. A share with installments
+  //    (#325) is locked too: its owed amount is what those payments count down.
+  const settledShares = existingShares.filter((s) => s.paid || hasInstallments(s));
 
   // If no settled shares exist, perform a clean fresh split
   if (settledShares.length === 0) {
@@ -307,7 +309,7 @@ export function mergeExpenseUpdates(
   }
 
   // Ensure settled shares are not violated (Invariant 2)
-  const settledShares = serverExpense.shares.filter((s) => s.paid);
+  const settledShares = serverExpense.shares.filter((s) => s.paid || hasInstallments(s));
   const settledTotal = Money.sum(settledShares.map((s) => s.amount));
 
   const effectiveTotalAmountStr = clientModified.has("totalAmount")

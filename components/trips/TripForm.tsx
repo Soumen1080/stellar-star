@@ -3,10 +3,16 @@
 import React, { useState } from "react";
 import { Plus, Trash2, UserPlus } from "lucide-react";
 import type { Member } from "@/types/expense";
-import type { TripFormData } from "@/types/trip";
+import type { Contact } from "@/types/contact";
+import type { TripFormData, RecurringExpenseRule, TripPermissions } from "@/types/trip";
+import { normalizePermissions, normalizeRecurringRules, validateTripDraft } from "@/lib/trip/templates";
 import { Input } from "@/components/ui/Input";
+import { TripPermissionsFields } from "@/components/trips/TripPermissionsFields";
+import { TripRecurringRulesEditor } from "@/components/trips/TripRecurringRulesEditor";
 import { findDuplicateWalletErrors, isValidStellarAddress } from "@/lib/split/calculator";
+import { canonicalWallet, contactToMember, walletTrust } from "@/lib/contacts/contacts";
 import { cn } from "@/lib/utils";
+import { trackAnalyticsEvent } from "@/lib/analytics/sink";
 
 interface TripFormProps {
   onSubmit: (data: TripFormData) => void;
@@ -16,6 +22,9 @@ interface TripFormProps {
   currentUserPublicKey?: string | null;
   /** Prefill the first member's name from authenticated user */
   currentUserName?: string | null;
+  /** The user's saved contacts, offered as one-click members. */
+  contacts?: Contact[];
+  submitLabel?: string;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -26,9 +35,26 @@ function createMember(name = ""): Member {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export function TripForm({ onSubmit, onCancel, initialData, currentUserPublicKey, currentUserName }: TripFormProps) {
+export function TripForm({
+  onSubmit,
+  onCancel,
+  initialData,
+  currentUserPublicKey,
+  currentUserName,
+  contacts = [],
+  submitLabel = "Create Trip",
+}: TripFormProps) {
+  const [submitting, setSubmitting] = useState(false);
   const [name, setName] = useState(initialData?.name ?? "");
   const [description, setDescription] = useState(initialData?.description ?? "");
+  const [startsOn, setStartsOn] = useState(initialData?.startsOn ?? "");
+  const [endsOn, setEndsOn] = useState(initialData?.endsOn ?? "");
+  const [recurringRules, setRecurringRules] = useState<RecurringExpenseRule[]>(
+    initialData?.recurringRules ?? []
+  );
+  const [permissions, setPermissions] = useState<TripPermissions>(() =>
+    normalizePermissions(initialData?.permissions)
+  );
   const [members, setMembers] = useState<Member[]>(() => {
     if (initialData?.members && initialData.members.length >= 2) {
       return initialData.members;
@@ -54,6 +80,21 @@ export function TripForm({ onSubmit, onCancel, initialData, currentUserPublicKey
   };
 
   const addMember = () => setMembers((prev) => [...prev, createMember()]);
+
+  /** Fills the first empty row (or appends one) from a saved contact. */
+  const addFromContact = (contactId: string) => {
+    const contact = contacts.find((c) => c.id === contactId);
+    if (!contact) return;
+    setMembers((prev) => {
+      const wallet = canonicalWallet(contact.walletAddress);
+      // Same wallet already present: duplicates are identified by address.
+      if (wallet && prev.some((m) => canonicalWallet(m.walletAddress) === wallet)) return prev;
+      const member = contactToMember(contact);
+      const emptyIndex = prev.findIndex((m) => !m.name.trim() && !m.walletAddress?.trim());
+      if (emptyIndex === -1) return [...prev, member];
+      return prev.map((m, i) => (i === emptyIndex ? { ...member, id: m.id } : m));
+    });
+  };
 
   const removeMember = (id: string) => {
     if (members.length <= 2) return;
@@ -85,6 +126,21 @@ export function TripForm({ onSubmit, onCancel, initialData, currentUserPublicKey
       errs[`member_addr_${i}`] = message;
     });
 
+    // Dates and recurring rules share their rules with the copy RPC, so take
+    // those checks from the same validator rather than restating them here.
+    const draftErrors = validateTripDraft({
+      name,
+      description,
+      members,
+      startsOn,
+      endsOn,
+      recurringRules,
+      permissions,
+    });
+    Object.entries(draftErrors).forEach(([key, message]) => {
+      if (key.startsWith("rule_") || key === "startsOn" || key === "endsOn") errs[key] = message;
+    });
+
     setErrors(errs);
     return Object.keys(errs).length === 0;
   };
@@ -93,18 +149,35 @@ export function TripForm({ onSubmit, onCancel, initialData, currentUserPublicKey
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!validate()) return;
+    const cleanMembers = members
+      .filter((m) => m.name.trim())
+      .map((m) => ({
+        ...m,
+        name: m.name.trim(),
+        walletAddress: m.walletAddress?.trim() ? m.walletAddress.trim().toUpperCase() : undefined,
+      }));
+
+    trackAnalyticsEvent("trip_created", {
+      member_count: cleanMembers.length,
+      has_dates: Boolean(startsOn || endsOn),
+      has_recurring_rules: recurringRules.length > 0,
+    });
+
     onSubmit({
       name: name.trim(),
       description: description.trim(),
-      members: members
-        .filter((m) => m.name.trim())
-        .map((m) => ({
-          ...m,
-          name: m.name.trim(),
-          walletAddress: m.walletAddress?.trim() ? m.walletAddress.trim().toUpperCase() : undefined,
-        })),
+      members: cleanMembers,
+      startsOn: startsOn || undefined,
+      endsOn: endsOn || undefined,
+      recurringRules: normalizeRecurringRules(recurringRules),
+      permissions,
     });
   };
+
+  const hasAdvancedValues =
+    Boolean(initialData?.startsOn || initialData?.endsOn) ||
+    (initialData?.recurringRules?.length ?? 0) > 0 ||
+    initialData?.permissions !== undefined;
 
   return (
     <form onSubmit={handleSubmit} className="space-y-5">
@@ -144,6 +217,26 @@ export function TripForm({ onSubmit, onCancel, initialData, currentUserPublicKey
 
         {errors.members && (
           <p className="text-xs text-red-500 mb-2">{errors.members}</p>
+        )}
+
+        {contacts.length > 0 && (
+          <select
+            aria-label="Add from contacts"
+            value=""
+            onChange={(e) => addFromContact(e.target.value)}
+            className="mb-2 w-full rounded-xl border border-[#E5E5E5] bg-white px-3 py-2.5 text-sm text-[#555]"
+          >
+            <option value="">Add from contacts…</option>
+            {contacts.map((contact) => {
+              const trust = walletTrust(contact);
+              return (
+                <option key={contact.id} value={contact.id}>
+                  {contact.displayName}
+                  {trust === "verified" ? " ✓ verified wallet" : trust === "unverified" ? " (unverified wallet)" : " (no wallet)"}
+                </option>
+              );
+            })}
+          </select>
         )}
 
         <div className="space-y-2">
@@ -201,6 +294,43 @@ export function TripForm({ onSubmit, onCancel, initialData, currentUserPublicKey
         </button>
       </div>
 
+      {/* Dates, recurring expenses & permissions. A <details> rather than a
+          toggle button keeps the member-row button order stable. */}
+      <details
+        open={hasAdvancedValues}
+        className="rounded-xl border border-[#EFEFEF] bg-[#FAFAFA] px-4 py-3 [&_summary]:cursor-pointer"
+      >
+        <summary className="text-sm font-semibold text-[#0F0F14]">
+          Dates, recurring expenses &amp; permissions
+        </summary>
+        <div className="mt-4 space-y-5">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <Input
+              label="Starts on"
+              type="date"
+              value={startsOn}
+              onChange={(e) => setStartsOn(e.target.value)}
+              error={errors.startsOn}
+            />
+            <Input
+              label="Ends on"
+              type="date"
+              value={endsOn}
+              min={startsOn || undefined}
+              onChange={(e) => setEndsOn(e.target.value)}
+              error={errors.endsOn}
+            />
+          </div>
+          <TripRecurringRulesEditor
+            rules={recurringRules}
+            members={members}
+            errors={errors}
+            onChange={setRecurringRules}
+          />
+          <TripPermissionsFields value={permissions} onChange={setPermissions} />
+        </div>
+      </details>
+
       {/* Actions */}
       <div className="flex gap-3 pt-2">
         <button
@@ -212,9 +342,10 @@ export function TripForm({ onSubmit, onCancel, initialData, currentUserPublicKey
         </button>
         <button
           type="submit"
-          className="flex-1 py-2.5 rounded-xl bg-[#0F0F14] text-[#2DD4BF] text-sm font-bold hover:bg-[#1A1A22] transition-all"
+          disabled={submitting}
+          className="flex-1 py-2.5 rounded-xl bg-[#0F0F14] text-[#2DD4BF] text-sm font-bold hover:bg-[#1A1A22] transition-all disabled:opacity-60"
         >
-          Create Trip
+          {submitting ? "Creating…" : submitLabel}
         </button>
       </div>
     </form>

@@ -7,6 +7,7 @@ import type { Expense } from "@/types/expense";
 import { cn } from "@/lib/utils";
 
 import { Money } from "@/components/ui/Money";
+import { useLocale } from "@/context/LocaleContext";
 
 interface ExpenseListProps {
   expenses: Expense[];
@@ -14,11 +15,13 @@ interface ExpenseListProps {
 }
 
 export function ExpenseList({ expenses, onSelect }: ExpenseListProps) {
+  const { formatDate, t } = useLocale();
+
   if (expenses.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-10 px-4 text-center rounded-xl border border-dashed border-[#E5E5E5]">
         <Inbox size={20} className="text-[#CCC] mb-2" />
-        <p className="text-sm text-[#AAA]">No expenses in this trip yet.</p>
+        <p className="text-sm text-[#AAA]">{t("expenses.noExpensesTrip")}</p>
       </div>
     );
   }
@@ -28,7 +31,7 @@ export function ExpenseList({ expenses, onSelect }: ExpenseListProps) {
       <AnimatePresence mode="popLayout">
         {expenses.map((expense, i) => {
           const paidCount = expense.shares.filter((s) => s.paid).length;
-          const createdAt = new Date(expense.createdAt).toLocaleDateString("en-US", {
+          const createdAt = formatDate(expense.createdAt, {
             month: "short",
             day: "numeric",
           });
@@ -69,11 +72,14 @@ export function ExpenseList({ expenses, onSelect }: ExpenseListProps) {
                 <div className="shrink-0 text-right">
                   {expense.settled ? (
                     <span className="text-[10px] font-bold uppercase px-2 py-0.5 bg-[#2DD4BF]/30 text-[#134E4A] rounded-full">
-                      Settled
+                      {t("expenses.settled")}
                     </span>
                   ) : (
                     <span className="text-xs text-[#AAA]">
-                      {paidCount}/{expense.shares.length} paid
+                      {t("expenses.paidRatio", {
+                        paid: String(paidCount),
+                        total: String(expense.shares.length),
+                      })}
                     </span>
                   )}
                 </div>

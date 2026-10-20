@@ -88,7 +88,7 @@ export async function getNetworkBaseReserve(
 }
 
 /** Every account carries two base reserves before any subentries. */
-export const BASE_ACCOUNT_SUBENTRIES = 2n/;
+export const BASE_ACCOUNT_SUBENTRIES = 2n;
 
 const STROOPS_PER_XLM = 10_000_000n;
 

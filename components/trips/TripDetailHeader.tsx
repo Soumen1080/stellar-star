@@ -1,6 +1,6 @@
 "use client";
 
-import { CheckCheck, ReceiptText, Users } from "lucide-react";
+import { CalendarDays, CheckCheck, Copy, LayoutTemplate, ReceiptText, Users } from "lucide-react";
 import { TripMembersList } from "@/components/trips/TripMembersList";
 import type { Expense } from "@/types/expense";
 import type { Trip } from "@/types/trip";
@@ -13,9 +13,26 @@ interface TripDetailHeaderProps {
   trip: Trip;
   expenses: Expense[];
   onOpenInvite?: () => void;
+  /** Save this trip's members, rules and permissions as a template. */
+  onSaveTemplate?: () => void;
+  /** Start a new trip from this one's structure. */
+  onDuplicate?: () => void;
 }
 
-export function TripDetailHeader({ trip, expenses, onOpenInvite }: TripDetailHeaderProps) {
+function formatTripDates(startsOn?: string, endsOn?: string): string | null {
+  if (startsOn && endsOn) return startsOn === endsOn ? startsOn : `${startsOn} → ${endsOn}`;
+  if (startsOn) return `From ${startsOn}`;
+  if (endsOn) return `Until ${endsOn}`;
+  return null;
+}
+
+export function TripDetailHeader({
+  trip,
+  expenses,
+  onOpenInvite,
+  onSaveTemplate,
+  onDuplicate,
+}: TripDetailHeaderProps) {
   // Group by SETTLEMENT asset. Grouping by `expense.currency` split a trip of
   // EUR- and USD-entered expenses into two buckets and labelled it "Mixed
   // Assets", even though every amount was already converted to XLM and the
@@ -43,6 +60,10 @@ export function TripDetailHeader({ trip, expenses, onOpenInvite }: TripDetailHea
   } else if (assetEntries.length > 1) {
     displayTotal = "Mixed Assets total";
   }
+
+  const dates = formatTripDates(trip.startsOn, trip.endsOn);
+  const actionClass =
+    "inline-flex items-center gap-1 rounded-lg border border-[#E5E5E5] px-2.5 py-1.5 text-[11px] font-bold text-[#555] hover:bg-[#F0F0F0] hover:text-[#0F0F14] transition-all";
 
   return (
     <div className="bg-white rounded-2xl border border-[#E5E5E5] p-5 mb-6">
@@ -75,8 +96,30 @@ export function TripDetailHeader({ trip, expenses, onOpenInvite }: TripDetailHea
                 {paidShares}/{shares.length} shares paid
               </span>
             )}
+            {dates && (
+              <span className="flex items-center gap-1">
+                <CalendarDays size={11} />
+                {dates}
+              </span>
+            )}
           </div>
         </div>
+        {(onSaveTemplate || onDuplicate) && (
+          <div className="flex shrink-0 flex-col gap-1.5 sm:flex-row">
+            {onSaveTemplate && (
+              <button type="button" onClick={onSaveTemplate} className={actionClass}>
+                <LayoutTemplate size={11} />
+                Save as template
+              </button>
+            )}
+            {onDuplicate && (
+              <button type="button" onClick={onDuplicate} className={actionClass}>
+                <Copy size={11} />
+                Duplicate
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       <TripMembersList members={trip.members} onOpenInvite={onOpenInvite} />

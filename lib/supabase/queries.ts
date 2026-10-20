@@ -8,7 +8,8 @@
 
 import type { PostgrestError } from "@supabase/supabase-js";
 import type { Expense, Member, SplitShare } from "@/types/expense";
-import type { Trip } from "@/types/trip";
+import type { Trip, TripTemplate } from "@/types/trip";
+import { normalizeWorkspace } from "@/types/workspace";
 import type {
   ExpenseInsert,
   ExpenseRow,
@@ -16,6 +17,8 @@ import type {
   TripInsert,
   TripRow,
   TripUpdate,
+  TripTemplateRow,
+  TripTemplateUpdate,
   UserRow,
   SettlementIntentInsert,
   SettlementIntentRow,
@@ -29,6 +32,15 @@ import {
   type ConflictDetails,
 } from "@/lib/expense/conflictResolver";
 import type { QueryCacheDomain } from "./cacheInvalidation";
+import { applyInstallment, markInstallmentProof, type NewInstallment } from "@/lib/settlement/installments";
+import { Money } from "@/lib/money";
+import {
+  normalizePermissions,
+  normalizeRecurringRules,
+  toTripCopyPayload,
+  type TemplateDraft,
+  type TripCopyRequest,
+} from "@/lib/trip/templates";
 
 export { ExpenseConflictError, type ConflictDetails };
 
@@ -205,6 +217,10 @@ export function rowToExpense(row: ExpenseRow): Expense {
     currency: row.currency,
     exchangeRate: row.exchange_rate ?? undefined,
     exchangeRateTimestamp: row.exchange_rate_timestamp ?? undefined,
+    exchangeRateSource: row.exchange_rate_source ?? undefined,
+    enteredAmount: row.entered_amount ?? undefined,
+    // Rows from before migration 0010 lack the column and settle native.
+    settlementAsset: row.settlement_asset ?? "native",
     splitMode: row.split_mode,
     paidByMemberId: row.paid_by_member_id,
     members: (row.members ?? []) as unknown as Member[],
@@ -216,6 +232,10 @@ export function rowToExpense(row: ExpenseRow): Expense {
   };
 }
 
+/**
+ * Realtime payloads and rows from a database that has not run migration 0008
+ * yet can lack the structure columns, so every one of them is read defensively.
+ */
 export function rowToTrip(row: TripRow): Trip {
   return {
     id: row.id,
@@ -226,6 +246,29 @@ export function rowToTrip(row: TripRow): Trip {
     createdAt: row.created_at,
     settled: row.settled,
     createdByWallet: row.created_by_wallet,
+    startsOn: row.starts_on ?? undefined,
+    endsOn: row.ends_on ?? undefined,
+    recurringRules: normalizeRecurringRules(row.recurring_rules),
+    permissions: normalizePermissions(row.permissions),
+    sourceTemplateId: row.source_template_id ?? undefined,
+    copiedFromTripId: row.copied_from_trip_id ?? undefined,
+    workspace: normalizeWorkspace(row.workspace),
+  };
+}
+
+export function rowToTripTemplate(row: TripTemplateRow): TripTemplate {
+  return {
+    id: row.id,
+    name: row.name,
+    description: row.description ?? undefined,
+    members: (row.members ?? []) as unknown as Member[],
+    recurringRules: normalizeRecurringRules(row.recurring_rules),
+    permissions: normalizePermissions(row.permissions),
+    durationDays: row.duration_days ?? undefined,
+    sourceTripId: row.source_trip_id ?? undefined,
+    ownerWallet: row.owner_wallet,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
   };
 }
 
@@ -292,6 +335,9 @@ export function expenseToInsert(expense: Expense, creatorWallet: string): Expens
     currency: expense.currency ?? "XLM",
     exchange_rate: expense.exchangeRate ?? null,
     exchange_rate_timestamp: expense.exchangeRateTimestamp ?? null,
+    exchange_rate_source: expense.exchangeRateSource ?? null,
+    entered_amount: expense.enteredAmount ?? null,
+    settlement_asset: expense.settlementAsset ?? "native",
     split_mode: expense.splitMode,
     paid_by_member_id: expense.paidByMemberId,
     members: expense.members as unknown as ExpenseInsert["members"],
@@ -318,6 +364,10 @@ export function expenseToUpdate(updates: Partial<Expense>): ExpenseUpdate {
   // totalAmount, currency, exchangeRate, and exchangeRateTimestamp are omitted here
   // because the database freeze_row_identity trigger intercepts them and preserves
   // the snapshot taken at creation.
+  // Category and tags are organization only — no amount depends on them — so
+  // any member may relabel a shared expense.
+  if (updates.category !== undefined) patch.category = updates.category ?? null;
+  if (updates.tags !== undefined) patch.tags = normalizeTags(updates.tags);
   if (updates.splitMode !== undefined) patch.split_mode = updates.splitMode;
   if (updates.paidByMemberId !== undefined) patch.paid_by_member_id = updates.paidByMemberId;
   if (updates.members !== undefined) {
@@ -341,6 +391,11 @@ export function tripToInsert(trip: Trip, creatorWallet: string): TripInsert {
     settled: trip.settled,
     created_by_wallet: creatorWallet,
     created_at: trip.createdAt,
+    starts_on: trip.startsOn ?? null,
+    ends_on: trip.endsOn ?? null,
+    recurring_rules: normalizeRecurringRules(trip.recurringRules) as unknown as Json,
+    permissions: normalizePermissions(trip.permissions) as unknown as Json,
+    workspace: (trip.workspace ? normalizeWorkspace(trip.workspace) : null) as unknown as Json,
   };
 }
 
@@ -353,6 +408,17 @@ export function tripToUpdate(updates: Partial<Trip>): TripUpdate {
   }
   if (updates.expenseIds !== undefined) patch.expense_ids = updates.expenseIds;
   if (updates.settled !== undefined) patch.settled = updates.settled;
+  if (updates.startsOn !== undefined) patch.starts_on = updates.startsOn || null;
+  if (updates.endsOn !== undefined) patch.ends_on = updates.endsOn || null;
+  if (updates.recurringRules !== undefined) {
+    patch.recurring_rules = normalizeRecurringRules(updates.recurringRules) as unknown as Json;
+  }
+  if (updates.permissions !== undefined) {
+    patch.permissions = normalizePermissions(updates.permissions) as unknown as Json;
+  }
+  if (updates.workspace !== undefined) {
+    patch.workspace = normalizeWorkspace(updates.workspace) as unknown as Json;
+  }
   return patch;
 }
 
@@ -362,9 +428,11 @@ export function tripToUpdate(updates: Partial<Trip>): TripUpdate {
 
 const USER_COLUMNS = "id, wallet_address, display_name, created_at, updated_at, last_login_at";
 const EXPENSE_COLUMNS =
-  "id, title, description, total_amount, currency, exchange_rate, exchange_rate_timestamp, split_mode, paid_by_member_id, members, shares, settled, created_by_wallet, member_wallets, created_at, updated_at";
+  "id, title, description, total_amount, currency, exchange_rate, exchange_rate_timestamp, exchange_rate_source, entered_amount, settlement_asset, split_mode, paid_by_member_id, members, shares, settled, created_by_wallet, member_wallets, created_at, updated_at";
 const TRIP_COLUMNS =
-  "id, name, description, members, expense_ids, settled, created_by_wallet, member_wallets, created_at, updated_at";
+  "id, name, description, members, expense_ids, settled, created_by_wallet, member_wallets, starts_on, ends_on, recurring_rules, permissions, source_template_id, copied_from_trip_id, workspace, created_at, updated_at";
+const TRIP_TEMPLATE_COLUMNS =
+  "id, owner_wallet, name, description, members, recurring_rules, permissions, duration_days, source_trip_id, created_at, updated_at";
 const SETTLEMENT_INTENT_COLUMNS =
   "id, idempotency_key, trip_id, expense_id, member_id, payer_wallet, member_wallet, amount, currency, status, tx_hash, ledger, on_chain, error_message, created_by_wallet, created_at, updated_at, expires_at";
 
@@ -548,6 +616,78 @@ export async function fetchExpensesPaginated(
   };
 }
 
+/** PGRST202 — the RPC is not in the PostgREST schema cache (migration not applied). */
+const PG_FUNCTION_MISSING = "PGRST202";
+
+export interface ExpenseHistoryQuery {
+  filters: ExpenseHistoryFilters;
+  /** Restrict to one trip's expenses. RLS still decides which of them are visible. */
+  tripId?: string | null;
+  cursor?: HistoryCursor | null;
+  limit?: number;
+  /** Viewer's `Date#getTimezoneOffset()`, so date filters mean their local days. */
+  tzOffsetMinutes?: number;
+}
+
+/**
+ * One page of filtered, searched expense history, newest first.
+ *
+ * All filtering runs in Postgres (`public.search_expenses`, SECURITY INVOKER so
+ * the caller's RLS applies) with keyset pagination on (created_at, id). That is
+ * what keeps a trip with thousands of expenses usable: the browser receives one
+ * page, never the whole trip, and paging stays stable while rows are inserted.
+ */
+export async function searchExpenseHistory(
+  query: ExpenseHistoryQuery,
+  client: StellarStarClient = requireAuthenticatedClient()
+): Promise<PaginatedResponse<Expense>> {
+  const { limit } = parsePaginationParams({ limit: query.limit ?? null });
+  const { filters } = query;
+  const terms = searchTerms(filters.q);
+  const { fromIso, toIso } = dateRangeBounds(filters.from, filters.to, query.tzOffsetMinutes ?? 0);
+
+  const { data, error } = await client.rpc("search_expenses", {
+    p_trip_id: query.tripId ?? null,
+    p_terms: terms.length > 0 ? terms : null,
+    p_category: filters.category,
+    p_tags: filters.tags.length > 0 ? filters.tags : null,
+    p_payer: filters.payer,
+    p_status: filters.status === "all" ? null : filters.status,
+    p_asset: filters.asset,
+    p_from: fromIso,
+    p_to: toIso,
+    p_cursor_created_at: query.cursor?.createdAt ?? null,
+    p_cursor_id: query.cursor?.id ?? null,
+    // One extra row reveals whether another page exists without a count(*).
+    p_limit: limit + 1,
+  });
+
+  if (error) {
+    if (error.code === PG_FUNCTION_MISSING) {
+      throw new DatabaseError(
+        "Expense search is not set up yet. Apply migrations/0008_expense_categories_tags_search.sql (npm run db:migrate).",
+        error.code,
+        error
+      );
+    }
+    throw toDatabaseError(error, "search expenses");
+  }
+
+  const rows = ((data ?? []) as ExpenseRow[]).map(rowToExpense);
+  const hasMore = rows.length > limit;
+  const items = hasMore ? rows.slice(0, limit) : rows;
+  const last = items[items.length - 1];
+
+  return {
+    data: items,
+    pagination: {
+      limit,
+      nextCursor: hasMore && last ? encodeHistoryCursor(last.createdAt, last.id) : null,
+      hasMore,
+    },
+  };
+}
+
 export async function fetchExpenseById(
   id: string,
   client: StellarStarClient = requireAuthenticatedClient()
@@ -591,20 +731,26 @@ export async function updateExpenseRow(
 
   // If a baseExpense with version is provided, try optimistic concurrency control
   if (baseExpense && baseExpense.version !== undefined) {
+    // `update_expense_versioned` predates categories and tags and would accept
+    // the call while silently dropping them, so relabels go straight to the
+    // version-filtered UPDATE below, which applies the whole patch.
+    const rpcCoversPatch = patch.category === undefined && patch.tags === undefined;
     try {
-      const { data: rpcData, error: rpcError } = await client.rpc("update_expense_versioned", {
-        p_id: id,
-        p_expected_version: baseExpense.version,
-        p_title: updates.title ?? null,
-        p_description: updates.description !== undefined ? updates.description : null,
-        p_total_amount: updates.totalAmount ?? null,
-        p_currency: updates.currency ?? null,
-        p_split_mode: updates.splitMode ?? null,
-        p_paid_by_member_id: updates.paidByMemberId ?? null,
-        p_members: updates.members ? (updates.members as unknown as Json) : null,
-        p_shares: updates.shares ? (updates.shares as unknown as Json) : null,
-        p_settled: updates.settled !== undefined ? updates.settled : null,
-      });
+      const { data: rpcData, error: rpcError } = rpcCoversPatch
+        ? await client.rpc("update_expense_versioned", {
+            p_id: id,
+            p_expected_version: baseExpense.version,
+            p_title: updates.title ?? null,
+            p_description: updates.description !== undefined ? updates.description : null,
+            p_total_amount: updates.totalAmount ?? null,
+            p_currency: updates.currency ?? null,
+            p_split_mode: updates.splitMode ?? null,
+            p_paid_by_member_id: updates.paidByMemberId ?? null,
+            p_members: updates.members ? (updates.members as unknown as Json) : null,
+            p_shares: updates.shares ? (updates.shares as unknown as Json) : null,
+            p_settled: updates.settled !== undefined ? updates.settled : null,
+          })
+        : { data: null, error: null };
 
       // `update_expense_versioned` is declared RETURNS SETOF public.expenses, so
       // supabase-js hands back an array. Treating it as a single row produced an
@@ -748,6 +894,169 @@ export async function markSharePaidRow(
     );
   }
   return rowToExpense(result.data as ExpenseRow);
+}
+
+/** SQLSTATE raised by `record_share_installment` for an overpayment. */
+const PG_CHECK_VIOLATION = "23514";
+
+/** Raised when an installment would push a share past what it owes (#325). */
+export class InstallmentRejectedError extends DatabaseError {
+  constructor(
+    message: string,
+    readonly reason: "OVERPAYMENT" | "ALREADY_SETTLED" | "NON_POSITIVE",
+    cause?: unknown,
+  ) {
+    super(message, PG_CHECK_VIOLATION, cause);
+    this.name = "InstallmentRejectedError";
+  }
+}
+
+function installmentPayload(installment: NewInstallment): Json {
+  const payload: Record<string, Json> = {
+    seq: installment.seq,
+    amount: installment.amount,
+    txHash: installment.txHash.trim().toLowerCase(),
+    claimId: installment.claimId,
+    ledger: installment.ledger ?? null,
+    attestationNonce: installment.attestationNonce ?? null,
+    verified: installment.verified ?? false,
+    onChain: installment.onChain ?? false,
+    paidAt: installment.paidAt ?? new Date().toISOString(),
+  };
+  return payload;
+}
+
+/**
+ * Appends one installment to a member's share (#325).
+ *
+ * Goes through the `record_share_installment` RPC, which locks the expense row
+ * and re-checks the remaining balance in integer stroops, so two installments
+ * racing for the same balance cannot both land. If the RPC is not deployed
+ * (migration 0012 not applied) it falls back to a compare-and-swap write on
+ * `updated_at` using the same pure rules from lib/settlement/installments.ts.
+ *
+ * Idempotent on the transaction hash: recording a payment that is already on
+ * the share returns the expense unchanged.
+ */
+export async function recordShareInstallmentRow(
+  expenseId: string,
+  memberId: string,
+  installment: NewInstallment,
+  client: StellarStarClient = requireAuthenticatedClient()
+): Promise<Expense> {
+  const amountStroops = Money.parse(installment.amount).toStroops().toString();
+  const payload = { ...(installmentPayload(installment) as Record<string, Json>), amountStroops };
+
+  const { data: rpcData, error: rpcError } = await client.rpc("record_share_installment", {
+    p_expense_id: expenseId,
+    p_member_id: memberId,
+    p_installment: payload as Json,
+  });
+
+  if (!rpcError && Array.isArray(rpcData) && rpcData.length > 0) {
+    return rowToExpense(rpcData[0] as ExpenseRow);
+  }
+  if (rpcError && rpcError.code === PG_CHECK_VIOLATION) {
+    const reason = /already fully settled/i.test(rpcError.message)
+      ? "ALREADY_SETTLED"
+      : /greater than zero/i.test(rpcError.message)
+        ? "NON_POSITIVE"
+        : "OVERPAYMENT";
+    throw new InstallmentRejectedError(rpcError.message, reason, rpcError);
+  }
+  if (rpcError && rpcError.code !== PG_FUNCTION_MISSING) {
+    throw toDatabaseError(rpcError, "record this installment");
+  }
+
+  // Fallback: optimistic compare-and-swap, retried a few times under contention.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const { data: fresh, error: fetchError } = await client
+      .from("expenses")
+      .select("shares, updated_at")
+      .eq("id", expenseId)
+      .maybeSingle();
+
+    if (fetchError) throw toDatabaseError(fetchError, "record this installment");
+    if (!fresh) {
+      throw new DatabaseError(
+        "Payment sent on Stellar, but the expense could not be found. Make sure your wallet address is listed on this expense."
+      );
+    }
+
+    const shares = (fresh.shares ?? []) as unknown as SplitShare[];
+    const target = shares.find((share) => share.memberId === memberId);
+    if (!target) throw new DatabaseError("That share is not on this expense.");
+
+    const applied = applyInstallment(target, installment);
+    if (!applied.ok) throw new InstallmentRejectedError(applied.message, applied.code);
+    if (applied.duplicate) {
+      const { data: row, error } = await client
+        .from("expenses")
+        .select(EXPENSE_COLUMNS)
+        .eq("id", expenseId)
+        .single();
+      if (error) throw toDatabaseError(error, "record this installment");
+      return rowToExpense(row as ExpenseRow);
+    }
+
+    const nextShares = shares.map((share) => (share.memberId === memberId ? applied.share : share));
+    const settled = nextShares.length > 0 && nextShares.every((share) => share.paid);
+
+    const result = await client
+      .from("expenses")
+      .update({ shares: nextShares as unknown as ExpenseUpdate["shares"], settled })
+      .eq("id", expenseId)
+      .eq("updated_at", fresh.updated_at)
+      .select(EXPENSE_COLUMNS)
+      .maybeSingle();
+
+    if (result.error) throw toDatabaseError(result.error, "record this installment");
+    if (result.data) return rowToExpense(result.data as ExpenseRow);
+    // Another writer changed the row between read and write: re-read and retry.
+  }
+
+  throw new DatabaseError(
+    "Payment sent on Stellar, but the installment could not be recorded because the expense kept changing. Reload to reconcile it."
+  );
+}
+
+/**
+ * Stamps proof onto an installment that is already recorded: the attestation
+ * nonce and the contract record. Metadata only — amounts and the share's
+ * `paid` flag are never touched here, so a stale write cannot unsettle money.
+ */
+export async function updateInstallmentProofRow(
+  expenseId: string,
+  memberId: string,
+  txHash: string,
+  proof: { verified?: boolean; onChain?: boolean; attestationNonce?: string | null; ledger?: number | null },
+  client: StellarStarClient = requireAuthenticatedClient()
+): Promise<Expense | null> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const { data: fresh, error: fetchError } = await client
+      .from("expenses")
+      .select("shares, updated_at")
+      .eq("id", expenseId)
+      .maybeSingle();
+    if (fetchError) throw toDatabaseError(fetchError, "update installment proof");
+    if (!fresh) return null;
+
+    const shares = (fresh.shares ?? []) as unknown as SplitShare[];
+    const nextShares = shares.map((share) =>
+      share.memberId === memberId ? markInstallmentProof(share, txHash, proof) : share
+    );
+
+    const result = await client
+      .from("expenses")
+      .update({ shares: nextShares as unknown as ExpenseUpdate["shares"] })
+      .eq("id", expenseId)
+      .eq("updated_at", fresh.updated_at)
+      .select(EXPENSE_COLUMNS)
+      .maybeSingle();
+    if (result.error) throw toDatabaseError(result.error, "update installment proof");
+    if (result.data) return rowToExpense(result.data as ExpenseRow);
+  }
+  return null;
 }
 
 /**
@@ -1122,6 +1431,144 @@ export async function detachExpenseFromTrips(
         .eq("id", trip.id)
     )
   );
+}
+
+// ─── Trip templates & copies (#321) ──────────────────────────────────────────
+
+/** Maps a raise from the copy functions onto a message worth showing. */
+export function copyErrorMessage(raw: string): string {
+  if (raw.includes("COPY_SOURCE_NOT_FOUND")) {
+    return "That template or trip is no longer available to you.";
+  }
+  if (raw.includes("COPY_KEY_CONFLICT")) {
+    return "This copy request was already used by another wallet. Start the copy again.";
+  }
+  if (raw.includes("COPY_INVALID_TRIP") || raw.includes("COPY_INVALID_TEMPLATE")) {
+    return raw.replace(/^.*COPY_INVALID_(TRIP|TEMPLATE):?\s*/, "Check the form: ");
+  }
+  if (/create_trip_from_copy|save_trip_template/.test(raw) && /does not exist|schema cache/i.test(raw)) {
+    return "Trip templates are not set up on this database yet. Apply migrations/0008_trip_templates.sql.";
+  }
+  return raw;
+}
+
+function copyError(error: PostgrestError, action: string): DatabaseError {
+  const raw = error.message ?? "";
+  const friendly = copyErrorMessage(raw);
+  // Fall back to the shared translation (auth, missing tables, …) for
+  // anything that is not one of the copy functions' own verdicts.
+  return friendly !== raw
+    ? new DatabaseError(friendly, error.code, error)
+    : toDatabaseError(error, action);
+}
+
+/** The signed-in wallet's own templates, newest first. */
+export async function fetchTripTemplates(
+  client: StellarStarClient = requireAuthenticatedClient()
+): Promise<TripTemplate[]> {
+  // Covered by idx_trip_templates_owner_created_at; RLS limits rows to the owner.
+  const { data, error } = await client
+    .from("trip_templates")
+    .select(TRIP_TEMPLATE_COLUMNS)
+    .order("created_at", { ascending: false });
+
+  if (error) {
+    if (isMissingTable(error)) return [];
+    throw toDatabaseError(error, "load your trip templates");
+  }
+  return (data ?? []).map((row) => rowToTripTemplate(row as TripTemplateRow));
+}
+
+/**
+ * Saves a trip's structure as a template, idempotently and audited.
+ *
+ * `draft` comes from buildTemplateFromTrip, which never includes expenses,
+ * shares or balances; the database function has no columns to put them in.
+ */
+export async function saveTripTemplateRow(
+  idempotencyKey: string,
+  sourceTripId: string,
+  draft: TemplateDraft,
+  client: StellarStarClient = requireAuthenticatedClient()
+): Promise<TripTemplate> {
+  const { data, error } = await client.rpc("save_trip_template", {
+    p_idempotency_key: idempotencyKey,
+    p_source_trip_id: sourceTripId,
+    p_template: {
+      name: draft.name,
+      description: draft.description ?? null,
+      members: draft.members,
+      recurring_rules: normalizeRecurringRules(draft.recurringRules),
+      permissions: normalizePermissions(draft.permissions),
+      duration_days: draft.durationDays ?? null,
+    } as unknown as Json,
+  });
+
+  if (error) throw copyError(error, "save this template");
+  const row = Array.isArray(data) ? data[0] : null;
+  if (!row) throw new DatabaseError("The template could not be saved. Please try again.");
+  return rowToTripTemplate(row as TripTemplateRow);
+}
+
+/** Renames or edits a template the wallet owns. */
+export async function updateTripTemplateRow(
+  id: string,
+  updates: Partial<Pick<TripTemplate, "name" | "description" | "members" | "recurringRules" | "permissions" | "durationDays">>,
+  client: StellarStarClient = requireAuthenticatedClient()
+): Promise<TripTemplate> {
+  const patch: TripTemplateUpdate = {};
+  if (updates.name !== undefined) patch.name = updates.name.trim();
+  if (updates.description !== undefined) patch.description = updates.description?.trim() || null;
+  if (updates.members !== undefined) patch.members = updates.members as unknown as Json;
+  if (updates.recurringRules !== undefined) {
+    patch.recurring_rules = normalizeRecurringRules(updates.recurringRules) as unknown as Json;
+  }
+  if (updates.permissions !== undefined) {
+    patch.permissions = normalizePermissions(updates.permissions) as unknown as Json;
+  }
+  if (updates.durationDays !== undefined) patch.duration_days = updates.durationDays ?? null;
+
+  const result = await client
+    .from("trip_templates")
+    .update(patch)
+    .eq("id", id)
+    .select(TRIP_TEMPLATE_COLUMNS)
+    .single();
+
+  return rowToTripTemplate(unwrap(result, "update this template") as TripTemplateRow);
+}
+
+export async function deleteTripTemplateRow(
+  id: string,
+  client: StellarStarClient = requireAuthenticatedClient()
+): Promise<void> {
+  const { error } = await client.from("trip_templates").delete().eq("id", id);
+  if (error) throw toDatabaseError(error, "delete this template");
+}
+
+/**
+ * Creates a trip from a template or a past trip.
+ *
+ * Idempotent per `request.idempotencyKey`: retrying after a dropped response
+ * returns the trip the first attempt created. The database writes the audit
+ * row in the same transaction and forces `expense_ids = '{}'`, `settled =
+ * false`, so history cannot be copied even by a hand-crafted payload.
+ */
+export async function createTripFromCopyRow(
+  request: TripCopyRequest,
+  client: StellarStarClient = requireAuthenticatedClient()
+): Promise<Trip> {
+  const { data, error } = await client.rpc("create_trip_from_copy", {
+    p_idempotency_key: request.idempotencyKey,
+    p_source_kind: request.source.kind,
+    p_source_id: request.source.id,
+    p_trip: toTripCopyPayload(request.tripId, request.draft) as unknown as Json,
+  });
+
+  if (error) throw copyError(error, "create this trip");
+  const row = Array.isArray(data) ? data[0] : null;
+  if (!row) throw new DatabaseError("The trip could not be created. Please try again.");
+  return rowToTrip(row as TripRow);
 }
 
 // ─── Connectivity ─────────────────────────────────────────────────────────────

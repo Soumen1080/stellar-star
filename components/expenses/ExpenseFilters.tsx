@@ -3,8 +3,17 @@
 import { useEffect, useState } from "react";
 import { Search, X } from "lucide-react";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import type { ExpenseSettlementFilter } from "@/lib/expense/historyFilters";
 
-export type ExpenseStatusFilter = "all" | "open" | "settled";
+export type ExpenseStatusFilter = ExpenseSettlementFilter;
+
+const STATUS_LABELS: Record<ExpenseStatusFilter, string> = {
+  all: "All expenses",
+  open: "Open",
+  unpaid: "Unpaid",
+  partial: "Partially paid",
+  settled: "Settled",
+};
 
 interface ExpenseFiltersProps {
   query: string;
@@ -26,6 +35,14 @@ export function ExpenseFilters({
 
   useEffect(() => onQueryChange(debouncedDraft), [debouncedDraft, onQueryChange]);
 
+  // Adopt a query changed from outside (URL navigation, "Clear all filters").
+  // Skipped when the change is our own debounced publish, so typing that is
+  // still ahead of the debounce is never overwritten.
+  useEffect(() => {
+    if (query !== debouncedDraft) setDraft(query);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query]);
+
   const clear = () => {
     setDraft("");
     onQueryChange("");
@@ -45,7 +62,7 @@ export function ExpenseFilters({
           type="search"
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
-          placeholder="Search expenses or members"
+          placeholder="Search title, member, tag or tx hash"
           autoComplete="off"
           className="w-full rounded-xl border border-[#E5E5E5] bg-white py-2.5 pl-9 pr-10 text-sm text-[#0F0F14] outline-none transition-colors placeholder:text-[#AAA] focus:border-[#2DD4BF] focus:ring-2 focus:ring-[#2DD4BF]/15"
         />
@@ -69,9 +86,11 @@ export function ExpenseFilters({
           aria-label="Expense status"
           className="min-h-10 bg-transparent text-sm font-medium text-[#0F0F14] outline-none"
         >
-          <option value="all">All expenses</option>
-          <option value="open">Open</option>
-          <option value="settled">Settled</option>
+          {(Object.keys(STATUS_LABELS) as ExpenseStatusFilter[]).map((value) => (
+            <option key={value} value={value}>
+              {STATUS_LABELS[value]}
+            </option>
+          ))}
         </select>
       </label>
     </div>

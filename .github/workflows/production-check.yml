@@ -1,7 +1,19 @@
 name: Production Check
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
+    inputs:
+      target_network:
+        description: "Target deployment network (PUBLIC | TESTNET)"
+        required: true
+        default: "PUBLIC"
+        type: choice
+        options:
+          - PUBLIC
+          - TESTNET
 
 permissions:
   contents: read
@@ -11,8 +23,40 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # ── Required P0 Release Gate ────────────────────────────────────────────────
+  # Production deployment is blocked in CI until all required P0 checks pass.
+  # This enforces docs/MAINNET_READINESS.md governance, audit recency, named
+  # owners, proof links, and security build invariants.
+  p0-release-gate:
+    name: Enforce P0 Mainnet Go/No-Go Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify Mainnet Go/No-Go Gate (P0 Checklist & Approval Record)
+        run: npm run gate:check
+
+      - name: Validate Proof Links in Documentation
+        run: npm run proof:links
+
+      - name: Assert No E2E Wallet Bypass in Production Bundle (P0 Security)
+        run: npm run test:security-build
+
   production-readiness:
     name: Validate Production Build Inputs
+    needs: [p0-release-gate]
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -59,6 +103,9 @@ jobs:
             exit 1
           fi
 
+      - name: Validate production configuration (CI gate)
+        run: npm run config:validate -- --production
+
       - name: Type check
         run: npx tsc --noEmit
 
@@ -70,3 +117,21 @@ jobs:
 
       - name: Build with production-like env
         run: npm run build
+
+  production-deploy-gate:
+    name: Production Deployment Release Gate
+    needs: [p0-release-gate, production-readiness]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Authorize Production Release
+        run: |
+          echo "=========================================================="
+          echo "  PRODUCTION RELEASE GATE CLEARED                        "
+          echo "=========================================================="
+          echo "All required P0 checks passed successfully:"
+          echo " - Mainnet Go/No-Go Gate audited & approved"
+          echo " - Zero wallet bypass in production build verified"
+          echo " - Production build inputs and secrets validated"
+          echo "Release gate is OPEN for public production deployment."

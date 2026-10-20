@@ -24,6 +24,13 @@ export interface PendingOnChainRecord {
   memoText: string;
   txHash: string;
   ledger: number;
+  /**
+   * Installment payments (#325) are attested and recorded on-chain under
+   * their own claim id; absent for a share paid in one payment.
+   */
+  claimId?: string;
+  memberId?: string;
+  installmentSeq?: number;
 }
 
 /** Full shape stored under LS_PENDING_ON_CHAIN */

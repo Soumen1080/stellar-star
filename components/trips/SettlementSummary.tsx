@@ -9,6 +9,7 @@ import type { ContractPaymentEvent } from "@/types/contract";
 import type { NetPayment, RawDebt } from "@/lib/settlement/netBalance";
 import { computeNetPayments } from "@/lib/settlement/netBalance";
 import { settlementAssetOf } from "@/lib/settlement/expenseAsset";
+import { shareBalance } from "@/lib/settlement/installments";
 import { buildPaymentTransaction, trimToMemoBytes } from "@/lib/stellar/buildTransaction";
 import { submitSignedTransaction } from "@/lib/stellar/submitTransaction";
 import { signXDR } from "@/lib/freighter";
@@ -20,6 +21,7 @@ import { NETWORK_PASSPHRASE } from "@/lib/utils/constants";
 import { PayButton } from "@/components/payment/PayButton";
 import { TransactionHash } from "@/components/payment/TransactionHash";
 import { PathPaymentConfirm } from "@/components/payment/PathPaymentConfirm";
+import { PaymentRequestToggle } from "@/components/payment/PaymentRequestPanel";
 import { cn } from "@/lib/utils";
 import { useNetPayment } from "@/hooks/useNetPayment";
 import { usePathPayment } from "@/hooks/usePathPayment";
@@ -27,6 +29,9 @@ import { buildPaymentEventKey } from "@/lib/stellar/events";
 import { Money as MoneyDisplay } from "@/components/ui/Money";
 import { WalletAddressBadge } from "@/components/ui/WalletAddressBadge";
 import { Money } from "@/lib/money";
+import { useSettlementProposal } from "@/hooks/useSettlementProposal";
+import { proposalPaymentGate, type ProposalPaymentGate } from "@/lib/settlement/proposal";
+import { SettlementProposalPanel } from "@/components/trips/SettlementProposalPanel";
 
 interface SettlementSummaryProps {
   trip: Trip;
@@ -45,14 +50,17 @@ function deriveRawDebts(expenses: Expense[]): RawDebt[] {
     for (const share of expense.shares) {
       const payer = expense.members.find((m) => m.id === expense.paidByMemberId);
       if (!payer || share.memberId === expense.paidByMemberId) continue;
-      if (share.paid) continue;
+      // A partly paid share (#325) still owes its remaining balance, and only
+      // that: never the original amount, and never "settled" until it is zero.
+      const balance = shareBalance(share);
+      if (balance.fullySettled) continue;
       debts.push({
         expenseId:  expense.id,
         fromId:     share.memberId,
         toId:       payer.id,
         from:       share.name,
         to:         payer.name,
-        amount:     share.amount,
+        amount:     balance.remaining,
         // The SETTLEMENT asset, never `expense.currency` — that is the fiat
         // the user typed, and `share.amount` was already converted out of it.
         // Tagging a EUR-entered debt as asset "EUR" put it in its own netting
@@ -92,6 +100,7 @@ function NetPaymentRow({
   tripId,
   expenses,
   isOnChain,
+  gate,
 }: {
   payment: NetPayment;
   index: number;
@@ -99,6 +108,8 @@ function NetPaymentRow({
   tripId: string;
   expenses: Expense[];
   isOnChain: boolean;
+  /** How the trip's settlement proposal governs this payment (#328). */
+  gate: ProposalPaymentGate;
 }) {
   const { publicKey } = useWallet();
   const {
@@ -143,16 +154,20 @@ function NetPaymentRow({
     publicKey &&
     payment.toWallet &&
     isIdle &&
-    publicKey === payment.fromWallet;
+    publicKey === payment.fromWallet &&
+    gate.mode !== "blocked";
+  // Paying from an approved proposal carries its snapshot reference in the memo.
+  const memoText = gate.mode === "proposal" ? gate.memo : undefined;
 
   const handlePay = async () => {
-    if (!payment.toWallet) return;
+    if (!payment.toWallet || gate.mode === "blocked") return;
     await payNetSettlement({
       debts: payment.settledDebts,
       totalAmount: payment.amount,
       asset: payment.asset,
       payerWalletAddress: payment.toWallet,
       tripName,
+      memoText,
     });
   };
 
@@ -162,13 +177,14 @@ function NetPaymentRow({
   };
 
   const handleConfirmPathPayment = async () => {
-    if (!path || !payment.toWallet) return;
+    if (!path || !payment.toWallet || gate.mode === "blocked") return;
     setShowPathConfirm(false);
     await payNetPathSettlement({
       debts: payment.settledDebts,
       tripName,
       payerWalletAddress: payment.toWallet,
       path,
+      memoText,
     });
   };
 
@@ -265,6 +281,18 @@ function NetPaymentRow({
         </div>
       )}
 
+      {gate.mode === "proposal" && (
+        <p className="pl-1 text-[10px] font-semibold text-[#134E4A]">
+          From proposal <code className="rounded bg-[#F0F0F0] px-1">{gate.reference}</code> · memo {gate.memo}
+        </p>
+      )}
+      {gate.mode === "blocked" && !settled && (
+        <p className="pl-1 text-[10px] text-[#888]">{gate.message}</p>
+      )}
+      {gate.mode === "direct" && gate.note && !settled && (
+        <p className="pl-1 text-[10px] text-orange-600">{gate.note}</p>
+      )}
+
       {isOnChain && !done && (
         <p className="text-[10px] text-[#5a9400] pl-1 flex items-center gap-1">
           <Database size={9} />
@@ -300,6 +328,7 @@ function NetPaymentRow({
 export function SettlementSummary({ trip, expenses, onChainEvents = [] }: SettlementSummaryProps) {
   const rawDebts    = useMemo(() => deriveRawDebts(expenses), [expenses]);
   const netPayments = useMemo(() => computeNetPayments(rawDebts), [rawDebts]);
+  const proposalState = useSettlementProposal(trip, expenses);
 
   const onChainPaymentKeys = useMemo(
     () => new Set(onChainEvents.map(buildPaymentEventKey)),
@@ -324,6 +353,8 @@ export function SettlementSummary({ trip, expenses, onChainEvents = [] }: Settle
 
   return (
     <div className="space-y-2">
+      <SettlementProposalPanel state={proposalState} hasOutstanding={netPayments.length > 0} />
+
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
           <Scale size={14} className="text-[#2DD4BF]" />
@@ -348,6 +379,12 @@ export function SettlementSummary({ trip, expenses, onChainEvents = [] }: Settle
           tripId={trip.id}
           expenses={expenses}
           isOnChain={isNetPaymentOnChain(p)}
+          gate={proposalPaymentGate(proposalState.proposal, proposalState.evaluation, {
+            fromId: p.fromId ?? "",
+            toId: p.toId ?? "",
+            asset: p.asset,
+            amount: p.amount,
+          })}
         />
       ))}
     </div>

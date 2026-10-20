@@ -17,7 +17,7 @@ export async function GET(request: NextRequest) {
   try {
     const serviceClient = createServiceRoleClient();
     const summary = await verifyTripInvite(token.trim(), serviceClient ?? undefined);
-    return NextResponse.json(summary);
+    return NextResponse.json(summary, { headers: { "Cache-Control": "no-store" } });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Invalid or unrecognized invitation.";
     if (message.includes("TRIP_MISMATCH")) {

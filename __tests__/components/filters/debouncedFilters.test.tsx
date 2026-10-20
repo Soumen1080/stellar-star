@@ -26,7 +26,7 @@ describe("debounced list controls", () => {
     fireEvent.change(input, { target: { value: "ro" } });
     fireEvent.change(input, { target: { value: "road" } });
 
-    expect(input).toHaveValue("road");
+    expect((input as HTMLInputElement).value).toBe("road");
     expect(onSearchChange).not.toHaveBeenCalled();
 
     act(() => jest.advanceTimersByTime(299));

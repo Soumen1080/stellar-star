@@ -29,6 +29,8 @@ export function useTripSearch(query: string) {
   return {
     ...tripContext,
     trips: filteredTrips,
+    /** Every loaded trip, ignoring the search — e.g. for duplicate-from-history. */
+    allTrips: tripContext.trips,
     totalTrips: tripContext.trips.length,
   };
 }

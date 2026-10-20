@@ -39,6 +39,10 @@ export type ExpenseRow = {
   currency: string;
   exchange_rate: string | null;
   exchange_rate_timestamp: string | null;
+  /** Provenance columns from migration 0010; frozen after insert. */
+  exchange_rate_source: string | null;
+  entered_amount: string | null;
+  settlement_asset: string;
   split_mode: "equal" | "custom";
   paid_by_member_id: string;
   members: Json;
@@ -62,8 +66,55 @@ export type TripRow = {
   created_by_wallet: string;
   /** Derived by the `sync_member_wallets` trigger — read-only from the client. */
   member_wallets: string[];
+  /** `date` columns (migration 0008); ISO YYYY-MM-DD strings. */
+  starts_on: string | null;
+  ends_on: string | null;
+  recurring_rules: Json;
+  permissions: Json;
+  source_template_id: string | null;
+  copied_from_trip_id: string | null;
+  workspace?: Json | null;
   created_at: string;
   updated_at: string;
+};
+
+export type ExportAuditEventRow = {
+  id: string;
+  actor_wallet: string;
+  export_kind: "archive";
+  status: "served" | "rate_limited" | "forbidden" | "failed";
+  trip_ids: string[];
+  trip_count: number;
+  expense_count: number;
+  byte_size: number;
+  content_sha256: string | null;
+  request_id: string | null;
+  client_ip_hash: string | null;
+  created_at: string;
+};
+
+export type SettlementProposalRow = {
+  id: string;
+  trip_id: string;
+  creator_wallet: string;
+  content_hash: string;
+  snapshot: Json;
+  status: "open" | "revoked" | "superseded" | "invalidated";
+  expires_at: string;
+  revoked_reason: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type SettlementProposalResponseRow = {
+  id: string;
+  proposal_id: string;
+  member_id: string;
+  wallet: string;
+  decision: "approve" | "reject" | "request_edit";
+  reason: string | null;
+  content_hash: string;
+  created_at: string;
 };
 
 export type AuthChallengeRow = {
@@ -151,6 +202,110 @@ export type SponsorshipInviteRow = {
   created_at: string;
 };
 
+export type ExpenseReceiptRow = {
+  id: string;
+  /** NULL once the expense is deleted; the retention sweep then purges the file. */
+  expense_id: string | null;
+  storage_path: string;
+  file_name: string | null;
+  content_type: string;
+  size_bytes: number;
+  checksum_sha256: string;
+  caption: string | null;
+  status: "active" | "quarantined" | "removed";
+  scan_result: Json;
+  uploaded_by_wallet: string;
+  created_at: string;
+  retain_until: string;
+  removed_at: string | null;
+  removed_by_wallet: string | null;
+  removal_reason: "user" | "retention" | "expense_deleted" | null;
+};
+
+export type RecurringTemplateRow = {
+  id: string;
+  trip_id: string | null;
+  title: string;
+  description: string | null;
+  category: string | null;
+  tags: string[];
+  currency: string;
+  amount_kind: "fixed" | "variable";
+  /** Fixed amount, or the pre-fill estimate for a variable one. */
+  amount: string | null;
+  split_mode: "equal" | "custom";
+  paid_by_member_id: string;
+  members: Json;
+  cadence_unit: "day" | "week" | "month" | "year";
+  cadence_interval: number;
+  start_date: string;
+  end_date: string | null;
+  generate_from: string;
+  reminder_lead_days: number | null;
+  status: "active" | "paused" | "ended";
+  version: number;
+  created_by_wallet: string;
+  /** Derived by the `sync_member_wallets` trigger — read-only from the client. */
+  member_wallets: string[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type RecurringExceptionRow = {
+  id: string;
+  template_id: string;
+  occurrence_date: string;
+  action: "skip" | "override";
+  overrides: Json;
+  created_by_wallet: string;
+  created_at: string;
+};
+
+export type ExpenseDraftRow = {
+  id: string;
+  template_id: string;
+  template_version: number;
+  /** Copied from the template by trigger. */
+  trip_id: string | null;
+  occurrence_date: string;
+  payload: Json;
+  status: "pending" | "saved" | "dismissed";
+  expense_id: string | null;
+  /** Copied from the template by trigger — read-only from the client. */
+  member_wallets: string[];
+  created_at: string;
+  resolved_at: string | null;
+  resolved_by_wallet: string | null;
+};
+
+export type TripBudgetRow = {
+  trip_id: string;
+  currency: string;
+  total_amount: string | null;
+  category_caps: Json;
+  thresholds: number[];
+  version: number;
+  created_by_wallet: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type BudgetAlertRow = {
+  id: string;
+  trip_id: string;
+  scope: string;
+  threshold: number;
+  spent_at_crossing: string;
+  fired_at: string;
+  cleared_at: string | null;
+};
+
+export type BudgetAlertMuteRow = {
+  trip_id: string;
+  member_wallet: string;
+  created_at: string;
+};
+
 export type SchemaMigrationRow = {
   version: string;
   name: string;
@@ -181,27 +336,131 @@ export type Database = {
       };
       expenses: {
         Row: ExpenseRow;
-        Insert: Omit<ExpenseRow, ServerManaged | "version"> & {
+        Insert: Omit<
+          ExpenseRow,
+          ServerManaged | "version" | "exchange_rate_source" | "entered_amount" | "settlement_asset"
+        > & {
           id?: string;
           created_at?: string;
           currency?: string;
           settled?: boolean;
           version?: number;
+          exchange_rate_source?: string | null;
+          entered_amount?: string | null;
+          settlement_asset?: string;
         };
-        // `created_by_wallet` and the amount/rate fields are absent by design:
-        // the database freezes them on update.
-        Update: Partial<Omit<ExpenseRow, ServerManaged | "created_by_wallet" | "total_amount" | "currency" | "exchange_rate" | "exchange_rate_timestamp">>;
+        // `created_by_wallet` and the amount/rate/provenance fields are absent
+        // by design: the database freezes them on update.
+        Update: Partial<
+          Omit<
+            ExpenseRow,
+            | ServerManaged
+            | "created_by_wallet"
+            | "total_amount"
+            | "currency"
+            | "exchange_rate"
+            | "exchange_rate_timestamp"
+            | "exchange_rate_source"
+            | "entered_amount"
+            | "settlement_asset"
+          >
+        >;
         Relationships: [];
       };
       trips: {
         Row: TripRow;
-        Insert: Omit<TripRow, ServerManaged> & {
+        // The structure columns from migration 0008 all have database defaults.
+        Insert: Omit<
+          TripRow,
+          | ServerManaged
+          | "starts_on"
+          | "ends_on"
+          | "recurring_rules"
+          | "permissions"
+          | "source_template_id"
+          | "copied_from_trip_id"
+        > & {
           id?: string;
           created_at?: string;
           expense_ids?: string[];
           settled?: boolean;
+          starts_on?: string | null;
+          ends_on?: string | null;
+          recurring_rules?: Json;
+          permissions?: Json;
+          source_template_id?: string | null;
+          copied_from_trip_id?: string | null;
         };
-        Update: Partial<Omit<TripRow, ServerManaged | "created_by_wallet">>;
+        // Copy provenance is written once, by create_trip_from_copy.
+        Update: Partial<
+          Omit<TripRow, ServerManaged | "created_by_wallet" | "source_template_id" | "copied_from_trip_id">
+        >;
+        Relationships: [];
+      };
+      trip_templates: {
+        Row: TripTemplateRow;
+        Insert: Omit<TripTemplateRow, "id" | "created_at" | "updated_at"> & {
+          id?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: Partial<Omit<TripTemplateRow, "id" | "owner_wallet" | "created_at" | "updated_at">>;
+        Relationships: [];
+      };
+      trip_copy_events: {
+        Row: TripCopyEventRow;
+        Insert: Omit<TripCopyEventRow, "id" | "created_at"> & { id?: string; created_at?: string };
+        // Append-only: no UPDATE policy exists, so there is no update shape.
+        Update: Record<string, never>;
+        Relationships: [];
+      };
+      contacts: {
+        Row: ContactRow;
+        // Verification columns are set only by claim_contact_profile; the
+        // guard trigger resets them on any direct write.
+        Insert: Pick<ContactRow, "owner_wallet" | "display_name"> &
+          Partial<
+            Pick<
+              ContactRow,
+              "id" | "wallet_address" | "invite_destination" | "invite_channel" | "claim_token_hash" | "claim_expires_at"
+            >
+          >;
+        Update: Partial<
+          Pick<
+            ContactRow,
+            "display_name" | "wallet_address" | "invite_destination" | "invite_channel" | "claim_token_hash" | "claim_expires_at"
+          >
+        >;
+        Relationships: [];
+      };
+      contact_wallet_changes: {
+        Row: ContactWalletChangeRow;
+        // Written only by the SECURITY DEFINER functions.
+        Insert: Record<string, never>;
+        Update: Record<string, never>;
+        Relationships: [];
+      };
+      settlement_proposals: {
+        Row: SettlementProposalRow;
+        Insert: Pick<SettlementProposalRow, "trip_id" | "creator_wallet" | "content_hash" | "snapshot" | "expires_at"> &
+          Partial<Pick<SettlementProposalRow, "status">>;
+        // The snapshot is frozen by a trigger; only the lifecycle moves.
+        Update: Partial<Pick<SettlementProposalRow, "status" | "revoked_reason">>;
+        Relationships: [];
+      };
+      settlement_proposal_responses: {
+        Row: SettlementProposalResponseRow;
+        Insert: Omit<SettlementProposalResponseRow, "id" | "created_at">;
+        // Append-only.
+        Update: Record<string, never>;
+        Relationships: [];
+      };
+      export_audit_events: {
+        Row: ExportAuditEventRow;
+        Insert: Pick<ExportAuditEventRow, "actor_wallet" | "export_kind" | "status"> &
+          Partial<Omit<ExportAuditEventRow, "id" | "created_at" | "actor_wallet" | "export_kind" | "status">>;
+        // Append-only: no UPDATE policy exists.
+        Update: Record<string, never>;
         Relationships: [];
       };
       trip_invites: {
@@ -275,6 +534,75 @@ export type Database = {
           created_at?: string;
         };
         Update: Partial<Omit<SponsorshipInviteRow, "id" | "created_at">>;
+        Relationships: [];
+      };
+      expense_receipts: {
+        Row: ExpenseReceiptRow;
+        Insert: Omit<
+          ExpenseReceiptRow,
+          "id" | "created_at" | "status" | "scan_result" | "removed_at" | "removed_by_wallet" | "removal_reason"
+        > & {
+          id?: string;
+          created_at?: string;
+          status?: ExpenseReceiptRow["status"];
+          scan_result?: Json;
+        };
+        // Only the lifecycle fields change after upload; the bytes, checksum
+        // and uploader are fixed for the life of the row.
+        Update: Partial<
+          Pick<ExpenseReceiptRow, "status" | "file_name" | "caption" | "removed_at" | "removed_by_wallet" | "removal_reason">
+        >;
+        Relationships: [];
+      };
+      recurring_expense_templates: {
+        Row: RecurringTemplateRow;
+        Insert: Omit<
+          RecurringTemplateRow,
+          ServerManaged | "version" | "status" | "tags" | "generate_from"
+        > & {
+          id?: string;
+          version?: number;
+          status?: RecurringTemplateRow["status"];
+          tags?: string[];
+          generate_from?: string;
+        };
+        Update: Partial<Omit<RecurringTemplateRow, ServerManaged | "created_by_wallet" | "trip_id">>;
+        Relationships: [];
+      };
+      recurring_expense_exceptions: {
+        Row: RecurringExceptionRow;
+        Insert: Omit<RecurringExceptionRow, "id" | "created_at" | "overrides"> & {
+          id?: string;
+          overrides?: Json;
+        };
+        Update: Partial<Pick<RecurringExceptionRow, "action" | "overrides">>;
+        Relationships: [];
+      };
+      expense_drafts: {
+        Row: ExpenseDraftRow;
+        Insert: Pick<ExpenseDraftRow, "template_id" | "template_version" | "occurrence_date" | "payload"> & {
+          id?: string;
+        };
+        // Only the resolution changes; the frozen payload and source never do.
+        Update: Partial<Pick<ExpenseDraftRow, "status" | "expense_id" | "resolved_at" | "resolved_by_wallet">>;
+        Relationships: [];
+      };
+      trip_budgets: {
+        Row: TripBudgetRow;
+        Insert: Omit<TripBudgetRow, "created_at" | "updated_at" | "version"> & { version?: number };
+        Update: Partial<Omit<TripBudgetRow, "trip_id" | "created_at" | "updated_at" | "created_by_wallet">>;
+        Relationships: [];
+      };
+      budget_alerts: {
+        Row: BudgetAlertRow;
+        Insert: Pick<BudgetAlertRow, "trip_id" | "scope" | "threshold" | "spent_at_crossing">;
+        Update: Partial<Pick<BudgetAlertRow, "cleared_at">>;
+        Relationships: [];
+      };
+      budget_alert_mutes: {
+        Row: BudgetAlertMuteRow;
+        Insert: Pick<BudgetAlertMuteRow, "trip_id" | "member_wallet">;
+        Update: Record<string, never>;
         Relationships: [];
       };
       schema_migrations: {
@@ -386,6 +714,30 @@ export type Database = {
         };
         Returns: ExpenseRow[];
       };
+      record_share_installment: {
+        Args: {
+          p_expense_id: string;
+          p_member_id: string;
+          p_installment: Json;
+        };
+        Returns: ExpenseRow[];
+      };
+      request_contact_wallet_change: {
+        Args: { p_contact_id: string; p_new_wallet: string };
+        Returns: ContactWalletChangeRow[];
+      };
+      apply_contact_wallet_change: {
+        Args: { p_change_id: string };
+        Returns: ContactRow[];
+      };
+      cancel_contact_wallet_change: {
+        Args: { p_change_id: string };
+        Returns: ContactWalletChangeRow[];
+      };
+      claim_contact_profile: {
+        Args: { p_token_hash: string };
+        Returns: Json;
+      };
     };
     Enums: { [_ in never]: never };
     CompositeTypes: { [_ in never]: never };
@@ -408,3 +760,5 @@ export type SponsoredAccountInsert = Database["public"]["Tables"]["sponsored_acc
 export type SponsoredAccountUpdate = Database["public"]["Tables"]["sponsored_accounts"]["Update"];
 export type SponsorshipInviteInsert = Database["public"]["Tables"]["sponsorship_invites"]["Insert"];
 export type TripInviteInsert = Database["public"]["Tables"]["trip_invites"]["Insert"];
+export type ContactInsert = Database["public"]["Tables"]["contacts"]["Insert"];
+export type ContactUpdate = Database["public"]["Tables"]["contacts"]["Update"];

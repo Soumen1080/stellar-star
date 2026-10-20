@@ -16,6 +16,7 @@ import {
   type Attestation,
 } from "@/lib/settlement/attest";
 import { getAccessToken } from "@/lib/supabase/session";
+import { reportError } from "@/lib/observability/reportError";
 
 /** Stroops per XLM. Classic Stellar assets have exactly 7 decimals. */
 const STROOPS_PER_XLM = 10_000_000n;
@@ -81,6 +82,20 @@ export async function fetchAttestation(
     });
     return { ok: true, attestation };
   } catch (err) {
+    reportError(
+      "payment.attestation-failed",
+      err,
+      {
+        stage: "attestation",
+        tripId: claim.tripId,
+        expenseId: claim.expenseId,
+        txHash: claim.txHash,
+        kind: err instanceof AttestationError ? err.kind : "unknown",
+      },
+      "error",
+      claim.requestId,
+    );
+
     if (err instanceof AttestationError) {
       return {
         ok: false,

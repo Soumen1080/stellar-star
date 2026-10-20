@@ -38,6 +38,44 @@ interface UseContractEventsResult {
   refresh: () => Promise<void>;
 }
 
+export interface UseContractEventsOptions {
+  /** If false, periodic background polling is paused (e.g. inactive tab or trip). */
+  isActive?: boolean;
+  /** If true, the trip is settled and does not require active contract event polling. */
+  isSettled?: boolean;
+  /** Base polling interval in milliseconds (default: 10,000ms). */
+  baseIntervalMs?: number;
+  /** Maximum polling interval under backoff (default: 60,000ms). */
+  maxIntervalMs?: number;
+}
+
+interface WatcherRecord {
+  tripId: string;
+  cancel: () => void;
+  id: number;
+}
+
+/** Registry of active trip watchers to cancel stale polls before launching a new watcher. */
+const activeTripWatchers = new Map<string, WatcherRecord>();
+let watcherSequence = 0;
+
+/** Cancels any active event polling watcher for the given trip. */
+export function cancelTripWatcher(tripId: string): void {
+  const existing = activeTripWatchers.get(tripId);
+  if (existing) {
+    existing.cancel();
+    activeTripWatchers.delete(tripId);
+  }
+}
+
+/** Cancels all currently active trip watchers (e.g., when switching wallets or unmounting). */
+export function cancelAllTripWatchers(): void {
+  for (const watcher of activeTripWatchers.values()) {
+    watcher.cancel();
+  }
+  activeTripWatchers.clear();
+}
+
 function recordToEvent(record: ContractPaymentRecord): ContractPaymentEvent {
   return {
     ledger: 0,
@@ -56,6 +94,7 @@ function recordToEvent(record: ContractPaymentRecord): ContractPaymentEvent {
 export function useContractEvents(
   tripId: string | undefined,
   expenses?: Expense[],
+  options?: UseContractEventsOptions,
 ): UseContractEventsResult {
   const [events, setEvents]             = useState<ContractPaymentEvent[]>([]);
   const [latestLedger, setLatestLedger] = useState(0);
@@ -64,10 +103,13 @@ export function useContractEvents(
   const [degraded, setDegraded]         = useState(false);
   const [stateArchived, setStateArchived] = useState(false);
 
+  const baseInterval = options?.baseIntervalMs ?? BASE_POLL_INTERVAL_MS;
+  const maxInterval = options?.maxIntervalMs ?? MAX_POLL_INTERVAL_MS;
+
   const ledgerRef = useRef(0);
   ledgerRef.current = latestLedger;
 
-  const currentIntervalRef = useRef(BASE_POLL_INTERVAL_MS);
+  const currentIntervalRef = useRef(baseInterval);
   const lastFetchTimeRef   = useRef(0);
   const isFetchingRef      = useRef(false);
   const lastStateReadRef   = useRef(0);
@@ -157,11 +199,11 @@ export function useContractEvents(
         }
 
         // Reset backoff interval on receiving events
-        currentIntervalRef.current = BASE_POLL_INTERVAL_MS;
+        currentIntervalRef.current = baseInterval;
       } else if (!isFirst) {
-        // Adaptive backoff on idle
+        // Adaptive exponential backoff on idle
         currentIntervalRef.current = Math.min(
-          MAX_POLL_INTERVAL_MS,
+          maxInterval,
           Math.round(currentIntervalRef.current * BACKOFF_FACTOR),
         );
       }
@@ -172,31 +214,67 @@ export function useContractEvents(
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Event fetch failed.");
+      // Exponential backoff on retries after failure to prevent hammering RPC
+      currentIntervalRef.current = Math.min(
+        maxInterval,
+        Math.round(currentIntervalRef.current * BACKOFF_FACTOR),
+      );
     } finally {
       releaseSlot();
       isFetchingRef.current = false;
       if (isFirst) setIsLoading(false);
     }
-  }, [tripId, expenses]);
+  }, [tripId, expenses, baseInterval, maxInterval]);
 
   const refresh = useCallback(async () => {
-    currentIntervalRef.current = BASE_POLL_INTERVAL_MS;
+    currentIntervalRef.current = baseInterval;
     await fetch_();
-  }, [fetch_]);
+  }, [fetch_, baseInterval]);
 
   useEffect(() => {
     if (!tripId || !CONTRACT_ID) return;
 
+    // Cancel any stale watcher for the same trip before launching a new watcher
+    cancelTripWatcher(tripId);
+
+    const watcherId = ++watcherSequence;
+    let isSubscribed = true;
+
+    const cancel = () => {
+      isSubscribed = false;
+      if (timeoutIdRef.current) {
+        clearTimeout(timeoutIdRef.current);
+        timeoutIdRef.current = null;
+      }
+    };
+
+    activeTripWatchers.set(tripId, { tripId, cancel, id: watcherId });
+
     lastStateReadRef.current = 0;
-    currentIntervalRef.current = BASE_POLL_INTERVAL_MS;
+    currentIntervalRef.current = baseInterval;
 
     fetch_(true);
 
-    let isSubscribed = true;
+    const isActive = options?.isActive ?? true;
+    const isSettled = options?.isSettled ?? false;
+
+    // Pause periodic polling if trip is not active or is settled
+    if (!isActive || isSettled) {
+      return () => {
+        cancel();
+        if (activeTripWatchers.get(tripId)?.id === watcherId) {
+          activeTripWatchers.delete(tripId);
+        }
+      };
+    }
 
     const scheduleNextPoll = () => {
       if (!isSubscribed) return;
+      // Pause polling when the browser tab is hidden to save CPU and bandwidth
+      if (typeof document !== "undefined" && document.hidden) return;
+
       timeoutIdRef.current = setTimeout(async () => {
+        if (!isSubscribed) return;
         await fetch_();
         if (isSubscribed) {
           scheduleNextPoll();
@@ -206,23 +284,36 @@ export function useContractEvents(
 
     scheduleNextPoll();
 
-    const onVisible = () => {
-      if (document.visibilityState === "visible") {
+    const onVisibilityChange = () => {
+      if (typeof document === "undefined") return;
+      if (document.hidden) {
+        // Tab is hidden: pause poll timer
+        if (timeoutIdRef.current) {
+          clearTimeout(timeoutIdRef.current);
+          timeoutIdRef.current = null;
+        }
+      } else {
+        // Tab is visible: resume polling if still subscribed
+        if (!isSubscribed) return;
         const elapsed = Date.now() - lastFetchTimeRef.current;
         if (elapsed >= MIN_VISIBILITY_THROTTLE_MS) {
-          currentIntervalRef.current = BASE_POLL_INTERVAL_MS;
-          fetch_();
+          currentIntervalRef.current = baseInterval;
+          void fetch_();
         }
+        scheduleNextPoll();
       }
     };
-    document.addEventListener("visibilitychange", onVisible);
+
+    document.addEventListener("visibilitychange", onVisibilityChange);
 
     return () => {
-      isSubscribed = false;
-      if (timeoutIdRef.current) clearTimeout(timeoutIdRef.current);
-      document.removeEventListener("visibilitychange", onVisible);
+      cancel();
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      if (activeTripWatchers.get(tripId)?.id === watcherId) {
+        activeTripWatchers.delete(tripId);
+      }
     };
-  }, [tripId, fetch_]);
+  }, [tripId, fetch_, baseInterval, options?.isActive, options?.isSettled]);
 
   return { events, latestLedger, isLoading, error, degraded, stateArchived, refresh };
 }

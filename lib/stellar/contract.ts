@@ -30,9 +30,11 @@ import type {
 } from "@/types/contract";
 import { ContractErrorCode, PoolErrorCode } from "@/types/contract";
 
-const SOROBAN_BASE_FEE  = "1000";
-const MAX_POLL_ATTEMPTS  = 20;
-const POLL_INTERVAL_MS   = 2500;
+const SOROBAN_BASE_FEE        = "1000";
+const MAX_POLL_ATTEMPTS       = 20;
+const INITIAL_POLL_INTERVAL_MS = 1500;
+const MAX_POLL_INTERVAL_MS    = 6000;
+const POLL_BACKOFF_FACTOR     = 1.5;
 
 export function decodeContractError(raw: string): string {
   const match = raw.match(/Error\(Contract,\s*#(\d+)\)/);
@@ -194,6 +196,148 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+interface InFlightTxPoll {
+  promise: Promise<{ ledger: number }>;
+  abortController: AbortController;
+}
+
+const inFlightTxPolls = new Map<string, InFlightTxPoll>();
+
+/**
+ * Cancels an in-flight transaction status poll by transaction hash.
+ */
+export function cancelTransactionPoll(txHash: string): void {
+  const active = inFlightTxPolls.get(txHash);
+  if (active) {
+    active.abortController.abort();
+    inFlightTxPolls.delete(txHash);
+  }
+}
+
+/**
+ * Cancels all currently in-flight transaction status polls.
+ */
+export function cancelAllTransactionPolls(): void {
+  for (const active of inFlightTxPolls.values()) {
+    active.abortController.abort();
+  }
+  inFlightTxPolls.clear();
+}
+
+/**
+ * Helper to pause polling while tab is hidden, preventing unnecessary CPU and bandwidth usage.
+ */
+async function waitForTabVisibility(signal?: AbortSignal): Promise<void> {
+  if (typeof document === "undefined" || !document.hidden) return;
+  return new Promise<void>((resolve, reject) => {
+    const onVisibilityChange = () => {
+      if (!document.hidden) {
+        document.removeEventListener("visibilitychange", onVisibilityChange);
+        signal?.removeEventListener("abort", onAbort);
+        resolve();
+      }
+    };
+    const onAbort = () => {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      signal?.removeEventListener("abort", onAbort);
+      reject(new Error("Transaction status poll was aborted."));
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    signal?.addEventListener("abort", onAbort);
+  });
+}
+
+export interface PollTransactionOptions {
+  signal?: AbortSignal;
+  initialIntervalMs?: number;
+  maxIntervalMs?: number;
+  maxAttempts?: number;
+  backoffFactor?: number;
+}
+
+/**
+ * Polls for transaction confirmation with exponential backoff, tab-hidden pause,
+ * deduplication, and cancellation support.
+ */
+export async function pollTransactionStatus(
+  txHash: string,
+  optionsOrSignal?: PollTransactionOptions | AbortSignal,
+): Promise<{ ledger: number }> {
+  const options: PollTransactionOptions =
+    optionsOrSignal instanceof AbortSignal
+      ? { signal: optionsOrSignal }
+      : optionsOrSignal ?? {};
+
+  const signal = options.signal;
+  const initialInterval = options.initialIntervalMs ?? INITIAL_POLL_INTERVAL_MS;
+  const maxInterval = options.maxIntervalMs ?? MAX_POLL_INTERVAL_MS;
+  const maxAttempts = options.maxAttempts ?? MAX_POLL_ATTEMPTS;
+  const backoffFactor = options.backoffFactor ?? POLL_BACKOFF_FACTOR;
+
+  const existing = inFlightTxPolls.get(txHash);
+  if (existing) {
+    return existing.promise;
+  }
+
+  const abortController = new AbortController();
+  const onSignalAbort = () => abortController.abort();
+  signal?.addEventListener("abort", onSignalAbort);
+
+  const pollPromise = (async () => {
+    let currentInterval = initialInterval;
+
+    try {
+      for (let i = 0; i < maxAttempts; i++) {
+        if (abortController.signal.aborted) {
+          throw new Error("Transaction status poll was aborted.");
+        }
+
+        // Pause polling when the tab is hidden
+        await waitForTabVisibility(abortController.signal);
+
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(resolve, currentInterval);
+          abortController.signal.addEventListener(
+            "abort",
+            () => {
+              clearTimeout(timer);
+              reject(new Error("Transaction status poll was aborted."));
+            },
+            { once: true }
+          );
+        });
+
+        const pollResult = await sorobanServer.getTransaction(txHash);
+
+        if (pollResult.status === rpc.Api.GetTransactionStatus.SUCCESS) {
+          return { ledger: (pollResult as { ledger: number }).ledger };
+        }
+        if (pollResult.status === rpc.Api.GetTransactionStatus.FAILED) {
+          const failedResult = pollResult as { resultXdr?: { toXDR?: () => unknown } };
+          const rawMsg = failedResult.resultXdr
+            ? `Contract error: ${String(failedResult.resultXdr)}`
+            : "Contract transaction was submitted but failed on-chain.";
+          throw new Error(decodeContractError(rawMsg));
+        }
+
+        // Exponential backoff for subsequent retries
+        currentInterval = Math.min(
+          maxInterval,
+          Math.round(currentInterval * backoffFactor)
+        );
+      }
+
+      throw new Error("Contract transaction timed out waiting for confirmation.");
+    } finally {
+      signal?.removeEventListener("abort", onSignalAbort);
+      inFlightTxPolls.delete(txHash);
+    }
+  })();
+
+  inFlightTxPolls.set(txHash, { promise: pollPromise, abortController });
+  return pollPromise;
+}
+
 /**
  * Submit an assembled, signed Soroban transaction and poll until confirmed.
  * Shared by `depositPoolBalance` and `recordPaymentOnChain` to avoid duplication.
@@ -201,6 +345,7 @@ function sleep(ms: number): Promise<void> {
 async function submitAndPoll(
   signedXdr: string,
   onStatus?: (step: "simulating" | "signing" | "sending" | "confirming") => void,
+  signal?: AbortSignal,
 ): Promise<{ ledger: number }> {
   onStatus?.("sending");
   const sendResult = await sorobanServer.sendTransaction(
@@ -216,25 +361,7 @@ async function submitAndPoll(
   }
 
   onStatus?.("confirming");
-  const txHash = sendResult.hash;
-
-  for (let i = 0; i < MAX_POLL_ATTEMPTS; i++) {
-    await sleep(POLL_INTERVAL_MS);
-    const pollResult = await sorobanServer.getTransaction(txHash);
-
-    if (pollResult.status === rpc.Api.GetTransactionStatus.SUCCESS) {
-      return { ledger: (pollResult as { ledger: number }).ledger };
-    }
-    if (pollResult.status === rpc.Api.GetTransactionStatus.FAILED) {
-      const failedResult = pollResult as { resultXdr?: { toXDR?: () => unknown } };
-      const rawMsg = failedResult.resultXdr
-        ? `Contract error: ${String(failedResult.resultXdr)}`
-        : "Contract transaction was submitted but failed on-chain.";
-      throw new Error(decodeContractError(rawMsg));
-    }
-  }
-
-  throw new Error("Contract transaction timed out waiting for confirmation.");
+  return pollTransactionStatus(sendResult.hash, signal);
 }
 
 function xlmToStroops(xlm: string): bigint {

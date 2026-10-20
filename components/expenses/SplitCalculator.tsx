@@ -16,8 +16,8 @@ interface SplitCalculatorProps {
   payerName: string;
   totalAmount: string;
   expenseTitle?: string;
-  /** Called when user clicks Pay on a row. */
-  onPay?: (share: SplitShare) => void;
+  /** Called when user clicks Pay on a row; `amount` is set for a partial payment. */
+  onPay?: (share: SplitShare, amount?: string) => void;
   /** ID of the share whose payment is currently in-flight (shows spinner). */
   payingShareId?: string | null;
   /** Disable pay buttons */
@@ -29,6 +29,8 @@ interface SplitCalculatorProps {
   poolBalance?: string | null;
   depositLoading?: boolean;
   onDepositPool?: (amount: string) => Promise<boolean>;
+  /** Enables SEP-0007 payment requests for unpaid shares (#327). */
+  paymentRequest?: { tripId: string; expenseId: string; asset: string };
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -46,6 +48,7 @@ export function SplitCalculator({
   poolBalance,
   depositLoading,
   onDepositPool,
+  paymentRequest,
 }: SplitCalculatorProps) {
   const totalMoney = Money.tryParse(totalAmount) ?? Money.zero();
   const paidCount = shares.filter((s) => s.paid).length;
@@ -120,6 +123,9 @@ export function SplitCalculator({
             poolBalance={poolBalance}
             depositLoading={depositLoading}
             onDepositPool={onDepositPool}
+            paymentRequest={
+              paymentRequest ? { ...paymentRequest, exactAmount: shares[i].amount } : undefined
+            }
           />
         ))}
       </div>

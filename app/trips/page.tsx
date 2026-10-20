@@ -3,9 +3,10 @@
 import React, { useState } from "react";
 import Link from "next/link";
 import { AnimatePresence, motion } from "framer-motion";
-import { Plus, ArrowLeft, Map, Inbox } from "lucide-react";
+import { Plus, ArrowLeft, Map, Inbox, Archive } from "lucide-react";
 import { useTripSearch } from "@/hooks/useTrip";
 import { useExpense } from "@/hooks/useExpense";
+import { useContacts } from "@/hooks/useContacts";
 import { useWallet } from "@/hooks/useWallet";
 import { useAuth } from "@/context/AuthContext";
 import { ConnectWalletButton } from "@/components/wallet/ConnectWalletButton";
@@ -14,15 +15,17 @@ import { Modal } from "@/components/ui/Modal";
 import { Spinner } from "@/components/ui/Spinner";
 import { TripCard } from "@/components/trips/TripCard";
 import { TripForm } from "@/components/trips/TripForm";
+import { TripCopyFlow } from "@/components/trips/TripCopyFlow";
 import { TripSearch } from "@/components/trips/TripSearch";
 import { useToast } from "@/components/ui/Toast";
 import type { TripFormData, Trip } from "@/types/trip";
 import { Money } from "@/lib/money";
 import { settlementAssetOf } from "@/lib/settlement/expenseAsset";
+import { downloadArchive } from "@/lib/export/download";
 
 // ─── Empty state ──────────────────────────────────────────────────────────────
 
-function EmptyState({ onNew }: { onNew: () => void }) {
+function EmptyState({ onNew, onCopy }: { onNew: () => void; onCopy: () => void }) {
   return (
     <motion.div
       initial={{ opacity: 0, y: 16 }}
@@ -44,6 +47,12 @@ function EmptyState({ onNew }: { onNew: () => void }) {
         <Plus size={15} />
         New Trip
       </button>
+      <button
+        onClick={onCopy}
+        className="mt-3 text-xs font-semibold text-[#888] hover:text-[#0F0F14]"
+      >
+        or start from a saved template
+      </button>
     </motion.div>
   );
 }
@@ -52,13 +61,30 @@ function EmptyState({ onNew }: { onNew: () => void }) {
 
 export default function TripsPage() {
   const [searchQuery, setSearchQuery] = useState("");
-  const { trips, totalTrips, addTrip, deleteTrip, isLoading, isOffline } = useTripSearch(searchQuery);
+  const { trips, allTrips, totalTrips, addTrip, deleteTrip, isLoading, isOffline } =
+    useTripSearch(searchQuery);
   const { expenses } = useExpense();
   const { publicKey } = useWallet();
   const { user } = useAuth();
+  const { contacts } = useContacts();
   const { success: toastSuccess, error: toastError } = useToast();
   const [showForm, setShowForm] = useState(false);
+  const [showCopy, setShowCopy] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [archiving, setArchiving] = useState(false);
+
+  // Server-side, RLS-scoped, rate-limited and audited (see /api/exports/archive).
+  const handleArchiveAll = async () => {
+    setArchiving(true);
+    try {
+      await downloadArchive();
+      toastSuccess("Archive downloaded", "All your trips, with exact amounts and provenance.");
+    } catch (err: any) {
+      toastError("Could not export archive", err?.message || "Please try again.");
+    } finally {
+      setArchiving(false);
+    }
+  };
  
   const handleDeleteTrip = async (id: string) => {
     try {
@@ -146,6 +172,17 @@ export default function TripsPage() {
 
             {totalTrips > 0 && (
               <button
+                onClick={handleArchiveAll}
+                disabled={archiving}
+                title="Download a portable archive of all your trips"
+                className="inline-flex items-center gap-2 px-3 py-2.5 rounded-xl border border-[#E5E5E5] bg-white text-[#555] text-sm font-bold hover:bg-[#F0F0F0] transition-all shrink-0 disabled:opacity-50"
+              >
+                <Archive size={14} />
+                <span className="hidden sm:inline">{archiving ? "Preparing…" : "Archive"}</span>
+              </button>
+            )}
+            {totalTrips > 0 && (
+              <button
                 onClick={() => setShowForm(true)}
                 className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[#0F0F14] text-[#2DD4BF] text-sm font-bold hover:bg-[#1A1A22] transition-all shrink-0"
               >
@@ -171,7 +208,7 @@ export default function TripsPage() {
               <Spinner size={32} className="text-[#2DD4BF]" />
             </div>
           ) : totalTrips === 0 ? (
-            <EmptyState onNew={() => setShowForm(true)} />
+            <EmptyState onNew={() => setShowForm(true)} onCopy={() => setShowCopy(true)} />
           ) : trips.length === 0 ? (
             <p className="rounded-xl border border-[#E5E5E5] bg-white px-4 py-8 text-center text-sm text-[#888]">
               No trips match your search.
@@ -222,8 +259,26 @@ export default function TripsPage() {
         <TripForm
           currentUserPublicKey={publicKey}
           currentUserName={user?.displayName}
+          contacts={contacts}
           onSubmit={handleCreate}
           onCancel={() => setShowForm(false)}
+        />
+      </Modal>
+
+      {/* Start from a template or a past trip */}
+      <Modal
+        open={showCopy}
+        onClose={() => setShowCopy(false)}
+        title="Start from a template or past trip"
+        description="Members, recurring expenses and permissions carry over. Balances and payments never do."
+        size="lg"
+      >
+        <TripCopyFlow
+          trips={allTrips}
+          currentUserPublicKey={publicKey}
+          currentUserName={user?.displayName}
+          onCreated={() => setShowCopy(false)}
+          onCancel={() => setShowCopy(false)}
         />
       </Modal>
     </AuthGuard>

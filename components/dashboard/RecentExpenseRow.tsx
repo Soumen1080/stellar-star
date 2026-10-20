@@ -4,12 +4,14 @@ import Link from "next/link";
 import { ArrowRight, CheckCircle2, ReceiptText } from "lucide-react";
 import { Money } from "@/components/ui/Money";
 import { WalletAddressBadge } from "@/components/ui/WalletAddressBadge";
+import { useLocale } from "@/context/LocaleContext";
 import type { Expense } from "@/types/expense";
 
 export function RecentExpenseRow({ expense }: { expense: Expense }) {
+  const { formatDate } = useLocale();
   const paidCount = expense.shares.filter((share) => share.paid).length;
   const allPaid = paidCount === expense.shares.length && expense.shares.length > 0;
-  const date = new Date(expense.createdAt).toLocaleDateString("en-US", {
+  const date = formatDate(expense.createdAt, {
     month: "short",
     day: "numeric",
   });

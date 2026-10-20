@@ -22,6 +22,7 @@ import { reportError } from "@/lib/observability/reportError";
 import type { WalletContextType } from "@/types/wallet";
 import { useToast } from "@/components/ui/Toast";
 import { resetSupabaseClient } from "@/lib/supabase/client";
+import { trackAnalyticsEvent } from "@/lib/analytics/sink";
 
 
 const WalletContext = createContext<WalletContextType | null>(null);
@@ -176,6 +177,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
   const connect = useCallback(async () => {
     setIsConnecting(true);
     setError(null);
+    trackAnalyticsEvent("wallet_connect_started", { wallet_type: selectedWalletId || "stellar_wallets_kit" });
 
     try {
       // ── E2E test seam ──────────────────────────────────────────────────────
@@ -193,6 +195,11 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
         setSelectedWalletId(FREIGHTER_ID);
         localStorage.setItem(LS_PUBLIC_KEY, e2eWallet.address);
         localStorage.setItem("StellarStar:walletId", FREIGHTER_ID);
+        trackAnalyticsEvent("wallet_connected", {
+          wallet_type: FREIGHTER_ID,
+          network: "TESTNET",
+          has_funds: true,
+        });
         return;
       }
 
@@ -208,6 +215,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
         onWalletSelected: async (wallet) => {
           kit.setWallet(wallet.id);
           selectedId = wallet.id;
+          trackAnalyticsEvent("wallet_connect_started", { wallet_type: wallet.id });
           const { address } = await kit.getAddress();
           resolvedAddress = address;
         },
@@ -226,6 +234,11 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       setSelectedWalletId(selectedId);
       localStorage.setItem(LS_PUBLIC_KEY, resolvedAddress);
       localStorage.setItem("StellarStar:walletId", selectedId);
+      trackAnalyticsEvent("wallet_connected", {
+        wallet_type: selectedId,
+        network: net,
+        has_funds: false,
+      });
       toastSuccess(
         "Wallet connected",
           `${resolvedAddress.slice(0, 6)}...${resolvedAddress.slice(-4)} on ${networkLabel(net)}`
@@ -237,6 +250,10 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       const isCancelled =
         msg.toLowerCase().includes("cancel") ||
         msg.toLowerCase().includes("closed without");
+      trackAnalyticsEvent("wallet_connect_failed", {
+        wallet_type: selectedWalletId || "unknown",
+        error_code: isCancelled ? "user_cancelled" : "connection_error",
+      });
       if (!isCancelled) {
         setError(msg);
         toastError("Connection failed", msg);
@@ -244,7 +261,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     } finally {
       setIsConnecting(false);
     }
-  }, [fetchBalance, toastSuccess, toastError]);
+  }, [fetchBalance, toastSuccess, toastError, selectedWalletId]);
 
 
   const disconnect = useCallback(() => {

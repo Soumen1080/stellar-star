@@ -50,6 +50,9 @@ jobs:
       - name: Proof link validation
         run: npm run proof:links
 
+      - name: Validate network configuration (CI check)
+        run: npm run config:validate
+
       - name: Build
         run: npm run build
 

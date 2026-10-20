@@ -28,12 +28,11 @@ jest.mock("@/lib/fx/quote", () => ({
   describeAge: () => "3 minutes",
 }));
 
-const toastInfo = jest.fn();
 jest.mock("@/components/ui/Toast", () => ({
   useToast: () => ({
     success: jest.fn(),
     error: jest.fn(),
-    info: toastInfo,
+    info: jest.fn(),
   }),
 }));
 
@@ -185,7 +184,9 @@ describe("useExpenseForm currency freshness (issue #222)", () => {
     expect(saved.exchangeRate).toBeUndefined();
   });
 
-  it("notifies through the current toastInfo when the rate is stale", async () => {
+  it("blocks conversion with a stale (degraded) quote instead of saving it", async () => {
+    // #323: a cached rate past its TTL is a degraded state. It used to be
+    // saved with an info toast; now it must not convert at all.
     mockedFetchRate.mockResolvedValue({
       rate: "0.25",
       fetchedAtIso: "2026-01-01T00:00:00.000Z",
@@ -200,10 +201,98 @@ describe("useExpenseForm currency freshness (issue #222)", () => {
       await hook.result.current.handleSubmit(submitEvent());
     });
 
+    expect(addExpense).not.toHaveBeenCalled();
+    expect(hook.result.current.quoteState).toBe("stale");
+    expect(hook.result.current.errors.quote).toMatch(/cached rate/i);
+  });
+
+  it("blocks conversion when providers disagree", async () => {
+    mockedFetchRate.mockResolvedValue({
+      rate: "0.25",
+      fetchedAtIso: "2026-01-01T00:00:00.000Z",
+      stale: false,
+      rateAgeMs: 0,
+      source: "coingecko",
+      spreadBps: 450,
+    } as Awaited<ReturnType<typeof fetchExchangeRate>>);
+
+    const hook = await fillAndSwitch("EUR");
+    await act(async () => {
+      await hook.result.current.handleSubmit(submitEvent());
+    });
+
+    expect(addExpense).not.toHaveBeenCalled();
+    expect(hook.result.current.quoteState).toBe("disagreement");
+  });
+
+  it("still allows direct settlement-asset entry after a degraded quote", async () => {
+    mockedFetchRate.mockResolvedValue(null);
+    const hook = await fillAndSwitch("USD");
+    await act(async () => {
+      await hook.result.current.handleSubmit(submitEvent());
+    });
+    expect(addExpense).not.toHaveBeenCalled();
+
+    await act(async () => {
+      hook.result.current.setCurrency("XLM");
+    });
+    await act(async () => {
+      await hook.result.current.handleSubmit(submitEvent());
+    });
+
     await waitFor(() => expect(addExpense).toHaveBeenCalledTimes(1));
-    expect(toastInfo).toHaveBeenCalledWith(
-      "Using a recent exchange rate",
-      expect.stringContaining("3 minutes"),
-    );
+    expect((addExpense.mock.calls[0][0] as Expense).totalAmount).toBe("100.0000000");
+  });
+
+  it("saves the full, immutable provenance of the locked quote", async () => {
+    mockedFetchRate.mockResolvedValue({
+      rate: "3.2493827",
+      fetchedAtIso: "2026-10-20T08:00:00.000Z",
+      stale: false,
+      rateAgeMs: 0,
+      source: "coingecko",
+      spreadBps: 12,
+    } as Awaited<ReturnType<typeof fetchExchangeRate>>);
+
+    const hook = renderHook(() => useExpenseForm({ defaultMembers }));
+    await act(async () => {
+      hook.result.current.setTitle("Museum");
+      hook.result.current.setTotalAmount("25.00");
+      hook.result.current.setCurrency("EUR");
+    });
+    await act(async () => {
+      await hook.result.current.handleSubmit(submitEvent());
+    });
+
+    await waitFor(() => expect(addExpense).toHaveBeenCalledTimes(1));
+    const saved = addExpense.mock.calls[0][0] as Expense;
+    expect(saved).toMatchObject({
+      currency: "EUR",
+      enteredAmount: "25.00",
+      totalAmount: "81.2345675",
+      exchangeRate: "3.2493827",
+      exchangeRateSource: "coingecko",
+      exchangeRateTimestamp: "2026-10-20T08:00:00.000Z",
+      settlementAsset: "native",
+    });
+  });
+
+  it("records no quote and no conversion for native-asset input", async () => {
+    const hook = renderHook(() => useExpenseForm({ defaultMembers }));
+    await act(async () => {
+      hook.result.current.setTitle("Fuel");
+      hook.result.current.setTotalAmount("12.5");
+    });
+    await act(async () => {
+      await hook.result.current.handleSubmit(submitEvent());
+    });
+
+    await waitFor(() => expect(addExpense).toHaveBeenCalledTimes(1));
+    expect(mockedFetchRate).not.toHaveBeenCalled();
+    const saved = addExpense.mock.calls[0][0] as Expense;
+    expect(saved.totalAmount).toBe("12.5000000");
+    expect(saved.exchangeRate).toBeUndefined();
+    expect(saved.exchangeRateSource).toBeUndefined();
+    expect(hook.result.current.quoteState).toBe("native");
   });
 });

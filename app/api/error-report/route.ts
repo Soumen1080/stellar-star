@@ -20,6 +20,16 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { checkRateLimit, getClientIp } from "@/lib/auth/rateLimiter";
+import {
+  REQUEST_ID_HEADER,
+  createRequestId,
+  parseRequestId,
+} from "@/lib/observability/requestId";
+import {
+  evaluateAlertConditions,
+  dispatchOnCallAlert,
+} from "@/lib/observability/alerts";
+import { redactSensitiveData } from "@/lib/observability/reportError";
 
 interface IncomingReport {
   requestId?: string;
@@ -31,7 +41,6 @@ interface IncomingReport {
   network?: string;
   appVersion?: string;
   timestamp?: string;
-  requestId?: string;
 }
 
 const ALLOWED_KEYS: (keyof IncomingReport)[] = [
@@ -130,10 +139,46 @@ function sanitizeContext(value: unknown): Record<string, unknown> | undefined {
 }
 
 export async function POST(req: NextRequest) {
+  const headerRequestId = parseRequestId(req.headers.get(REQUEST_ID_HEADER));
+  let requestId = headerRequestId ?? createRequestId();
+  const responseHeaders = (extra?: Record<string, string>) => ({
+    "Cache-Control": "no-store",
+    [REQUEST_ID_HEADER]: requestId,
+    ...extra,
+  });
+
   const clientIp = getClientIp(req);
-  const rateLimit = await checkRateLimit(`error-report:ip:${clientIp}`, 20, 60_000);
+  const rateLimit = await checkRateLimit(`error-report:ip:${clientIp}`, RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_MS);
   if (!rateLimit.allowed) {
-    return NextResponse.json({ ok: false, error: "Too many error reports" }, { status: 429 });
+    return NextResponse.json(
+      { ok: false, error: "Too many error reports", requestId },
+      { status: 429, headers: responseHeaders({ "Retry-After": String(Math.ceil(rateLimit.resetMs / 1000)) }) }
+    );
+  }
+
+  const declaredLength = Number(req.headers.get("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_BODY_BYTES) {
+    return NextResponse.json(
+      { ok: false, error: "payload too large", requestId },
+      { status: 413, headers: responseHeaders() },
+    );
+  }
+
+  let raw: string;
+  try {
+    raw = await req.text();
+  } catch {
+    return NextResponse.json(
+      { ok: false, error: "invalid body", requestId },
+      { status: 400, headers: responseHeaders() },
+    );
+  }
+
+  if (raw.length > MAX_BODY_BYTES) {
+    return NextResponse.json(
+      { ok: false, error: "payload too large", requestId },
+      { status: 413, headers: responseHeaders() },
+    );
   }
 
   let body: IncomingReport;
@@ -153,33 +198,45 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  if (!headerRequestId) {
+  if (!headerRequestId && body.requestId) {
     requestId = parseRequestId(body.requestId) ?? requestId;
   }
 
   const receivedAt = new Date().toISOString();
   const clean: Record<string, unknown> = { requestId, receivedAt };
   for (const key of ALLOWED_KEYS) {
-    if (body[key] !== undefined) {
-      const val = body[key];
-      if (typeof val === "string") {
-        clean[key] = val.slice(0, key === "stack" ? 4000 : 2000);
-      } else {
-        clean[key] = val;
-      }
-    }
-  }
+    const value = body[key];
+    if (value === undefined) continue;
 
-  if (!clean.requestId) {
-    const headerReqId = req.headers.get("x-request-id");
-    if (headerReqId) clean.requestId = headerReqId.slice(0, 100);
+    if (key === "context") {
+      const sanitized = sanitizeContext(value);
+      const redacted = redactSensitiveData(sanitized);
+      if (redacted && Object.keys(redacted).length > 0) clean.context = redacted;
+      continue;
+    }
+
+    if (typeof value === "string") {
+      clean[key] = sanitizeString(value, MAX_LENGTHS[key] ?? 200);
+    }
   }
 
   // Stable, machine-parseable marker so log pipelines can route/alert on it.
   console.error(`[StellarStar:client-error] ${JSON.stringify(clean)}`);
 
+  // Evaluate on-call alert conditions (Repeated failures, Partial Success spike, Service outages)
+  const onCallAlert = evaluateAlertConditions({
+    name: typeof clean.name === "string" ? clean.name : undefined,
+    message: typeof clean.message === "string" ? clean.message : undefined,
+    context: typeof clean.context === "object" && clean.context !== null ? (clean.context as Record<string, unknown>) : undefined,
+    requestId,
+  });
+
+  if (onCallAlert) {
+    void dispatchOnCallAlert(onCallAlert);
+  }
+
   const webhook = process.env.ERROR_REPORTING_WEBHOOK;
-  if (webhook) {
+  if (webhook && !onCallAlert) {
     try {
       await fetch(webhook, {
         method: "POST",
@@ -188,7 +245,7 @@ export async function POST(req: NextRequest) {
           [REQUEST_ID_HEADER]: requestId,
         },
         body: JSON.stringify(clean),
-        signal: AbortSignal.timeout(5000),
+        signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS),
       });
     } catch {
       // Forwarding is best-effort; the server log above already captured it.

@@ -1,7 +1,8 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
-import { Copy, Check, X, Link, Shield, Trash2, Loader2, UserPlus, QrCode } from "lucide-react";
+import { Copy, Check, Link, Loader2, QrCode } from "lucide-react";
+import { Modal } from "@/components/ui/Modal";
 import { useToast } from "@/components/ui/Toast";
 import { useSession } from "@/lib/supabase/useSession";
 import { QRCodeSVG } from "qrcode.react";
@@ -23,12 +24,19 @@ export function InviteMemberModal({ trip, isOpen, onClose }: InviteMemberModalPr
   const [loading, setLoading] = useState(false);
   const [showQR, setShowQR] = useState(false);
 
-  const unclaimedMembers = useMemo<Member[]>(
+  const unclaimedMembers = useMemo(
     () =>
       (trip.members || []).filter(
-        (m: Member) => !m.walletAddress || m.walletAddress.trim() === "",
+        (m) => !m.walletAddress || m.walletAddress.trim() === "",
       ),
     [trip.members],
+  );
+
+  // Identity of the unclaimed set, so realtime updates that replace `trip.members`
+  // with an equivalent array don't churn the selection, while an actual claim does.
+  const unclaimedKey = useMemo(
+    () => unclaimedMembers.map((m) => m.id).join(","),
+    [unclaimedMembers],
   );
 
   // Reset transient link state and default the selection each time the modal opens.
@@ -39,25 +47,15 @@ export function InviteMemberModal({ trip, isOpen, onClose }: InviteMemberModalPr
       setShowQR(false);
       setSelectedMemberId(unclaimedMembers.length > 0 ? unclaimedMembers[0].id : "");
     }
-  }, [isOpen, unclaimedMembers]);
+    // Intentionally keyed on `isOpen` only: this is the open transition. Keeping the
+    // selection valid afterwards is the next effect's job.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen]);
 
+  // Keep the selection pointing at a slot that is still unclaimed. Runs on open and
+  // whenever the unclaimed set changes underneath us (e.g. a Supabase Realtime claim).
   useEffect(() => {
     if (!isOpen) return;
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen, onClose]);
-
-  useEffect(() => {
-    if (!isOpen) return;
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen, onClose]);
 
     setSelectedMemberId((current) => {
       // "" is the General Group Invite option, always valid.
@@ -107,22 +105,12 @@ export function InviteMemberModal({ trip, isOpen, onClose }: InviteMemberModalPr
   };
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="invite-modal-title"
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-fade-in"
-    >
-      <div className="bg-white rounded-2xl border border-[#EEEEEE] shadow-xl w-full max-w-md overflow-hidden animate-scale-in">
-        <div className="flex items-center justify-between p-4 border-b border-[#F0F0F0]">
-          <div className="flex items-center gap-2">
-            <UserPlus size={18} className="text-[#2DD4BF]" />
-            <h3 id="invite-modal-title" className="text-base font-bold text-[#0F0F14]">Invite to Trip</h3>
-          </div>
-          <button
-            onClick={onClose}
-            aria-label="Close dialog"
-            className="p-1 rounded-lg text-[#888] hover:text-[#0F0F14] hover:bg-[#F5F5F5] transition-colors"
+    <Modal open={isOpen} onClose={onClose} title="Invite to Trip" size="md">
+      <div className="space-y-4">
+        <div>
+          <label
+            htmlFor="invite-member-slot"
+            className="block text-xs font-semibold text-[#444] uppercase tracking-wide mb-1.5"
           >
             Select Member Slot to Invite
           </label>
@@ -148,76 +136,76 @@ export function InviteMemberModal({ trip, isOpen, onClose }: InviteMemberModalPr
         </div>
 
         {!generatedUrl ? (
-            <button
-              onClick={handleGenerate}
-              disabled={loading}
-              className="w-full py-2.5 px-4 rounded-xl bg-[#0F0F14] text-[#2DD4BF] text-sm font-bold flex items-center justify-center gap-2 hover:bg-[#1A1A22] disabled:opacity-50 transition-colors"
-            >
-              {loading ? (
-                <>
-                  <Loader2 size={16} className="animate-spin" />
-                  Generating Secure Link...
-                </>
-              ) : (
-                <>
-                  <Link size={16} />
-                  Generate Invitation Link
-                </>
-              )}
-            </button>
-          ) : (
-            <div className="space-y-3 pt-2">
-              <div className="flex items-center gap-2 p-2.5 bg-[#F0FDFA] rounded-xl border border-[#CCFBF1]">
-                <input
-                  type="text"
-                  readOnly
-                  value={generatedUrl}
-                  className="flex-1 bg-transparent text-xs font-mono text-[#0F766E] outline-none select-all"
-                />
-                <button
-                  onClick={handleCopy}
-                  className="p-1.5 rounded-lg bg-[#2DD4BF] text-[#0F766E] hover:bg-[#20BEAB] transition-colors shrink-0"
-                  title="Copy link"
-                  aria-label="Copy invitation link"
-                >
-                  {copied ? <Check size={14} /> : <Copy size={14} />}
-                </button>
-              </div>
-
-              <div className="flex gap-2">
-                <button
-                  onClick={handleCopy}
-                  className="flex-1 py-2 px-3 rounded-xl bg-[#0F0F14] text-white text-xs font-semibold flex items-center justify-center gap-1.5 hover:bg-[#222] transition-colors"
-                >
-                  {copied ? <Check size={14} className="text-[#2DD4BF]" /> : <Copy size={14} />}
-                  {copied ? "Copied!" : "Copy Link"}
-                </button>
-                <button
-                  onClick={() => setShowQR((prev) => !prev)}
-                  className="py-2 px-3 rounded-xl border border-[#E5E5E5] text-[#555] text-xs font-semibold flex items-center gap-1.5 hover:bg-[#F5F5F5] transition-colors"
-                >
-                  <QrCode size={14} />
-                  {showQR ? "Hide QR" : "Show QR"}
-                </button>
-              </div>
-
-              {showQR && (
-                <div className="p-4 bg-white rounded-xl border border-[#E5E5E5] flex flex-col items-center">
-                  <QRCodeSVG
-                    value={generatedUrl}
-                    size={160}
-                    bgColor="#ffffff"
-                    fgColor="#0F0F14"
-                    level="M"
-                  />
-                  <p className="text-[11px] text-[#888] mt-2">Scan with phone to join</p>
-                </div>
-              )}
-
-              <p className="text-[11px] text-[#888] text-center">
-                This link is valid for 7 days and can be claimed once.
-              </p>
+          <button
+            onClick={handleGenerate}
+            disabled={loading}
+            className="w-full py-2.5 px-4 rounded-xl bg-[#0F0F14] text-[#2DD4BF] text-sm font-bold flex items-center justify-center gap-2 hover:bg-[#1A1A22] disabled:opacity-50 transition-colors"
+          >
+            {loading ? (
+              <>
+                <Loader2 size={16} className="animate-spin" />
+                Generating Secure Link...
+              </>
+            ) : (
+              <>
+                <Link size={16} />
+                Generate Invitation Link
+              </>
+            )}
+          </button>
+        ) : (
+          <div className="space-y-3 pt-2">
+            <div className="flex items-center gap-2 p-2.5 bg-[#F0FDFA] rounded-xl border border-[#CCFBF1]">
+              <input
+                type="text"
+                readOnly
+                value={generatedUrl}
+                className="flex-1 bg-transparent text-xs font-mono text-[#0F766E] outline-none select-all"
+              />
+              <button
+                onClick={handleCopy}
+                className="p-1.5 rounded-lg bg-[#2DD4BF] text-[#0F766E] hover:bg-[#20BEAB] transition-colors shrink-0"
+                title="Copy link"
+                aria-label="Copy invitation link"
+              >
+                {copied ? <Check size={14} /> : <Copy size={14} />}
+              </button>
             </div>
+
+            <div className="flex gap-2">
+              <button
+                onClick={handleCopy}
+                className="flex-1 py-2 px-3 rounded-xl bg-[#0F0F14] text-white text-xs font-semibold flex items-center justify-center gap-1.5 hover:bg-[#222] transition-colors"
+              >
+                {copied ? <Check size={14} className="text-[#2DD4BF]" /> : <Copy size={14} />}
+                {copied ? "Copied!" : "Copy Link"}
+              </button>
+              <button
+                onClick={() => setShowQR((prev) => !prev)}
+                className="py-2 px-3 rounded-xl border border-[#E5E5E5] text-[#555] text-xs font-semibold flex items-center gap-1.5 hover:bg-[#F5F5F5] transition-colors"
+              >
+                <QrCode size={14} />
+                {showQR ? "Hide QR" : "Show QR"}
+              </button>
+            </div>
+
+            {showQR && (
+              <div className="p-4 bg-white rounded-xl border border-[#E5E5E5] flex flex-col items-center">
+                <QRCodeSVG
+                  value={generatedUrl}
+                  size={160}
+                  bgColor="#ffffff"
+                  fgColor="#0F0F14"
+                  level="M"
+                />
+                <p className="text-[11px] text-[#888] mt-2">Scan with phone to join</p>
+              </div>
+            )}
+
+            <p className="text-[11px] text-[#888] text-center">
+              This link is valid for 7 days and can be claimed once.
+            </p>
+          </div>
         )}
       </div>
     </Modal>

@@ -1,5 +1,9 @@
 import {
   formatAddress,
+  formatWalletLabel,
+  formatDateStable,
+  formatDateTimeStable,
+  formatStableTimestamp,
   formatXLM,
   cn,
   escapeHtml,
@@ -178,5 +182,52 @@ describe("safeUrl", () => {
   it("blocks javascript: and data: URLs", () => {
     expect(safeUrl("javascript:alert(1)")).toBe("#");
     expect(safeUrl("data:text/html,test")).toBe("#");
+  });
+});
+
+// ─── formatWalletLabel ────────────────────────────────────────────────────────
+
+describe("formatWalletLabel", () => {
+  const ADDR = "GBGJFHVDS5CQJCFGGLOFMFXZJ3RCUZHDNJV5PBSYVLVQNKFX7SRP7CDR";
+
+  it("prioritizes sanitized custom label when present", () => {
+    expect(formatWalletLabel(ADDR, "Alice (admin)")).toBe("Alice admin");
+  });
+
+  it("falls back to formatted wallet address when custom label is missing", () => {
+    expect(formatWalletLabel(ADDR, null, 4)).toBe("GBGJ...7CDR");
+  });
+
+  it("returns empty string when both are missing or empty", () => {
+    expect(formatWalletLabel("", "")).toBe("");
+    expect(formatWalletLabel(null, undefined)).toBe("");
+  });
+});
+
+// ─── formatDateStable & formatDateTimeStable ──────────────────────────────────
+
+describe("formatDateStable and formatDateTimeStable", () => {
+  const testDate = "2026-10-21T00:00:00.000Z";
+
+  it("stably formats date in UTC avoiding timezone shift across environments", () => {
+    const res = formatDateStable(testDate, "short");
+    // In UTC, 2026-10-21T00:00:00.000Z is always 10/21/2026
+    expect(res).toBe("10/21/2026");
+  });
+
+  it("handles invalid date gracefully", () => {
+    expect(formatDateStable("invalid-date")).toBe("—");
+  });
+
+  it("stably formats timestamp with date and time in UTC", () => {
+    const res = formatDateTimeStable(testDate);
+    expect(res).toContain("2026");
+    expect(res).toContain("Oct 21");
+    expect(res).toContain("12:00 AM");
+  });
+
+  it("formats stable timestamp delegating to UTC date-time", () => {
+    const res = formatStableTimestamp(testDate);
+    expect(res).toContain("2026");
   });
 });

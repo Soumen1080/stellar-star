@@ -20,6 +20,13 @@ export interface QRPaymentData {
   assetCode?: string;
   /** Optional asset issuer public key for non-native payments */
   assetIssuer?: string;
+  /**
+   * Network the payment is for (SEP-0007 `network_passphrase`). Wallets on a
+   * different network refuse the request instead of paying on the wrong one.
+   */
+  networkPassphrase?: string;
+  /** Human-readable preview a wallet shows before signing (max 300 chars). */
+  msg?: string;
 }
 
 /**
@@ -32,10 +39,12 @@ export function buildQRPaymentURI({
   memo,
   assetCode,
   assetIssuer,
+  networkPassphrase,
+  msg,
 }: QRPaymentData): string {
   const cleanDest = (destination ?? "").trim();
   if (cleanDest && !StrKey.isValidEd25519PublicKey(cleanDest)) {
-    throw new Error(`Invalid destination Stellar address: ${destination}`);
+    throw new Error(`Invalid destination address: ${destination} is not a Stellar account (G...).`);
   }
 
   const params = new URLSearchParams({
@@ -46,7 +55,10 @@ export function buildQRPaymentURI({
   if (assetCode && assetCode !== "XLM" && assetCode !== "native") {
     params.set("asset_code", assetCode);
     if (assetIssuer) {
-      params.set("asset_issuer", assetIssuer);
+      if (!StrKey.isValidEd25519PublicKey(assetIssuer.trim())) {
+        throw new Error(`Invalid asset issuer address: ${assetIssuer}`);
+      }
+      params.set("asset_issuer", assetIssuer.trim());
     }
   }
 
@@ -54,6 +66,13 @@ export function buildQRPaymentURI({
     const finalMemo = trimToMemoBytes(memo, 28);
     params.set("memo", finalMemo);
     params.set("memo_type", "MEMO_TEXT");
+  }
+
+  if (networkPassphrase) {
+    params.set("network_passphrase", networkPassphrase);
+  }
+  if (msg) {
+    params.set("msg", msg.slice(0, 300));
   }
 
   return `web+stellar:pay?${params.toString()}`;

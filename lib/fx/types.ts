@@ -58,6 +58,15 @@ export interface RateResult {
    * The caller should show a warning but must not block form submission.
    */
   unavailable: boolean;
+
+  /**
+   * Corroborated quotes only (`getCorroboratedRate`): every provider that
+   * answered, its exact rate, and the spread between them in basis points.
+   */
+  providers?: Array<{ source: string; rate: string }>;
+  spreadBps?: number;
+  /** True when the providers' spread exceeds PROVIDER_DISAGREEMENT_BPS. */
+  disagreement?: boolean;
 }
 
 // ── Provider interface ────────────────────────────────────────────────────────

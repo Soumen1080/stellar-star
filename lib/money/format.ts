@@ -1,6 +1,7 @@
 import { type AssetRef } from "@/lib/stellar/assets";
 import { divideBigInt } from "./amount";
 import { getAssetPrecision } from "./assetPrecision";
+import { normalizeIntlLocale } from "@/lib/i18n/formatDate";
 
 export interface AssetFormattingConfig {
   /**
@@ -80,9 +81,10 @@ export function formatMoney(
   }
 
   const decimals = config.decimals;
+  const safeLocale = normalizeIntlLocale(locale);
 
   if (config.isFiat) {
-    const formatter = new Intl.NumberFormat(locale, {
+    const formatter = new Intl.NumberFormat(safeLocale, {
       style: "currency",
       currency: asset.toUpperCase(),
       minimumFractionDigits: decimals,
@@ -90,7 +92,7 @@ export function formatMoney(
     });
     const formatted = formatter.format(amountNum);
 
-    const a11yFormatter = new Intl.NumberFormat(locale, {
+    const a11yFormatter = new Intl.NumberFormat(safeLocale, {
       style: "currency",
       currency: asset.toUpperCase(),
       currencyDisplay: "name",
@@ -102,7 +104,7 @@ export function formatMoney(
     return { formatted, a11y };
   } else {
     // Positioning crypto code correctly according to locale
-    const usdDummy = new Intl.NumberFormat(locale, {
+    const usdDummy = new Intl.NumberFormat(safeLocale, {
       style: "currency",
       currency: "USD",
       currencyDisplay: "code",
@@ -112,7 +114,7 @@ export function formatMoney(
 
     const formatted = usdDummy.replace("USD", asset.toUpperCase());
 
-    const decFormatter = new Intl.NumberFormat(locale, {
+    const decFormatter = new Intl.NumberFormat(safeLocale, {
       minimumFractionDigits: decimals,
       maximumFractionDigits: decimals,
     });
@@ -131,6 +133,7 @@ export function formatExact(
   asset: string,
   locale: string
 ): FormatMoneyResult {
+  const safeLocale = normalizeIntlLocale(locale);
   let amountStr: string;
   if (amount && typeof amount === "object" && "format" in amount && typeof amount.format === "function") {
     amountStr = amount.format();
@@ -153,28 +156,38 @@ export function formatExact(
     integerVal = BigInt(Math.floor(parseFloat(integerPart) || 0));
   }
 
-  const intFormatter = new Intl.NumberFormat(locale, { useGrouping: true });
+  const intFormatter = new Intl.NumberFormat(safeLocale, { useGrouping: true });
   let formattedInteger = intFormatter.format(integerVal);
 
   if (isNegative) {
-    const negSign = new Intl.NumberFormat(locale).format(-1).replace(/1/g, "").trim() || "-";
+    const negSign =
+      new Intl.NumberFormat(safeLocale).formatToParts(-1).find((p) => p.type === "minusSign")?.value || "-";
     formattedInteger = `${negSign}${formattedInteger}`;
   }
 
   let formatted = formattedInteger;
   if (fractionalPart) {
-    const decimalSeparator = new Intl.NumberFormat(locale).format(0.1).replace(/[0-9]/g, "").trim() || ".";
-    formatted = `${formattedInteger}${decimalSeparator}${fractionalPart}`;
+    const decimalSeparator =
+      new Intl.NumberFormat(safeLocale).formatToParts(0.1).find((p) => p.type === "decimal")?.value || ".";
+    const numberingSystem = new Intl.NumberFormat(safeLocale).resolvedOptions().numberingSystem;
+    let localizedFraction = fractionalPart;
+    if (numberingSystem === "arab") {
+      const arabDigits = ["٠", "١", "٢", "٣", "٤", "٥", "٦", "٧", "٨", "٩"];
+      localizedFraction = fractionalPart.replace(/[0-9]/g, (d) => arabDigits[Number(d)]);
+    }
+    formatted = `${formattedInteger}${decimalSeparator}${localizedFraction}`;
   }
 
   const config = getAssetConfig(asset);
   const assetName = config.name;
 
   if (config.isFiat) {
-    const usdDummy = new Intl.NumberFormat(locale, { style: "currency", currency: asset.toUpperCase() }).format(1);
-    const partsOfDummy = new Intl.NumberFormat(locale, { style: "currency", currency: asset.toUpperCase() }).formatToParts(1);
+    const usdDummy = new Intl.NumberFormat(safeLocale, { style: "currency", currency: asset.toUpperCase() }).format(1);
+    const partsOfDummy = new Intl.NumberFormat(safeLocale, { style: "currency", currency: asset.toUpperCase() }).formatToParts(1);
     const currencySymbol = partsOfDummy.find(p => p.type === "currency")?.value || "";
-    const isSymbolPrepended = usdDummy.indexOf(currencySymbol) < usdDummy.indexOf("1");
+    const digitMatch = usdDummy.search(/[\d\u0660-\u0669]/);
+    const digitIndex = digitMatch !== -1 ? digitMatch : usdDummy.indexOf("1");
+    const isSymbolPrepended = digitIndex !== -1 && usdDummy.indexOf(currencySymbol) < digitIndex;
     const hasSpace = usdDummy.includes(" ") || usdDummy.includes("\u00a0");
 
     const spacing = hasSpace ? " " : "";
@@ -190,8 +203,10 @@ export function formatExact(
       a11y: `${formatted} ${asset.toUpperCase()}`,
     };
   } else {
-    const usdDummy = new Intl.NumberFormat(locale, { style: "currency", currency: "USD", currencyDisplay: "code" }).format(1);
-    const isCodePrepended = usdDummy.indexOf("USD") < usdDummy.indexOf("1");
+    const usdDummy = new Intl.NumberFormat(safeLocale, { style: "currency", currency: "USD", currencyDisplay: "code" }).format(1);
+    const digitMatch = usdDummy.search(/[\d\u0660-\u0669]/);
+    const digitIndex = digitMatch !== -1 ? digitMatch : usdDummy.indexOf("1");
+    const isCodePrepended = digitIndex !== -1 && usdDummy.indexOf("USD") < digitIndex;
     const hasSpace = usdDummy.includes(" ") || usdDummy.includes("\u00a0");
 
     const spacing = hasSpace ? " " : "";

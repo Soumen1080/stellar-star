@@ -1,47 +1,26 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import Link from "next/link";
-import { AnimatePresence } from "framer-motion";
 import { ArrowLeft, Plus } from "lucide-react";
 import { AuthGuard } from "@/components/auth/AuthGuard";
 import { ConnectWalletButton } from "@/components/wallet/ConnectWalletButton";
-import { ExpenseCard } from "@/components/expenses/ExpenseCard";
 import { ExpenseEmptyState } from "@/components/expenses/ExpenseEmptyState";
 import { ExpenseForm } from "@/components/expenses/ExpenseForm";
-import { ExpenseFilters, type ExpenseStatusFilter } from "@/components/expenses/ExpenseFilters";
+import { ExpenseHistoryList } from "@/components/expenses/ExpenseHistoryList";
 import { Modal } from "@/components/ui/Modal";
 import { Spinner } from "@/components/ui/Spinner";
 import { useToast } from "@/components/ui/Toast";
 import { useAuth } from "@/context/AuthContext";
 import { useExpense } from "@/hooks/useExpense";
 import { useWallet } from "@/hooks/useWallet";
-import type { Expense } from "@/types/expense";
 
 export default function ExpensesPage() {
   const { publicKey } = useWallet();
   const { user } = useAuth();
   const { expenses, deleteExpense, isLoading, isOffline } = useExpense();
   const [showForm, setShowForm] = useState(false);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState<ExpenseStatusFilter>("all");
   const { success: toastSuccess, error: toastError } = useToast();
-  const filteredExpenses = useMemo(() => {
-    const query = searchQuery.trim().toLocaleLowerCase();
-    return expenses.filter((expense) => {
-      const matchesStatus =
-        statusFilter === "all" ||
-        (statusFilter === "settled" ? expense.settled : !expense.settled);
-      if (!matchesStatus) return false;
-      if (!query) return true;
-      return [
-        expense.title,
-        expense.description ?? "",
-        expense.currency,
-        ...expense.members.flatMap((member) => [member.name, member.walletAddress ?? ""]),
-      ].some((value) => value.toLocaleLowerCase().includes(query));
-    });
-  }, [expenses, searchQuery, statusFilter]);
 
   // Deletes now reject rather than failing silently, so the outcome has to be
   // reported: an expense that looks deleted but is still in the database is
@@ -107,38 +86,18 @@ export default function ExpensesPage() {
             </div>
           )}
 
-          {expenses.length > 0 && (
-            <ExpenseFilters
-              query={searchQuery}
-              status={statusFilter}
-              onQueryChange={setSearchQuery}
-              onStatusChange={setStatusFilter}
-            />
-          )}
-
           {isLoading ? (
             <div className="flex justify-center py-12">
               <Spinner size={32} className="text-[#2DD4BF]" />
             </div>
           ) : expenses.length === 0 ? (
             <ExpenseEmptyState onNew={() => setShowForm(true)} />
-          ) : filteredExpenses.length === 0 ? (
-            <p className="rounded-xl border border-[#E5E5E5] bg-white px-4 py-8 text-center text-sm text-[#888]">
-              No expenses match these filters.
-            </p>
           ) : (
-            <div className="space-y-3">
-              <AnimatePresence mode="popLayout">
-                {filteredExpenses.map((expense: Expense) => (
-                  <ExpenseCard
-                    key={expense.id}
-                    expense={expense}
-                    onDelete={handleDeleteExpense}
-                    currentUserPublicKey={publicKey}
-                  />
-                ))}
-              </AnimatePresence>
-            </div>
+            <ExpenseHistoryList
+              expenses={expenses}
+              onDelete={handleDeleteExpense}
+              currentUserPublicKey={publicKey}
+            />
           )}
         </main>
       </div>
