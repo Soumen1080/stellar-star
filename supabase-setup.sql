@@ -1766,6 +1766,128 @@ CREATE POLICY settlement_intents_delete_owner ON public.settlement_intents
 
 -- ─── RECORD APPLIED MIGRATIONS ───────────────────────────────────────────────
 
+-- ============================================================================
+-- Configurable trip roles and granular permissions (migration 0008)
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS public.trip_role_audit (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  trip_id UUID NOT NULL REFERENCES public.trips(id) ON DELETE CASCADE,
+  member_id TEXT NOT NULL,
+  previous_role TEXT NOT NULL CHECK (previous_role IN ('owner', 'organizer', 'contributor', 'viewer', 'custom')),
+  next_role TEXT NOT NULL CHECK (next_role IN ('owner', 'organizer', 'contributor', 'viewer', 'custom')),
+  previous_custom_permissions TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+  next_custom_permissions TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+  changed_by_wallet TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS trip_role_audit_trip_created_at_idx ON public.trip_role_audit (trip_id, created_at DESC);
+
+CREATE OR REPLACE FUNCTION public.trip_member_role(p_trip_id UUID, p_wallet TEXT)
+RETURNS TEXT LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+  SELECT COALESCE(member ->> 'role', CASE WHEN upper(btrim(member ->> 'walletAddress')) = upper(btrim(t.created_by_wallet)) THEN 'owner' ELSE 'contributor' END)
+  FROM public.trips t CROSS JOIN LATERAL jsonb_array_elements(COALESCE(t.members, '[]'::jsonb)) member
+  WHERE t.id = p_trip_id AND upper(btrim(COALESCE(member ->> 'walletAddress', ''))) = upper(btrim(COALESCE(p_wallet, ''))) LIMIT 1;
+$$;
+
+CREATE OR REPLACE FUNCTION public.trip_has_permission(p_trip_id UUID, p_permission TEXT)
+RETURNS BOOLEAN LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $fn$
+DECLARE v_wallet TEXT := public.current_wallet(); v_role TEXT; v_permissions JSONB;
+BEGIN
+  IF v_wallet IS NULL OR p_permission NOT IN ('trip.settings.manage','members.manage','expenses.manage','receipts.manage','exports.view','reminders.manage','settlement.proposals.manage') THEN RETURN FALSE; END IF;
+  SELECT COALESCE(member ->> 'role', CASE WHEN upper(btrim(member ->> 'walletAddress')) = upper(btrim(t.created_by_wallet)) THEN 'owner' ELSE 'contributor' END), COALESCE(member -> 'customPermissions', '[]'::jsonb)
+    INTO v_role, v_permissions FROM public.trips t CROSS JOIN LATERAL jsonb_array_elements(COALESCE(t.members, '[]'::jsonb)) member
+   WHERE t.id = p_trip_id AND upper(btrim(COALESCE(member ->> 'walletAddress', ''))) = upper(btrim(v_wallet)) LIMIT 1;
+  IF v_role IN ('owner','organizer') THEN RETURN TRUE; END IF;
+  IF v_role = 'contributor' THEN RETURN p_permission IN ('expenses.manage','receipts.manage','exports.view'); END IF;
+  IF v_role = 'viewer' THEN RETURN p_permission = 'exports.view'; END IF;
+  IF v_role = 'custom' THEN RETURN v_permissions ? p_permission; END IF;
+  RETURN FALSE;
+END;
+$fn$;
+
+CREATE OR REPLACE FUNCTION public.expense_has_permission(p_expense_id UUID, p_permission TEXT)
+RETURNS BOOLEAN LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $fn$
+DECLARE v_wallet TEXT := public.current_wallet();
+BEGIN
+  IF v_wallet IS NULL THEN RETURN FALSE; END IF;
+  IF EXISTS (SELECT 1 FROM public.trips t WHERE t.expense_ids @> ARRAY[p_expense_id::TEXT] AND public.trip_has_permission(t.id, p_permission)) THEN RETURN TRUE; END IF;
+  RETURN EXISTS (SELECT 1 FROM public.expenses e WHERE e.id = p_expense_id AND e.created_by_wallet = v_wallet AND NOT EXISTS (SELECT 1 FROM public.trips t WHERE t.expense_ids @> ARRAY[p_expense_id::TEXT]));
+END;
+$fn$;
+
+CREATE OR REPLACE FUNCTION public.normalize_trip_member_roles()
+RETURNS TRIGGER LANGUAGE plpgsql SET search_path = public AS $fn$
+DECLARE v_member JSONB; v_old JSONB; v_result JSONB := '[]'::jsonb; v_role TEXT; v_permissions JSONB;
+BEGIN
+  IF jsonb_typeof(COALESCE(NEW.members, '[]'::jsonb)) <> 'array' THEN RAISE EXCEPTION 'Trip members must be an array'; END IF;
+  FOR v_member IN SELECT value FROM jsonb_array_elements(COALESCE(NEW.members, '[]'::jsonb)) LOOP
+    v_old := NULL;
+    IF TG_OP = 'UPDATE' THEN SELECT value INTO v_old FROM jsonb_array_elements(COALESCE(OLD.members, '[]'::jsonb)) WHERE value ->> 'id' = v_member ->> 'id' LIMIT 1; END IF;
+    IF TG_OP = 'UPDATE' AND v_old IS NOT NULL AND current_setting('stellar_star.role_change', true) IS DISTINCT FROM 'on' THEN
+      v_member := jsonb_set(v_member, '{role}', to_jsonb(COALESCE(v_old ->> 'role', CASE WHEN upper(btrim(COALESCE(v_old ->> 'walletAddress',''))) = upper(btrim(OLD.created_by_wallet)) THEN 'owner' ELSE 'contributor' END)));
+      v_member := v_member - 'customPermissions' || CASE WHEN v_old ? 'customPermissions' THEN jsonb_build_object('customPermissions', v_old -> 'customPermissions') ELSE '{}'::jsonb END;
+    ELSIF TG_OP = 'UPDATE' AND v_old IS NULL THEN
+      v_member := v_member - 'customPermissions' || jsonb_build_object('role', 'contributor');
+    END IF;
+    v_role := COALESCE(v_member ->> 'role', CASE WHEN upper(btrim(COALESCE(v_member ->> 'walletAddress',''))) = upper(btrim(NEW.created_by_wallet)) THEN 'owner' ELSE 'contributor' END);
+    IF v_role NOT IN ('owner','organizer','contributor','viewer','custom') THEN RAISE EXCEPTION 'Invalid trip role'; END IF;
+    v_member := jsonb_set(v_member, '{role}', to_jsonb(v_role)); v_permissions := COALESCE(v_member -> 'customPermissions', '[]'::jsonb);
+    IF v_role = 'custom' AND (jsonb_typeof(v_permissions) <> 'array' OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(v_permissions) p WHERE p NOT IN ('trip.settings.manage','members.manage','expenses.manage','receipts.manage','exports.view','reminders.manage','settlement.proposals.manage'))) THEN RAISE EXCEPTION 'Invalid custom trip permission'; END IF;
+    IF v_role <> 'custom' THEN v_member := v_member - 'customPermissions'; END IF;
+    v_result := v_result || jsonb_build_array(v_member);
+  END LOOP;
+  IF NOT EXISTS (SELECT 1 FROM jsonb_array_elements(v_result) member WHERE member ->> 'role' = 'owner' AND btrim(COALESCE(member ->> 'walletAddress','')) <> '') THEN RAISE EXCEPTION 'A trip must retain at least one owner; transfer ownership before demoting or removing the final owner'; END IF;
+  NEW.members := v_result; RETURN NEW;
+END;
+$fn$;
+DROP TRIGGER IF EXISTS trg_015_trips_normalize_roles ON public.trips;
+CREATE TRIGGER trg_015_trips_normalize_roles BEFORE INSERT OR UPDATE OF members ON public.trips FOR EACH ROW EXECUTE FUNCTION public.normalize_trip_member_roles();
+
+CREATE OR REPLACE FUNCTION public.set_trip_member_role(p_trip_id UUID, p_member_id TEXT, p_role TEXT, p_custom_permissions TEXT[] DEFAULT ARRAY[]::TEXT[])
+RETURNS public.trips LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $fn$
+DECLARE v_trip public.trips; v_target JSONB; v_previous_role TEXT; v_previous_permissions TEXT[]; v_owners INT; v_members JSONB;
+BEGIN
+  IF p_role NOT IN ('owner','organizer','contributor','viewer','custom') THEN RAISE EXCEPTION 'INVALID_ROLE'; END IF;
+  IF p_role = 'custom' AND EXISTS (SELECT 1 FROM unnest(COALESCE(p_custom_permissions, ARRAY[]::TEXT[])) p WHERE p NOT IN ('trip.settings.manage','members.manage','expenses.manage','receipts.manage','exports.view','reminders.manage','settlement.proposals.manage')) THEN RAISE EXCEPTION 'INVALID_CUSTOM_PERMISSION'; END IF;
+  SELECT * INTO v_trip FROM public.trips WHERE id = p_trip_id FOR UPDATE; IF NOT FOUND THEN RAISE EXCEPTION 'TRIP_NOT_FOUND'; END IF;
+  IF public.trip_member_role(p_trip_id, public.current_wallet()) IS DISTINCT FROM 'owner' THEN RAISE EXCEPTION 'ROLE_CHANGE_FORBIDDEN'; END IF;
+  SELECT member INTO v_target FROM jsonb_array_elements(v_trip.members) member WHERE member ->> 'id' = p_member_id LIMIT 1; IF v_target IS NULL THEN RAISE EXCEPTION 'MEMBER_NOT_FOUND'; END IF;
+  IF p_role = 'owner' AND btrim(COALESCE(v_target ->> 'walletAddress','')) = '' THEN RAISE EXCEPTION 'OWNER_REQUIRES_WALLET'; END IF;
+  v_previous_role := COALESCE(v_target ->> 'role','contributor'); SELECT COALESCE(array_agg(value), ARRAY[]::TEXT[]) INTO v_previous_permissions FROM jsonb_array_elements_text(COALESCE(v_target -> 'customPermissions','[]'::jsonb)) value;
+  SELECT count(*) INTO v_owners FROM jsonb_array_elements(v_trip.members) member WHERE COALESCE(member ->> 'role','contributor') = 'owner' AND btrim(COALESCE(member ->> 'walletAddress','')) <> '';
+  IF v_previous_role = 'owner' AND p_role <> 'owner' AND v_owners = 1 THEN RAISE EXCEPTION 'LAST_OWNER'; END IF;
+  SELECT jsonb_agg(CASE WHEN member ->> 'id' = p_member_id THEN (member - 'customPermissions') || jsonb_build_object('role',p_role) || CASE WHEN p_role = 'custom' THEN jsonb_build_object('customPermissions',to_jsonb(COALESCE(p_custom_permissions,ARRAY[]::TEXT[]))) ELSE '{}'::jsonb END ELSE member END) INTO v_members FROM jsonb_array_elements(v_trip.members) member;
+  PERFORM set_config('stellar_star.role_change','on',true); UPDATE public.trips SET members = v_members WHERE id = p_trip_id RETURNING * INTO v_trip;
+  INSERT INTO public.trip_role_audit(trip_id,member_id,previous_role,next_role,previous_custom_permissions,next_custom_permissions,changed_by_wallet) VALUES(p_trip_id,p_member_id,v_previous_role,p_role,v_previous_permissions,CASE WHEN p_role = 'custom' THEN COALESCE(p_custom_permissions,ARRAY[]::TEXT[]) ELSE ARRAY[]::TEXT[] END,public.current_wallet());
+  RETURN v_trip;
+END;
+$fn$;
+
+CREATE OR REPLACE FUNCTION public.add_expense_to_trip(p_trip_id UUID, p_expense_id UUID)
+RETURNS TEXT[] LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $fn$
+DECLARE v_ids TEXT[];
+BEGIN
+  IF NOT public.trip_has_permission(p_trip_id,'expenses.manage') THEN RAISE EXCEPTION 'EXPENSE_LINK_FORBIDDEN'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM public.expenses WHERE id=p_expense_id) THEN RAISE EXCEPTION 'EXPENSE_NOT_FOUND'; END IF;
+  UPDATE public.trips SET expense_ids = ARRAY(SELECT DISTINCT unnest(expense_ids || ARRAY[p_expense_id::TEXT])) WHERE id=p_trip_id RETURNING expense_ids INTO v_ids; RETURN v_ids;
+END;
+$fn$;
+
+ALTER TABLE public.trip_role_audit ENABLE ROW LEVEL SECURITY;
+CREATE POLICY trip_role_audit_select_members ON public.trip_role_audit FOR SELECT TO authenticated USING (public.trip_has_permission(trip_id,'exports.view'));
+DROP POLICY IF EXISTS trips_update_members ON public.trips;
+CREATE POLICY trips_update_authorized ON public.trips FOR UPDATE TO authenticated USING (public.trip_has_permission(id,'trip.settings.manage')) WITH CHECK (public.trip_has_permission(id,'trip.settings.manage'));
+DROP POLICY IF EXISTS expenses_update_members ON public.expenses;
+CREATE POLICY expenses_update_authorized ON public.expenses FOR UPDATE TO authenticated USING (public.expense_has_permission(id,'expenses.manage')) WITH CHECK (public.expense_has_permission(id,'expenses.manage'));
+DROP POLICY IF EXISTS expenses_delete_creator ON public.expenses;
+CREATE POLICY expenses_delete_authorized ON public.expenses FOR DELETE TO authenticated USING (public.expense_has_permission(id,'expenses.manage'));
+DROP POLICY IF EXISTS trip_invites_insert_members ON public.trip_invites;
+CREATE POLICY trip_invites_insert_authorized ON public.trip_invites FOR INSERT TO authenticated WITH CHECK (created_by_wallet = public.current_wallet() AND public.trip_has_permission(trip_id,'members.manage'));
+DROP POLICY IF EXISTS trip_invites_update_creator ON public.trip_invites;
+CREATE POLICY trip_invites_update_authorized ON public.trip_invites FOR UPDATE TO authenticated USING (public.trip_has_permission(trip_id,'members.manage')) WITH CHECK (public.trip_has_permission(trip_id,'members.manage'));
+GRANT SELECT ON public.trip_role_audit TO authenticated;
+GRANT EXECUTE ON FUNCTION public.trip_member_role(UUID,TEXT), public.trip_has_permission(UUID,TEXT), public.expense_has_permission(UUID,TEXT), public.set_trip_member_role(UUID,TEXT,TEXT,TEXT[]), public.add_expense_to_trip(UUID,UUID) TO authenticated;
+
 INSERT INTO public.schema_migrations (version, name, checksum)
 VALUES
   ('0001', '0001_baseline', 'baseline_initial_checksum'),
@@ -1774,5 +1896,6 @@ VALUES
   ('0004', '0004_settlement_intents', 'settlement_intents_v1'),
   ('0005', '0005_verify_trip_invite_rpc', 'verify_trip_invite_v1'),
   ('0006', '0006_settlement_request_ids', 'settlement_request_ids_v1'),
-  ('0007', '0007_composite_query_indexes', 'composite_query_indexes_v1')
+  ('0007', '0007_composite_query_indexes', 'composite_query_indexes_v1'),
+  ('0008', '0008_trip_roles_and_permissions', 'trip_roles_permissions_v1')
 ON CONFLICT (version) DO NOTHING;
