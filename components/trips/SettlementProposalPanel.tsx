@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ClipboardCheck, FileLock2 } from "lucide-react";
 import { Money as MoneyDisplay } from "@/components/ui/Money";
 import { useToast } from "@/components/ui/Toast";
@@ -13,6 +13,10 @@ import {
   type ProposalResponse,
 } from "@/lib/settlement/proposal";
 import type { useSettlementProposal } from "@/hooks/useSettlementProposal";
+import type { Expense } from "@/types/expense";
+import { DISPUTE_CATEGORIES, type DisputeCategory } from "@/lib/settlement/disputes";
+import { listExpenseReceipts } from "@/lib/receipts/client";
+import type { ExpenseReceipt } from "@/types/receipt";
 
 type ProposalState = ReturnType<typeof useSettlementProposal>;
 
@@ -36,6 +40,7 @@ const CHANGE_LABEL: Record<string, string> = {
   payer_changed: "payer changed",
   asset_changed: "asset changed",
   payment_reverted: "a payment was reverted",
+  disputed: "is now disputed",
 };
 
 function decisionLabel(r: ProposalResponse): string {
@@ -46,14 +51,22 @@ function decisionLabel(r: ProposalResponse): string {
 export function SettlementProposalPanel({
   state,
   hasOutstanding,
+  expenses,
 }: {
   state: ProposalState;
   hasOutstanding: boolean;
+  expenses: Expense[];
 }) {
   const { publicKey } = useWallet();
   const { success, error } = useToast();
   const [reason, setReason] = useState("");
   const [answering, setAnswering] = useState<Exclude<ProposalDecision, "approve"> | null>(null);
+  const [target, setTarget] = useState<{ expenseId: string; shareMemberId: string } | null>(null);
+  const [category, setCategory] = useState<DisputeCategory>("other");
+  const [comment, setComment] = useState("");
+  const [evidenceIds, setEvidenceIds] = useState("");
+  const [receiptOptions, setReceiptOptions] = useState<ExpenseReceipt[]>([]);
+  const [resolution, setResolution] = useState("");
   const { proposal, evaluation, responses, busy } = state;
 
   const attempt = async (work: () => Promise<unknown>, done: string) => {
@@ -67,14 +80,79 @@ export function SettlementProposalPanel({
     }
   };
 
-  if (!state.loaded) return null;
-
   const terminal = !evaluation || ["expired", "revoked", "superseded", "invalidated", "tampered", "rejected"].includes(evaluation.status);
   const canPropose = hasOutstanding && !!publicKey && terminal;
+  useEffect(() => {
+    if (!target) { setReceiptOptions([]); return; }
+    let live = true;
+    listExpenseReceipts(target.expenseId).then((items) => { if (live) setReceiptOptions(items.filter((item) => item.status === "active")); }).catch(() => { if (live) setReceiptOptions([]); });
+    return () => { live = false; };
+  }, [target]);
+  if (!state.loaded) return null;
+  const disputed = state.disputedShares;
+  const disputeSection = (
+    <div className="space-y-2 border-t border-[#E5E5E5] pt-2 text-xs">
+      <h5 className="font-bold text-[#0F0F14]">Disputes</h5>
+      {state.disputes.map((d) => (
+        <div key={d.id} className="rounded-lg bg-amber-50 p-2 text-amber-900">
+          <p className="font-semibold">{d.category.replaceAll("_", " ")} · {d.status} · {d.share_member_id}</p>
+          <p>{d.comment}</p>
+          {d.evidence_receipt_ids.length > 0 && <p>Private receipt evidence attached ({d.evidence_receipt_ids.length})</p>}
+          {d.status === "open" && <div className="mt-2 space-y-1">
+            <label className="block">Resolution reason
+              <input value={resolution} maxLength={1000} onChange={(e) => setResolution(e.target.value)} className="ml-2 rounded border px-2 py-1" />
+            </label>
+            {(["upheld", "dismissed", "adjusted"] as const).map((action) => (
+              <button key={action} type="button" disabled={busy || !resolution.trim()}
+                onClick={() => attempt(() => state.resolveDispute(d, action, resolution), `Dispute ${action}`)}
+                className="mr-3 font-semibold underline disabled:opacity-40">{action}</button>
+            ))}
+          </div>}
+        </div>
+      ))}
+      {hasOutstanding && <div className="space-y-1 rounded-lg border border-dashed p-2">
+        <p>Flag an unpaid share to pause it from fresh settlement proposals.</p>
+        <div className="flex flex-wrap gap-2">
+          {expenses.flatMap((expense) => expense.shares.filter((share) => !share.paid && share.memberId !== expense.paidByMemberId && share.walletAddress === publicKey
+            && !disputed.has(`${expense.id}:${share.memberId}`)).map((share) => (
+              <button key={`${expense.id}:${share.memberId}`} type="button" onClick={() => setTarget({ expenseId: expense.id, shareMemberId: share.memberId })}
+                className="rounded border px-2 py-1 hover:border-amber-500">Dispute {expense.title} · {share.name}</button>
+            ))) }
+        </div>
+        {target && <form className="space-y-2" onSubmit={(e) => { e.preventDefault(); void attempt(async () => {
+          const evidenceReceiptIds = evidenceIds.split(",").map((id) => id.trim()).filter(Boolean);
+          await state.openDispute({ ...target, category, comment, evidenceReceiptIds }); setTarget(null); setComment(""); setEvidenceIds("");
+        }, "Dispute opened; this share is paused"); }}>
+          <label className="block">Category
+            <select value={category} onChange={(e) => setCategory(e.target.value as DisputeCategory)} className="ml-2 rounded border px-2 py-1">
+              {DISPUTE_CATEGORIES.map((item) => <option key={item} value={item}>{item.replaceAll("_", " ")}</option>)}
+            </select>
+          </label>
+          <label className="block">Comment
+            <textarea required maxLength={2000} value={comment} onChange={(e) => setComment(e.target.value)} className="mt-1 block w-full rounded border p-2" />
+          </label>
+          <fieldset><legend>Evidence (optional; up to five existing private receipts)</legend>
+            {receiptOptions.length === 0 ? <p className="text-[10px] text-[#777]">No accessible active receipts for this expense.</p> : receiptOptions.map((receipt) => (
+              <label key={receipt.id} className="mr-3 inline-flex items-center gap-1">
+                <input type="checkbox" disabled={!evidenceIds.split(",").filter(Boolean).includes(receipt.id) && evidenceIds.split(",").filter(Boolean).length >= 5} checked={evidenceIds.split(",").filter(Boolean).includes(receipt.id)}
+                  onChange={(e) => setEvidenceIds((previous) => {
+                    const values = previous.split(",").filter(Boolean);
+                    return (e.target.checked ? [...values, receipt.id] : values.filter((id) => id !== receipt.id)).slice(0, 5).join(",");
+                  })} /> {receipt.fileName ?? receipt.caption ?? "Private receipt"}
+              </label>
+            ))}
+          </fieldset>
+          <button type="submit" disabled={busy || !comment.trim()} className="rounded bg-[#0F0F14] px-3 py-1.5 font-bold text-[#2DD4BF] disabled:opacity-40">Open dispute</button>
+          <button type="button" onClick={() => setTarget(null)} className="ml-2">Cancel</button>
+        </form>}
+      </div>}
+    </div>
+  );
 
   if (!proposal || !evaluation) {
-    if (!canPropose) return null;
+    if (!canPropose) return disputeSection;
     return (
+      <div className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-dashed border-[#D0D0D0] p-3 text-xs text-[#555]">
         <span>Larger group? Freeze the balances as a proposal so everyone agrees before anyone pays.</span>
         <button
@@ -85,6 +163,8 @@ export function SettlementProposalPanel({
         >
           Propose settlement
         </button>
+      </div>
+      {disputeSection}
       </div>
     );
   }
@@ -255,6 +335,7 @@ export function SettlementProposalPanel({
           </button>
         </form>
       )}
+      {disputeSection}
     </section>
   );
 }

@@ -123,8 +123,7 @@ describe("usePayment — concurrency and durable intents", () => {
           nonce: "nonce-1",
           expiresAt: 1900000000,
         },
-        signature: "sig-1",
-        oraclePublicKey: "GORACLE",
+        signatures: [{ signer: "GORACLE", signature: "sig-1" }],
       },
     });
 

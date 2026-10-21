@@ -329,6 +329,12 @@ export function useNetPayment({ tripId }: UseNetPaymentOpts) {
     async ({ debts, totalAmount, asset, payerWalletAddress, tripName, memoText: memoOverride }: PayNetParams) => {
       const requestId = createRequestId();
 
+      if (typeof navigator !== "undefined" && !navigator.onLine) {
+        setPaymentState({ status: "blocked", message: "A live connection is required for signing and submitting payments." });
+        toastError("Connection required", "Signing, payment submission, and settlement recording are online-only. Reconnect to continue.");
+        return;
+      }
+
       if (!publicKey) {
         toastError("Wallet not connected", "Please connect your Freighter wallet first.");
         return;
@@ -451,7 +457,7 @@ export function useNetPayment({ tripId }: UseNetPaymentOpts) {
 
         setPaymentState({ status: "signing" });
         toastInfo("Waiting for wallet signature...", "Review and confirm the net settlement.");
-        const signedXDR = await signXDR(xdr, NETWORK_PASSPHRASE);
+        const signedXDR = await signXDR(xdr, NETWORK_PASSPHRASE, publicKey);
 
         setPaymentState({ status: "submitting" });
         const result = await submitSignedTransaction(signedXDR, requestId);
@@ -631,6 +637,12 @@ export function useNetPayment({ tripId }: UseNetPaymentOpts) {
     async ({ debts, tripName, payerWalletAddress, path, memoText: memoOverride }: PayNetPathParams) => {
       const requestId = createRequestId();
 
+      if (typeof navigator !== "undefined" && !navigator.onLine) {
+        setPaymentState({ status: "blocked", message: "A live connection is required for signing and submitting payments." });
+        toastError("Connection required", "Signing, payment submission, and settlement recording are online-only. Reconnect to continue.");
+        return;
+      }
+
       if (!publicKey) {
         toastError("Wallet not connected", "Please connect your Freighter wallet first.");
         return;
@@ -692,6 +704,18 @@ export function useNetPayment({ tripId }: UseNetPaymentOpts) {
             payerWallet: payerWalletAddress,
             memberWallet: publicKey,
             amount: debt.amount.toString(),
+            quoteMetadata: {
+              type: "stellar-path-payment-estimate",
+              quotedAt: path.quotedAt,
+              sourceAsset: path.sourceAsset,
+              sourceAmount: path.sourceAmount,
+              destinationAsset: path.destinationAsset,
+              destinationAmount: path.destinationAmount,
+              route: path.path,
+              slippageBps: path.slippageBps,
+              sendMax: path.sendMax,
+              routePriceImpactBps: path.priceImpactBps,
+            },
           });
           if (res.ok) {
             acquiredIntents.push(res.intent);
@@ -723,7 +747,7 @@ export function useNetPayment({ tripId }: UseNetPaymentOpts) {
 
         setPaymentState({ status: "signing" });
         toastInfo("Waiting for wallet signature...", "Confirm path payment in Freighter.");
-        const signedXDR = await signXDR(xdr, NETWORK_PASSPHRASE);
+        const signedXDR = await signXDR(xdr, NETWORK_PASSPHRASE, publicKey);
 
         setPaymentState({ status: "submitting" });
         const result = await submitSignedTransaction(signedXDR, requestId);

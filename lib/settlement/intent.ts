@@ -48,6 +48,7 @@ export interface SettlementIntent {
   ledger: number | null;
   onChain: boolean;
   errorMessage: string | null;
+  quoteMetadata: SettlementIntentRow["quote_metadata"];
   createdByWallet: string;
   createdAt: string;
   updatedAt: string;
@@ -71,6 +72,7 @@ export function rowToSettlementIntent(row: SettlementIntentRow): SettlementInten
     ledger: row.ledger !== null ? Number(row.ledger) : null,
     onChain: row.on_chain,
     errorMessage: row.error_message,
+    quoteMetadata: row.quote_metadata,
     createdByWallet: row.created_by_wallet,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -163,6 +165,7 @@ export interface AcquireIntentParams {
   txHash?: string | null;
   /** Installment sequence (#325); absent for a share paid in one payment. */
   installmentSeq?: number;
+  quoteMetadata?: SettlementIntentRow["quote_metadata"];
 }
 
 export type AcquireIntentResult =
@@ -303,6 +306,7 @@ export async function acquireSettlementIntent(
           currency: asset,
           tx_hash: params.txHash ?? existing.txHash,
           error_message: null,
+          quote_metadata: params.quoteMetadata ?? null,
           expires_at: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
         },
         client,
@@ -328,6 +332,7 @@ export async function acquireSettlementIntent(
       status: "submitting",
       tx_hash: params.txHash ?? null,
       created_by_wallet: params.memberWallet,
+      quote_metadata: params.quoteMetadata ?? null,
       expires_at: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
     };
 

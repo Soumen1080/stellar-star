@@ -1,0 +1,36 @@
+Receipt OCR third-party software notices
+
+Tesseract.js 7.0.0 (https://github.com/naptha/tesseract.js)
+and Tesseract.js-core 7.0.0 (https://github.com/naptha/tesseract.js-core)
+are distributed under Apache License 2.0. Complete licenses are included as
+LICENSE-tesseract.txt and LICENSE-core.txt beside the generated OCR assets.
+Embedded worker dependency notices are in worker.min.js.LICENSE.txt.
+
+English trained data is supplied by @tesseract.js-data/eng 1.0.0
+(https://github.com/naptha/tessdata), package author Balearica and contributors
+Balearica and jeromewu. Its package metadata declares MIT. The underlying
+Tesseract model is distributed under Apache 2.0 by the Tesseract project:
+https://github.com/tesseract-ocr/tessdata_best/blob/main/LICENSE
+See LICENSE-core.txt for a complete copy of Apache License 2.0.
+
+MIT License
+
+Copyright (c) Balearica and contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+of the Software, and to permit persons to whom the Software is furnished to do
+so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

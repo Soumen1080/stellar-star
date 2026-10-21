@@ -190,6 +190,7 @@ export async function mockSupabaseBackend(page: Page) {
 
     return route.continue();
   });
+  return tables;
 }
 
 /** Connects the mock wallet and completes sign-up, landing on /dashboard. */

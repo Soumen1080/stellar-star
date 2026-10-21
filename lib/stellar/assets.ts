@@ -391,7 +391,7 @@ export function toSdkAsset(ref: AssetRef): Asset {
 export function fromSdkAsset(asset: Asset): AssetRef {
   return asset.isNative()
     ? { ...NATIVE_ASSET }
-    : { code: asset.getCode(), issuer: asset.getIssuer() };
+    : { code: asset.getCode(), issuer: asset.getIssuer() ?? null };
 }
 
 /** Converts an `AssetRef` to a base64 XDR string. */

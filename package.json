@@ -7,6 +7,12 @@
   },
   "packageManager": "npm@10.8.2",
   "scripts": {
+    "ocr:assets": "node scripts/prepare-ocr-assets.mjs",
+    "test:ocr:browser": "npm run ocr:assets && node scripts/smoke-receipt-ocr.mjs",
+    "test:receipts:database": "node scripts/check-receipt-schema.mjs",
+    "test:ocr:e2e": "playwright test -c playwright.receipt.config.ts",
+    "predev": "npm run ocr:assets",
+    "prebuild": "npm run ocr:assets",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
@@ -38,6 +44,7 @@
     "@stellar/freighter-api": "^6.0.1",
     "@stellar/stellar-sdk": "^17.1.0",
     "@supabase/supabase-js": "^2.103.1",
+    "@tesseract.js-data/eng": "1.0.0",
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.1",
     "framer-motion": "^11.3.19",
@@ -47,9 +54,11 @@
     "qrcode.react": "^4.2.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "tailwind-merge": "^2.4.0"
+    "tailwind-merge": "^2.4.0",
+    "tesseract.js": "7.0.0"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "0.5.10",
     "@eslint/eslintrc": "^3.3.5",
     "@playwright/test": "^1.61.1",
     "@testing-library/react": "^16.3.2",

@@ -25,7 +25,7 @@ import { buildArchive, exportFileStem } from "@/lib/export/tripExport";
 import { getOrCreateRequestId, REQUEST_ID_HEADER } from "@/lib/observability/requestId";
 import { verifyWalletSession } from "@/lib/supabase/serverAuth";
 import { createServerClientForToken, isServerSupabaseConfigured } from "@/lib/supabase/server";
-import { fetchExpenses, fetchTrips } from "@/lib/supabase/queries";
+import { fetchExpenses, fetchTrips, hasTripPermission } from "@/lib/supabase/queries";
 import type { StellarStarClient } from "@/lib/supabase/client";
 import type { ExportAuditEventRow } from "@/types/supabase";
 import { STELLAR_EXPLORER, STELLAR_NETWORK } from "@/lib/utils/constants";
@@ -137,6 +137,17 @@ export async function POST(request: NextRequest) {
         return json({ error: "One or more requested trips are not available to you." }, 403, requestId);
       }
       trips = visibleTrips.filter((t) => requested.includes(t.id));
+    }
+
+    const exportPermissions = await Promise.all(
+      trips.map((trip) => hasTripPermission(trip.id, "exports.view", client)),
+    );
+    if (exportPermissions.some((allowed) => !allowed)) {
+      await audit(client, wallet, requestId, ip, {
+        status: "forbidden",
+        trip_ids: trips.map((trip) => trip.id),
+      });
+      return json({ error: "You do not have permission to export one or more trips." }, 403, requestId);
     }
 
     const archive = buildArchive({

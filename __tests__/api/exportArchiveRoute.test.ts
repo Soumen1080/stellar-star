@@ -38,7 +38,6 @@ jest.mock("@/lib/auth/rateLimiter", () => ({
 }));
 
 // Imported after the mocks so the route binds to them.
-// eslint-disable-next-line @typescript-eslint/no-require-imports
 const { POST } = require("@/app/api/exports/archive/route") as typeof import("@/app/api/exports/archive/route");
 
 const trips: Trip[] = [

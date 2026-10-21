@@ -69,10 +69,24 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Touch user profile last_login_at if database is configured
+    // Verify account is not deleted & touch last_login_at if database is configured
     if (isServerSupabaseConfigured()) {
       try {
         const client = createServerClientForToken(result.token);
+        const { data: deleted } = await client
+          .from("deleted_accounts")
+          .select("wallet_address")
+          .eq("wallet_address", result.claims.wallet_address)
+          .maybeSingle();
+
+        if (deleted) {
+          return jsonError(
+            "This account has been deleted. Stale session access revoked.",
+            401,
+            "ACCOUNT_DELETED"
+          );
+        }
+
         await client
           .from("users")
           .update({ last_login_at: new Date().toISOString() })

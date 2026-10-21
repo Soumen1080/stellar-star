@@ -19,24 +19,33 @@ import {
 } from "@/lib/settlement/proposalQueries";
 import type { Expense } from "@/types/expense";
 import type { Trip } from "@/types/trip";
+import { listTripDisputes, openExpenseDispute, resolveExpenseDispute, unresolvedDisputedShares, type DisputeCategory, type DisputeAction } from "@/lib/settlement/disputes";
+import type { ExpenseDisputeRow } from "@/types/supabase";
 
 /** The trip's latest settlement proposal, evaluated against live expenses (#328). */
 export function useSettlementProposal(trip: Trip, expenses: Expense[]) {
   const { publicKey } = useWallet();
   const [proposal, setProposal] = useState<SettlementProposal | null>(null);
   const [responses, setResponses] = useState<ProposalResponse[]>([]);
+  const [disputes, setDisputes] = useState<ExpenseDisputeRow[]>([]);
+  const [disputesReady, setDisputesReady] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const reload = useCallback(async () => {
+    setDisputesReady(false);
     try {
-      const latest = await fetchLatestProposal(trip.id);
+      const [latest, currentDisputes] = await Promise.all([fetchLatestProposal(trip.id), listTripDisputes(trip.id)]);
       setProposal(latest?.proposal ?? null);
       setResponses(latest?.responses ?? []);
+      setDisputes(currentDisputes);
+      setDisputesReady(true);
     } catch {
       // Not signed in, or migration 0014 not applied: no proposal flow.
       setProposal(null);
       setResponses([]);
+      setDisputes([]);
+      setDisputesReady(false);
     } finally {
       setLoaded(true);
     }
@@ -46,9 +55,10 @@ export function useSettlementProposal(trip: Trip, expenses: Expense[]) {
     void reload();
   }, [reload]);
 
+  const disputedShares = useMemo(() => unresolvedDisputedShares(disputes), [disputes]);
   const evaluation: ProposalEvaluation | null = useMemo(
-    () => (proposal ? evaluateProposal(proposal, responses, { trip, expenses }) : null),
-    [proposal, responses, trip, expenses],
+    () => (proposal ? evaluateProposal(proposal, responses, { trip, expenses, disputedShares }) : null),
+    [proposal, responses, trip, expenses, disputedShares],
   );
 
   // Record a detected material change so every member sees it as invalidated.
@@ -75,10 +85,22 @@ export function useSettlementProposal(trip: Trip, expenses: Expense[]) {
     (ttlMs?: number) =>
       run(async () => {
         if (!publicKey) throw new Error("Connect your wallet to propose a settlement.");
-        await createProposal(buildProposalSnapshot({ trip, expenses, creatorWallet: publicKey, ttlMs }));
+        await createProposal(buildProposalSnapshot({ trip, expenses, disputedShares, creatorWallet: publicKey, ttlMs }));
       }),
-    [run, publicKey, trip, expenses],
+    [run, publicKey, trip, expenses, disputedShares],
   );
+
+  const openDispute = useCallback((input: { expenseId: string; shareMemberId: string; category: DisputeCategory; comment: string; evidenceReceiptIds?: string[] }) =>
+    run(async () => {
+      if (!publicKey) throw new Error("Connect your wallet to open a dispute.");
+      await openExpenseDispute({ ...input, tripId: trip.id, wallet: publicKey });
+    }), [run, publicKey, trip.id]);
+
+  const resolveDispute = useCallback((dispute: ExpenseDisputeRow, action: Exclude<DisputeAction, "opened">, reason: string) =>
+    run(async () => {
+      if (!publicKey) throw new Error("Connect your wallet to resolve a dispute.");
+      await resolveExpenseDispute({ dispute, wallet: publicKey, action, reason });
+    }), [run, publicKey]);
 
   const respond = useCallback(
     (decision: ProposalDecision, reason?: string) =>
@@ -108,5 +130,5 @@ export function useSettlementProposal(trip: Trip, expenses: Expense[]) {
     [run, proposal, publicKey],
   );
 
-  return { proposal, responses, evaluation, loaded, busy, propose, respond, revoke, reload };
+  return { proposal, responses, evaluation, disputes, disputedShares, disputesReady, loaded, busy, propose, respond, revoke, openDispute, resolveDispute, reload };
 }

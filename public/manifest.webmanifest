@@ -1,0 +1,14 @@
+{
+  "id": "/",
+  "name": "Stellar-star",
+  "short_name": "Stellar-star",
+  "description": "Split trip expenses and settle them on Stellar.",
+  "start_url": "/dashboard",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#F6F6F6",
+  "theme_color": "#2DD4BF",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any 192x192 512x512", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

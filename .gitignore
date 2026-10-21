@@ -46,3 +46,6 @@ e2e/.testnet-fixtures.json
 
 # Encrypted database backup artifacts
 /backups/
+
+# Reproducible OCR runtime assets, generated from locked dependencies
+/public/ocr/

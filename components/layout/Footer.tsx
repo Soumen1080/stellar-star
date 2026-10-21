@@ -26,7 +26,8 @@ const footerLinks = {
     { label: "About", href: "#" },
     { label: "Blog", href: "#" },
     { label: "Contact", href: "#" },
-    { label: "Privacy Policy", href: "#" },
+    { label: "Privacy Policy", href: "/privacy" },
+    { label: "Accessibility", href: "/accessibility" },
     { label: "Terms of Service", href: "#" },
   ],
 };
@@ -48,7 +49,7 @@ export default function Footer() {
             <Link href="/" className="inline-flex mb-4" aria-label="Stellar-star home">
               <StellarStarLogo size="md" variant="dark" />
             </Link>
-            <p className="text-[#888] text-sm leading-relaxed max-w-xs mb-6">
+            <p className="text-[#B8B8C0] text-sm leading-relaxed max-w-xs mb-6">
               Decentralized bill-splitting on the Stellar blockchain. Split expenses, pay instantly, track transparently.
             </p>
 
@@ -62,7 +63,7 @@ export default function Footer() {
                   key={label}
                   href={href}
                   aria-label={label}
-                  className="flex items-center justify-center w-9 h-9 rounded-xl bg-white/5 border border-white/10 text-[#888] hover:text-white hover:border-[#2DD4BF]/40 hover:bg-[#2DD4BF]/10 transition-all duration-200"
+                  className="flex items-center justify-center min-w-11 min-h-11 rounded-xl bg-white/5 border border-white/10 text-[#B8B8C0] hover:text-white hover:border-[#2DD4BF]/40 hover:bg-[#2DD4BF]/10 transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#5EEAD4]"
                 >
                   <Icon size={16} />
                 </a>
@@ -83,7 +84,7 @@ export default function Footer() {
           <div className="lg:col-span-8 grid grid-cols-2 sm:grid-cols-3 gap-8">
             {Object.entries(footerLinks).map(([category, links]) => (
               <div key={category}>
-                <h4 className="text-xs font-semibold uppercase tracking-widest text-[#555] mb-4">
+                <h4 className="text-xs font-semibold uppercase tracking-widest text-[#AAA] mb-4">
                   {category}
                 </h4>
                 <ul className="space-y-2.5">
@@ -94,7 +95,7 @@ export default function Footer() {
                           href={link.href}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="flex items-center gap-1 text-sm text-[#888] hover:text-white transition-colors duration-150 group"
+                          className="flex items-center gap-1 text-sm text-[#B8B8C0] hover:text-white transition-colors duration-150 group"
                         >
                           {link.label}
                           <ArrowUpRight
@@ -105,7 +106,7 @@ export default function Footer() {
                       ) : (
                         <Link
                           href={link.href}
-                          className="text-sm text-[#888] hover:text-white transition-colors duration-150"
+                          className="text-sm text-[#B8B8C0] hover:text-white transition-colors duration-150"
                         >
                           {link.label}
                         </Link>
@@ -120,7 +121,7 @@ export default function Footer() {
 
         {/* Bottom bar */}
         <div className="flex flex-col sm:flex-row items-center justify-between gap-4 pt-8">
-          <p className="text-xs text-[#555]">
+          <p className="text-xs text-[#AAA]">
             © 2026 Stellar-star. Built on{" "}
             <a
               href="https://stellar.org"
@@ -133,8 +134,8 @@ export default function Footer() {
             .
           </p>
           <div className="flex items-center gap-2">
-            <span className="w-1.5 h-1.5 rounded-full bg-[#2DD4BF] animate-pulse" />
-            <span className="text-xs text-[#555]">
+            <span aria-hidden="true" className="w-1.5 h-1.5 rounded-full bg-[#2DD4BF]" />
+            <span className="text-xs text-[#AAA]">
               {NETWORK_LABEL} Active
             </span>
           </div>

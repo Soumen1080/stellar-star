@@ -6,6 +6,7 @@ import {
   recordAuditLog,
 } from "@/lib/api/middleware";
 import { fetchTripById, fetchExpensesForTrip, insertExpense } from "@/lib/api/data";
+import { memberHasPermission } from "@/lib/trip/roles";
 import { dispatchWebhookEvent } from "@/lib/api/webhooks";
 import type { Expense } from "@/types/expense";
 
@@ -134,6 +135,21 @@ export async function POST(request: NextRequest) {
         },
       },
       { status: 404 }
+    );
+  }
+  const callerMember = trip.members.find(
+    (member) => member.walletAddress?.trim().toUpperCase() === tokenPayload.walletAddress.trim().toUpperCase(),
+  );
+  if (!callerMember || !memberHasPermission(callerMember, "expenses.manage", trip)) {
+    return NextResponse.json(
+      {
+        error: {
+          code: "FORBIDDEN",
+          message: "Caller lacks permission to add expenses to this trip.",
+          status: 403,
+        },
+      },
+      { status: 403 },
     );
   }
 

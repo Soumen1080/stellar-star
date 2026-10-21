@@ -336,13 +336,14 @@ export async function reconcileSettlementIntent(
 export async function reconcilePendingIntentsForWallet(
   walletAddress: string,
   client?: StellarStarClient,
+  options?: ReconcileOptions,
 ): Promise<ReconcileIntentResult[]> {
   const activeIntents = await fetchActiveSettlementIntents(walletAddress, client);
   const results: ReconcileIntentResult[] = [];
 
   for (const intent of activeIntents) {
     try {
-      const result = await reconcileSettlementIntent(intent, client);
+        const result = await reconcileSettlementIntent(intent, client, options);
       results.push(result);
     } catch (err) {
       console.warn(`[reconcile] Error reconciling intent ${intent.id}:`, err);

@@ -96,6 +96,10 @@ export async function listActiveSponsorships(): Promise<SponsorshipRecord[]> {
   return [...memoryLedger.values()].filter((r) => r.status === "active");
 }
 
+export async function listSponsorshipsForInviter(inviter: string): Promise<SponsorshipRecord[]> {
+  return (await listActiveSponsorships()).filter((record) => record.sponsoredBy === inviter);
+}
+
 export async function getSponsorship(account: string): Promise<SponsorshipRecord | null> {
   const client = isDurable() ? createServiceRoleClient() : null;
 
@@ -263,6 +267,8 @@ export async function touchActivity(account: string, now: number = Date.now()): 
   const record = memoryLedger.get(account);
   if (record) memoryLedger.set(account, { ...record, lastActiveAt: now });
 }
+
+export const recordSponsorshipActivity = touchActivity;
 
 /** Sponsorships idle past the reclaim window — candidates for revocation. */
 export async function listReclaimable(now: number = Date.now()): Promise<SponsorshipRecord[]> {

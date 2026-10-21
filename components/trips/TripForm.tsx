@@ -4,7 +4,7 @@ import React, { useState } from "react";
 import { Plus, Trash2, UserPlus } from "lucide-react";
 import type { Member } from "@/types/expense";
 import type { Contact } from "@/types/contact";
-import type { TripFormData, RecurringExpenseRule, TripPermissions } from "@/types/trip";
+import type { TripFormData, TripPermissions, RecurringExpenseRule } from "@/types/trip";
 import { normalizePermissions, normalizeRecurringRules, validateTripDraft } from "@/lib/trip/templates";
 import { Input } from "@/components/ui/Input";
 import { TripPermissionsFields } from "@/components/trips/TripPermissionsFields";
@@ -15,6 +15,8 @@ import { cn } from "@/lib/utils";
 import { trackAnalyticsEvent } from "@/lib/analytics/sink";
 
 interface TripFormProps {
+  submitLabel?: string;
+  submitting?: boolean;
   onSubmit: (data: TripFormData) => void;
   onCancel: () => void;
   initialData?: Partial<TripFormData>;
@@ -24,7 +26,6 @@ interface TripFormProps {
   currentUserName?: string | null;
   /** The user's saved contacts, offered as one-click members. */
   contacts?: Contact[];
-  submitLabel?: string;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -43,8 +44,8 @@ export function TripForm({
   currentUserName,
   contacts = [],
   submitLabel = "Create Trip",
+  submitting = false,
 }: TripFormProps) {
-  const [submitting, setSubmitting] = useState(false);
   const [name, setName] = useState(initialData?.name ?? "");
   const [description, setDescription] = useState(initialData?.description ?? "");
   const [startsOn, setStartsOn] = useState(initialData?.startsOn ?? "");
@@ -202,13 +203,13 @@ export function TripForm({
       {/* Members */}
       <div>
         <div className="flex items-center justify-between mb-2">
-          <label className="text-sm font-semibold text-[#0F0F14]">
+          <div className="text-sm font-semibold text-[#0F0F14]">
             Members <span className="text-[#AAA] font-normal">({members.length})</span>
-          </label>
+          </div>
           <button
             type="button"
             onClick={addMember}
-            className="flex items-center gap-1 text-xs font-semibold text-[#888] hover:text-[#0F0F14] transition-colors"
+            className="flex min-h-11 items-center gap-1 text-xs font-semibold text-[#666] hover:text-[#0F0F14] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0F766E]"
           >
             <UserPlus size={12} />
             Add member
@@ -216,7 +217,7 @@ export function TripForm({
         </div>
 
         {errors.members && (
-          <p className="text-xs text-red-500 mb-2">{errors.members}</p>
+          <p role="alert" className="text-xs text-red-700 mb-2">{errors.members}</p>
         )}
 
         {contacts.length > 0 && (
@@ -244,6 +245,7 @@ export function TripForm({
             <div key={member.id} className="flex items-start gap-2">
               <div className="flex-1 grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <Input
+                  label={`Member ${i + 1} name`}
                   placeholder={`Member ${i + 1} name`}
                   value={member.name}
                   onChange={(e) => updateMember(member.id, "name", e.target.value)}
@@ -251,6 +253,7 @@ export function TripForm({
                 />
                 <div className="flex flex-col gap-0.5">
                   <Input
+                    label={`Member ${i + 1} Stellar address (optional)`}
                     placeholder="G... Stellar address (optional)"
                     value={member.walletAddress ?? ""}
                     onChange={(e) =>
@@ -270,9 +273,10 @@ export function TripForm({
               <button
                 type="button"
                 onClick={() => removeMember(member.id)}
+                aria-label={`Remove member ${i + 1}`}
                 disabled={members.length <= 2}
                 className={cn(
-                  "mt-1 p-2 rounded-lg transition-colors",
+                  "mt-1 min-w-11 min-h-11 p-2 rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0F766E]",
                   members.length <= 2
                     ? "text-[#E0E0E0] cursor-not-allowed"
                     : "text-[#CCC] hover:text-red-500 hover:bg-red-50"

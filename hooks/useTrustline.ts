@@ -70,7 +70,7 @@ export function useTrustline(asset: AssetRef) {
           setReserveStroops(locked);
 
           setPhase("awaiting_signature");
-          const signed = await signXDR(xdr, NETWORK_PASSPHRASE);
+          const signed = await signXDR(xdr, NETWORK_PASSPHRASE, publicKey);
 
           setPhase("submitting");
           const result = await submitSignedTransaction(signed);

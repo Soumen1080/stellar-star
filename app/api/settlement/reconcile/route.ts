@@ -14,7 +14,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { StrKey } from "@stellar/stellar-sdk";
 import { CONTRACT_ID } from "@/lib/utils/constants";
-import { verifyWalletSession, createServerClientForToken } from "@/lib/supabase/serverAuth";
+import { verifyWalletSession } from "@/lib/supabase/serverAuth";
+import { createServerClientForToken } from "@/lib/supabase/server";
 import {
   HorizonVerificationError,
   verifyPaymentByHash,
@@ -113,13 +114,14 @@ export async function POST(request: NextRequest) {
   const cleanAsset = rawAsset.trim().toUpperCase() || "XLM";
   const cleanTripId = typeof tripId === "string" && tripId.trim() ? tripId.trim() : "none";
 
-  // Optional authentication check: if Authorization header is present, verify session
+  // Authentication check: verify session token if provided
   const authHeader = request.headers.get("authorization") ?? "";
   const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
   let serverClient;
+  let session = null;
 
   if (token) {
-    const session = verifyWalletSession(token);
+    session = verifyWalletSession(token);
     if (!session) {
       return jsonError("Invalid or expired wallet session token.", 401, requestId);
     }
@@ -181,6 +183,11 @@ export async function POST(request: NextRequest) {
   const effectivePayer = (typeof payerWallet === "string" && isStellarAddress(payerWallet)) ? payerWallet : payment.destination;
   const effectiveMember = (typeof memberWallet === "string" && isStellarAddress(memberWallet)) ? memberWallet : payment.source;
   const effectiveAmount = typeof amount === "string" && amount.trim() ? amount.trim() : (Number(payment.amountStroops) / 10_000_000).toString();
+
+  // SEC-F04: When authenticated, verify session wallet is a participant in the payment
+  if (session && session.wallet_address !== effectiveMember && session.wallet_address !== effectivePayer) {
+    return jsonError("Unauthorized: Session wallet is not a participant in this payment.", 403, requestId);
+  }
 
   // 2. Deterministic upsert into settlement_intents
   let intent: SettlementIntent;

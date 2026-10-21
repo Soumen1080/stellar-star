@@ -34,6 +34,13 @@ import {
 } from "@/lib/stellar/pathPayment";
 import { NATIVE_ASSET, formatAssetLabel, type AssetRef } from "@/lib/stellar/assets";
 
+export interface PathReferenceRate {
+  source: string;
+  fetchedAt: number;
+  expectedSourceAmount: string;
+  impactBps: number;
+}
+
 export interface UsePathPaymentParams {
   sourceAccount: string | null;
   destinationAccount: string | null;
@@ -61,6 +68,7 @@ export function usePathPayment({
   const [slippageBps, setSlippageBps] = useState(DEFAULT_SLIPPAGE_BPS);
   const [loading, setLoading] = useState(false);
   const [failure, setFailure] = useState<PathFailure | null>(null);
+  const [referenceRate, setReferenceRate] = useState<PathReferenceRate | null>(null);
 
   const refreshQuote = useCallback(async () => {
     if (!sourceAccount || !destinationAccount) return;
@@ -68,6 +76,7 @@ export function usePathPayment({
     setLoading(true);
     setFailure(null);
     setQuote(null);
+    setReferenceRate(null);
 
     try {
       // The recipient must be able to hold the destination asset. Path payments
@@ -91,7 +100,20 @@ export function usePathPayment({
         sourceAsset,
       });
 
-      setQuote(quotes[0]);
+      const bestQuote = quotes[0];
+      setQuote(bestQuote);
+      // Independent market reference, separate from Horizon's route book. The
+      // FX endpoint is allowlisted; unsupported Stellar assets deliberately
+      // degrade to an unavailable reference and require acknowledgement.
+      try {
+        const response = await fetch(`/api/fx/rate?from=${encodeURIComponent(bestQuote.destinationAsset.code)}&to=${encodeURIComponent(bestQuote.sourceAsset.code)}`, { cache: "no-store" });
+        const data = response.ok ? await response.json() as { rate?: number; source?: string; fetchedAt?: number; unavailable?: boolean; stale?: boolean } : null;
+        if (data && Number.isFinite(data.rate) && data.rate! > 0 && !data.unavailable && !data.stale) {
+          const expected = Number(bestQuote.destinationAmount) * data.rate!;
+          const quoted = Number(bestQuote.sourceAmount);
+          setReferenceRate({ source: data.source || "independent FX provider", fetchedAt: data.fetchedAt || Date.now(), expectedSourceAmount: expected.toFixed(7), impactBps: Math.max(0, Math.round((quoted / expected - 1) * 10_000)) });
+        }
+      } catch { /* Explicitly disclose unavailable reference in confirmation. */ }
     } catch (err) {
       if (err instanceof PathPaymentError) {
         setFailure({ reason: err.reason, message: err.message });
@@ -113,6 +135,7 @@ export function usePathPayment({
   return {
     /** The priced route, or null while loading or on failure. */
     path: pricedPath,
+    referenceRate,
     loading,
     failure,
     slippageBps,
@@ -122,6 +145,7 @@ export function usePathPayment({
     clear: useCallback(() => {
       setQuote(null);
       setFailure(null);
+      setReferenceRate(null);
     }, []),
   };
 }

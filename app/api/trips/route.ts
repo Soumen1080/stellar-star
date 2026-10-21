@@ -8,6 +8,13 @@ import {
   MAX_PAGE_SIZE,
   DEFAULT_PAGE_SIZE,
 } from "@/lib/supabase/queries";
+import {
+  extractIdempotencyKey,
+  withIdempotency,
+  idempotentJsonResponse,
+  IdempotencyConflictError,
+  IdempotencyLockedError,
+} from "@/lib/idempotency/store";
 import type { Trip } from "@/types/trip";
 
 export const runtime = "nodejs";
@@ -99,6 +106,8 @@ export async function POST(request: NextRequest) {
 
   try {
     const client = createServerClientForToken(token);
+    const idempotencyKey = extractIdempotencyKey(request, body);
+
     const tripToSave: Trip = {
       id: body.id || crypto.randomUUID(),
       name: name.trim(),
@@ -110,9 +119,26 @@ export async function POST(request: NextRequest) {
       createdByWallet: session.wallet_address,
     };
 
-    const saved = await insertTrip(tripToSave, session.wallet_address, client);
-    return NextResponse.json(saved, { status: 201 });
+    const idempotentResult = await withIdempotency({
+      client,
+      key: idempotencyKey,
+      walletAddress: session.wallet_address,
+      endpoint: "/api/trips",
+      payload: body,
+      execute: async () => {
+        const saved = await insertTrip(tripToSave, session.wallet_address, client);
+        return { data: saved, status: 201 };
+      },
+    });
+
+    return idempotentJsonResponse(idempotentResult);
   } catch (err) {
+    if (err instanceof IdempotencyConflictError || err instanceof IdempotencyLockedError) {
+      return NextResponse.json(
+        { error: err.message, code: err.code },
+        { status: 409 }
+      );
+    }
     const message = err instanceof Error ? err.message : "Failed to create trip.";
     return NextResponse.json({ error: message }, { status: 500 });
   }

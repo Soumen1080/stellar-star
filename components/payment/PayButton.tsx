@@ -48,6 +48,7 @@ export function PayButton({
         className
       )}
       title={titleText}
+      aria-label={isLoading ? `Sending payment to ${recipientName}` : titleText}
     >
       {isLoading ? (
         <Loader2 size={size === "sm" ? 11 : 14} className="animate-spin" />

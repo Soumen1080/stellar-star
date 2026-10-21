@@ -149,13 +149,17 @@ export function proposalMemo(contentHash: string): string {
 const exact = (amount: string) => Money.parse(amount).format();
 const byString = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 
-function unpaidDebts(expenses: Expense[]): RawDebt[] {
+export function disputeKey(expenseId: string, memberId: string): string {
+  return `${expenseId}:${memberId}`;
+}
+
+function unpaidDebts(expenses: Expense[], disputedShares: ReadonlySet<string> = new Set()): RawDebt[] {
   const debts: RawDebt[] = [];
   for (const expense of expenses) {
     const payer = expense.members.find((m) => m.id === expense.paidByMemberId);
     if (!payer) continue;
     for (const share of expense.shares) {
-      if (share.paid || share.memberId === payer.id) continue;
+      if (share.paid || share.memberId === payer.id || disputedShares.has(disputeKey(expense.id, share.memberId))) continue;
       debts.push({
         expenseId: expense.id,
         fromId: share.memberId,
@@ -173,18 +177,19 @@ function unpaidDebts(expenses: Expense[]): RawDebt[] {
 }
 
 /** The trip's expenses that still have something owed: what a proposal covers. */
-export function expensesInScope(trip: Trip, expenses: Expense[]): Expense[] {
+export function expensesInScope(trip: Trip, expenses: Expense[], disputedShares: ReadonlySet<string> = new Set()): Expense[] {
   const ids = new Set(trip.expenseIds);
   return expenses.filter(
     (e) =>
       ids.has(e.id) &&
-      e.shares.some((s) => !s.paid && s.memberId !== e.paidByMemberId),
+      e.shares.some((s) => !s.paid && s.memberId !== e.paidByMemberId && !disputedShares.has(disputeKey(e.id, s.memberId))),
   );
 }
 
 export interface BuildSnapshotInput {
   trip: Trip;
   expenses: Expense[];
+  disputedShares?: ReadonlySet<string>;
   creatorWallet: string;
   nowMs?: number;
   ttlMs?: number;
@@ -196,12 +201,13 @@ export function buildProposalSnapshot(input: BuildSnapshotInput): ProposalSnapsh
     throw new RangeError("A proposal must expire between 1 hour and 14 days from now.");
   }
   const now = input.nowMs ?? Date.now();
-  const scope = expensesInScope(input.trip, input.expenses).sort((a, b) => byString(a.id, b.id));
+  const disputedShares = input.disputedShares ?? new Set<string>();
+  const scope = expensesInScope(input.trip, input.expenses, disputedShares).sort((a, b) => byString(a.id, b.id));
 
   const members = new Map(input.trip.members.map((m) => [m.id, m]));
   for (const expense of scope) for (const m of expense.members) if (!members.has(m.id)) members.set(m.id, m);
 
-  const debts = unpaidDebts(scope);
+  const debts = unpaidDebts(scope, disputedShares);
   const netByAsset = computeNetBalances(debts);
   const balances: SnapshotBalance[] = [];
   for (const [asset, participants] of netByAsset) {
@@ -259,7 +265,7 @@ export function buildProposalSnapshot(input: BuildSnapshotInput): ProposalSnapsh
 
 export interface MaterialChange {
   expenseId: string;
-  kind: "removed" | "added" | "amount_changed" | "members_changed" | "payer_changed" | "asset_changed" | "payment_reverted";
+  kind: "removed" | "added" | "amount_changed" | "members_changed" | "payer_changed" | "asset_changed" | "payment_reverted" | "disputed";
 }
 
 /**
@@ -343,7 +349,7 @@ export function latestResponses(contentHash: string, responses: ProposalResponse
 export function evaluateProposal(
   proposal: SettlementProposal,
   responses: ProposalResponse[],
-  context: { nowMs?: number; trip: Trip; expenses: Expense[] },
+  context: { nowMs?: number; trip: Trip; expenses: Expense[]; disputedShares?: ReadonlySet<string> },
 ): ProposalEvaluation {
   const reference = proposalReference(proposal.contentHash);
   const snapshot = proposal.snapshot;
@@ -364,6 +370,11 @@ export function evaluateProposal(
   if (proposal.status === "superseded") return { ...base, status: "superseded", changes: [] };
 
   const changes = detectMaterialChanges(snapshot, context.trip, context.expenses);
+  for (const item of snapshot.expenses) {
+    if (item.shares.some((share) => !share.paid && context.disputedShares?.has(disputeKey(item.id, share.memberId)))) {
+      changes.push({ expenseId: item.id, kind: "disputed" });
+    }
+  }
   if (proposal.status === "invalidated" || changes.length > 0) {
     // A material change voids every approval given so far.
     return { ...base, approvals: [], status: "invalidated", changes };

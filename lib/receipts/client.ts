@@ -34,6 +34,13 @@ export function listExpenseReceipts(expenseId: string, fetchImpl?: typeof fetch)
   return call<ExpenseReceipt[]>(`/api/expenses/${encodeURIComponent(expenseId)}/receipts`, {}, fetchImpl);
 }
 
+export async function checkReceiptStorage(file: File, fetchImpl?: typeof fetch): Promise<void> {
+  const limits = await call<{ maxBytes: number }>("/api/receipts/capabilities", {}, fetchImpl);
+  if (!Number.isFinite(limits?.maxBytes) || limits.maxBytes <= 0 || file.size > limits.maxBytes) {
+    throw new ReceiptRequestError("This original exceeds the configured receipt storage limit. Choose a smaller photo before creating the expense.", 413);
+  }
+}
+
 export function uploadExpenseReceipt(
   expenseId: string,
   file: Blob,

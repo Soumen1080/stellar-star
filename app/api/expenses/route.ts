@@ -14,6 +14,13 @@ import {
 } from "@/lib/expense/historyFilters";
 import { normalizeCategory } from "@/lib/expense/categories";
 import { normalizeTags, validateTags } from "@/lib/expense/tags";
+import {
+  extractIdempotencyKey,
+  withIdempotency,
+  idempotentJsonResponse,
+  IdempotencyConflictError,
+  IdempotencyLockedError,
+} from "@/lib/idempotency/store";
 import type { Expense } from "@/types/expense";
 
 export const runtime = "nodejs";
@@ -131,6 +138,8 @@ export async function POST(request: NextRequest) {
 
   try {
     const client = createServerClientForToken(token);
+    const idempotencyKey = extractIdempotencyKey(request, body);
+
     const expenseToSave: Expense = {
       id: body.id || crypto.randomUUID(),
       title: title.trim(),
@@ -150,9 +159,26 @@ export async function POST(request: NextRequest) {
       createdAt: new Date().toISOString(),
     };
 
-    const saved = await insertExpense(expenseToSave, session.wallet_address, client);
-    return NextResponse.json(saved, { status: 201 });
+    const idempotentResult = await withIdempotency({
+      client,
+      key: idempotencyKey,
+      walletAddress: session.wallet_address,
+      endpoint: "/api/expenses",
+      payload: body,
+      execute: async () => {
+        const saved = await insertExpense(expenseToSave, session.wallet_address, client);
+        return { data: saved, status: 201 };
+      },
+    });
+
+    return idempotentJsonResponse(idempotentResult);
   } catch (err) {
+    if (err instanceof IdempotencyConflictError || err instanceof IdempotencyLockedError) {
+      return NextResponse.json(
+        { error: err.message, code: err.code },
+        { status: 409 }
+      );
+    }
     const message = err instanceof Error ? err.message : "Failed to create expense.";
     return NextResponse.json({ error: message }, { status: 500 });
   }

@@ -405,6 +405,12 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
     async ({ share: givenShare, expenseTitle, payerWalletAddress, tripId, amount }: PayShareParams) => {
       const requestId = createRequestId();
 
+      if (typeof navigator !== "undefined" && !navigator.onLine) {
+        setPaymentState({ status: "blocked", message: "A live connection is required for signing and submitting payments." });
+        toastError("Connection required", "Signing, payment submission, and authoritative settlement recording are online-only. Reconnect to continue.");
+        return;
+      }
+
       if (!publicKey) {
         toastError("Wallet not connected", "Please connect your Freighter wallet first.");
         return;
@@ -612,7 +618,7 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
 
         setPaymentState({ status: "signing" });
         toastInfo("Waiting for wallet signature...", "Review and confirm the transaction.");
-        const signedXDR = await signXDR(xdr, NETWORK_PASSPHRASE);
+        const signedXDR = await signXDR(xdr, NETWORK_PASSPHRASE, publicKey);
 
         setPaymentState({ status: "submitting" });
         const result = await submitSignedTransaction(signedXDR, requestId);

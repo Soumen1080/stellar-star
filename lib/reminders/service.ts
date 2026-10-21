@@ -36,6 +36,7 @@ import { defaultPreferences, type NewReminderEvent, type ReminderRepository } fr
 
 export interface ReminderDeps {
   repo: ReminderRepository;
+  canManageReminders?: (tripId: string, wallet: string) => Promise<boolean>;
   transport: ReminderTransport;
   rateLimit: (key: string, limit: number, windowMs: number) => Promise<{ allowed: boolean; resetMs: number }>;
   /** Absolute origin used to build links in external messages. */
@@ -70,6 +71,9 @@ export async function sendReminder(deps: ReminderDeps, input: SendReminderInput)
   const [expense, trip] = await Promise.all([repo.findExpense(input.expenseId), repo.findTrip(input.tripId)]);
   if (!trip || !trip.expenseIds.includes(input.expenseId)) {
     return { ok: false, status: 404, message: "That expense is not available to you." };
+  }
+  if (deps.canManageReminders && !(await deps.canManageReminders(input.tripId, input.senderWallet))) {
+    return { ok: false, status: 403, message: "You do not have permission to manage reminders for this trip." };
   }
   const target = resolveReminderTarget(expense, input.memberId, input.senderWallet);
   if (!target.ok) return { ok: false, status: target.status, message: target.message };

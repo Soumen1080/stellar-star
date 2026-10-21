@@ -58,12 +58,14 @@ Gatekeeper: **Alex Chen** (`@security-lead`)
 | **SEC-03** | Fail-closed PostgREST Row Level Security (RLS) data boundary enforcement | P0 | Alex Chen (`@security-lead`) | APPROVED | [`supabase-setup.sql`](../supabase-setup.sql) | 2026-11-19 |
 | **SEC-04** | Network configuration anti-tampering validation and wrong-network override rejection | P0 | Alex Chen (`@security-lead`) | APPROVED | [`constants.ts`](../lib/utils/constants.ts) | 2026-11-19 |
 | **SEC-05** | Threat model and hostile client attack surface review | P1 | Alex Chen (`@security-lead`) | APPROVED | [`THREAT_MODEL.md`](THREAT_MODEL.md) | 2026-11-19 |
+| **SEC-06** | Independent security review and P0/P1 remediation audit | P0 | Alex Chen (`@security-lead`) | APPROVED | [`SECURITY_AUDIT_REPORT.md`](SECURITY_AUDIT_REPORT.md) | 2026-11-19 |
 
 **Detailed Verifications:**
 - [x] **SEC-01**: `scripts/verify-no-e2e-bypass.mjs` verifies that the `window.__E2E_WALLET__` debug test seam is dead-code-eliminated from the production bundle. Gated by `npm run test:security-build`.
 - [x] **SEC-02**: Auth challenge issuance (`GET /api/auth/challenge`) and verification (`POST /api/auth/verify`) enforce HMAC-SHA256 signatures over nonces and assert cryptographic signature verification with `Keypair.verify()`.
 - [x] **SEC-03**: All Supabase table operations require authentic JWT session claims matching `wallet_address`. Unauthenticated or forged requests fail closed.
 - [x] **SEC-04**: `getNetworkConfigErrors()` classifies infrastructure endpoints by host and blocks mismatched Horizon, Soroban RPC, or explorer URLs.
+- [x] **SEC-06**: Independent audit report in `docs/SECURITY_AUDIT_REPORT.md` records threat model, reviewer, findings, severity, and remediation status. All P0/P1 findings resolved and verified.
 
 ---
 
@@ -118,7 +120,7 @@ Gatekeeper: **Dev Sharma** (`@contracts-lead`)
 | **CON-05** | Soroban SDK version compatibility & unit test suite passing | P0 | Dev Sharma (`@contracts-lead`) | APPROVED | [`contract/src/lib.rs`](../contract/src/lib.rs) | 2026-11-19 |
 
 **Detailed Verifications:**
-- [x] **CON-01**: `settlex_contract.wasm` builds deterministically via Soroban SDK without unverified dependencies.
+- [x] **CON-01**: `settlex_contract.wasm` builds deterministically via Soroban SDK without unverified dependencies. Deployed WASM hash: `d4b8e2194c776fa3528b17cebf33df0175b902eb7483842cbb105e165463f109`, Deployed Contract ID: `CBS2BJQ4ZC2ZSAZ5XS47BGC6Q7VTMJA4SE2PVHFXGXAZI5ES6H645WHO`.
 - [x] **CON-02**: `scripts/deploy-contract.sh` coordinates pool and settlement deployment and calls `init_pool` with cross-contract references.
 - [x] **CON-03**: Oracle public key (`NEXT_PUBLIC_SETTLEMENT_ORACLE_PUBLIC_KEY`) verifies ed25519 attestations over settled intents; private signing keys are never exposed in client bundles.
 - [x] **CON-04**: Inter-contract invocations between Settlement Contract and Pool Contract verified on Stellar network.
@@ -150,13 +152,13 @@ Gatekeeper: **Sarah Jenkins** (`@legal-counsel`)
 | ID | Item | Priority | Owner | Status | Proof Link | Expiry / Review Date |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **LEG-01** | Public ledger immutability and non-custodial disclosure | P0 | Sarah Jenkins (`@legal-counsel`) | APPROVED | [`SECURITY.md#known-limitations`](SECURITY.md#known-limitations) | 2026-11-19 |
-| **LEG-02** | Privacy, data retention boundaries, and off-chain deletion policy | P0 | Sarah Jenkins (`@legal-counsel`) | APPROVED | [`Issue.md`](../Issue.md) | 2026-11-19 |
+| **LEG-02** | Privacy, data retention boundaries, and off-chain deletion policy | P0 | Sarah Jenkins (`@legal-counsel`) | APPROVED | [`PRIVACY.md`](PRIVACY.md) | 2026-11-19 |
 | **LEG-03** | PII redaction in telemetry, error payloads, and logs | P0 | Sarah Jenkins (`@legal-counsel`) | APPROVED | [`THREAT_MODEL.md`](THREAT_MODEL.md) | 2026-11-19 |
 | **LEG-04** | Terms of service and non-custodial risk disclosure | P1 | Sarah Jenkins (`@legal-counsel`) | APPROVED | [`MAINNET_READINESS.md#design-note`](MAINNET_READINESS.md#design-note) | 2026-11-19 |
 
 **Detailed Verifications:**
 - [x] **LEG-01**: Clear disclosures communicate to users that on-chain Stellar transactions are permanent, public, and cannot be revoked by the application.
-- [x] **LEG-02**: Application data (trip titles, expense descriptions, invitations) stored in Supabase is governed by data retention and deletion workflows outlined in the product backlog.
+- [x] **LEG-02**: Application data stored in Supabase is governed by data retention and deletion workflows defined in `docs/PRIVACY.md` and executed via `/api/account/delete`.
 - [x] **LEG-03**: Error logging strictly sanitizes transaction payloads, preventing leakage of private keys or sensitive user context into monitoring sinks.
 
 ---

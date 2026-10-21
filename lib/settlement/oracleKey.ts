@@ -1,11 +1,9 @@
 /**
- * Custody of the attestation oracle's signing key.
+ * Server-only coordination for threshold settlement signers.
  *
  * Server-only. The key here is the entire trust anchor for on-chain settlement
- * proof: anyone holding it can mint an attestation for a payment that never
- * happened, which is exactly the hole the oracle exists to close. So this
- * module's job is less "load a key" than "refuse to run in any configuration
- * where the key could have leaked".
+ * proof. Production uses independently hosted signer endpoints; local seed
+ * lists are retained only for development. No secret enters a client bundle.
  *
  * ## Custody model
  *
@@ -27,7 +25,7 @@ if (typeof window !== "undefined") {
   throw new Error("lib/settlement/oracleKey.ts must not be imported from client code.");
 }
 
-const SECRET_VAR = "SETTLEMENT_ORACLE_SECRET";
+const SECRET_VAR = "SETTLEMENT_ORACLE_SECRETS";
 
 /**
  * A `NEXT_PUBLIC_` prefix tells Next.js to inline the value into the browser
@@ -58,6 +56,21 @@ export class OracleKeyUnavailableError extends Error {
   }
 }
 
+interface RemoteSigner { url: string; token: string; publicKey: string }
+function remoteSigners(): RemoteSigner[] {
+  try {
+    const value = JSON.parse(process.env.SETTLEMENT_ORACLE_SIGNERS || "[]") as RemoteSigner[];
+    if (!Array.isArray(value)) return [];
+    const valid = value.filter((s) => typeof s.url === "string" && /^https:\/\//.test(s.url) && typeof s.token === "string" && s.token.length > 0 && typeof s.publicKey === "string");
+    const seen = new Set<string>();
+    return valid.filter((signer) => { if (seen.has(signer.publicKey)) return false; seen.add(signer.publicKey); return true; });
+  } catch { return []; }
+}
+export function configuredOracleSignerCount(): number {
+  const remotes = remoteSigners();
+  return remotes.length > 0 ? new Set(remotes.map((s) => s.publicKey)).size : loadOracleKeypairs().length;
+}
+
 /**
  * Loads the oracle keypair.
  *
@@ -66,31 +79,40 @@ export class OracleKeyUnavailableError extends Error {
  * off-chain-recorded — instead of failing to boot, and so a rotated key takes
  * effect without a restart.
  */
-export function loadOracleKeypair(): Keypair {
+export function loadOracleKeypairs(): Keypair[] {
   assertNoPublicSecret();
 
-  const secret = process.env[SECRET_VAR]?.trim();
-  if (!secret) {
+  const secrets = (process.env[SECRET_VAR] || process.env.SETTLEMENT_ORACLE_SECRET || "").split(",").map((secret) => secret.trim()).filter(Boolean);
+  if (secrets.length === 0) {
     throw new OracleKeyUnavailableError(
       `${SECRET_VAR} is not configured. The settlement oracle cannot sign attestations, ` +
         `so on-chain settlement is unavailable until it is set.`,
     );
   }
 
+  let keypairs: Keypair[];
   try {
-    return Keypair.fromSecret(secret);
+    keypairs = secrets.map((secret) => Keypair.fromSecret(secret));
   } catch {
     throw new OracleKeyUnavailableError(
       `${SECRET_VAR} is not a valid Stellar secret seed (expected S...).`,
     );
   }
+  if (new Set(keypairs.map((keypair) => keypair.publicKey())).size !== keypairs.length) {
+    throw new OracleKeyUnavailableError("Oracle signer seeds must resolve to distinct public keys.");
+  }
+  return keypairs;
 }
+
+/** @deprecated Prefer loadOracleKeypairs for threshold signing. */
+export function loadOracleKeypair(): Keypair { return loadOracleKeypairs()[0]; }
 
 /** True when this deployment can sign attestations at all. */
 export function isOracleConfigured(): boolean {
   try {
-    loadOracleKeypair();
-    return true;
+    const count = configuredOracleSignerCount();
+    const threshold = Math.max(1, Number(process.env.SETTLEMENT_ORACLE_THRESHOLD) || 2);
+    return count >= threshold;
   } catch {
     return false;
   }
@@ -99,10 +121,26 @@ export function isOracleConfigured(): boolean {
 /** Signs a canonical claim message. Returns a lowercase hex signature. */
 export function signClaimMessage(message: Buffer): { signature: string; publicKey: string } {
   const keypair = loadOracleKeypair();
-  return {
-    signature: keypair.sign(message).toString("hex"),
-    publicKey: keypair.publicKey(),
-  };
+  return { signature: Buffer.from(keypair.sign(message)).toString("hex"), publicKey: keypair.publicKey() };
+}
+
+export async function signClaimMessages(message: Buffer): Promise<Array<{ signature: string; publicKey: string }>> {
+  const remotes = remoteSigners();
+  if (remotes.length > 0) {
+    const results = await Promise.all(remotes.map(async (signer) => {
+      try {
+        const response = await fetch(signer.url, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${signer.token}` }, body: JSON.stringify({ message: message.toString("base64") }), signal: AbortSignal.timeout(5_000) });
+        if (!response.ok) return null;
+        const result = await response.json() as { signature?: string; publicKey?: string };
+        if (result.publicKey !== signer.publicKey || typeof result.signature !== "string") return null;
+        const bytes = Buffer.from(result.signature, "hex");
+        if (bytes.length !== 64 || !Keypair.fromPublicKey(signer.publicKey).verify(message, bytes)) return null;
+        return { signature: result.signature, publicKey: signer.publicKey };
+      } catch { return null; }
+    }));
+    return results.filter((result): result is { signature: string; publicKey: string } => Boolean(result));
+  }
+  return loadOracleKeypairs().map((keypair) => ({ signature: Buffer.from(keypair.sign(message)).toString("hex"), publicKey: keypair.publicKey() }));
 }
 
 /**
@@ -110,5 +148,5 @@ export function signClaimMessage(message: Buffer): { signature: string; publicKe
  * `init` and `set_oracle_key` take as `BytesN<32>`.
  */
 export function oracleRawPublicKeyHex(): string {
-  return loadOracleKeypair().rawPublicKey().toString("hex");
+  return Buffer.from(loadOracleKeypair().rawPublicKey()).toString("hex");
 }

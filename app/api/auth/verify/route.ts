@@ -192,7 +192,7 @@ export async function POST(request: NextRequest) {
       op.type !== "manageData" ||
       op.name !== CHALLENGE_DATA_NAME ||
       !op.value ||
-      op.value.toString() !== nonce
+      Buffer.from(op.value).toString("utf8") !== nonce
     ) {
       return jsonError("Invalid challenge operation parameters", 400);
     }
@@ -202,7 +202,7 @@ export async function POST(request: NextRequest) {
     const txHash = tx.hash();
     const hasValidSignature = tx.signatures.some((sig) => {
       try {
-        return keypair.verify(txHash, sig.signature());
+        return keypair.verify(txHash, sig.signature);
       } catch {
         return false;
       }

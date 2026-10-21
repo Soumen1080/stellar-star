@@ -25,10 +25,8 @@ export type { SettlementClaim };
  */
 export interface Attestation {
   claim: SettlementClaim;
-  /** ed25519 signature over `buildClaimMessage(claim)`, lowercase hex. */
-  signature: string;
-  /** Stellar address (G...) of the signing oracle, for client-side checking. */
-  oraclePublicKey: string;
+  /** M distinct ed25519 signatures over the complete domain-separated claim. */
+  signatures: Array<{ signer: string; signature: string }>;
 }
 
 /**
@@ -69,8 +67,13 @@ export class AttestationError extends Error {
 
 /** True when a settlement can even be attempted on-chain in this deployment. */
 export function isAttestationConfigured(): boolean {
-  return Boolean(CONTRACT_ID && ORACLE_PUBLIC_KEY && SETTLEMENT_ASSET_ID);
+  return Boolean(CONTRACT_ID && getExpectedSigners().length >= getThreshold() && SETTLEMENT_ASSET_ID);
 }
+
+function getExpectedSigners(): string[] {
+  return (process.env.NEXT_PUBLIC_SETTLEMENT_ORACLE_PUBLIC_KEYS || process.env.NEXT_PUBLIC_SETTLEMENT_ORACLE_PUBLIC_KEY || ORACLE_PUBLIC_KEY).split(",").map((key) => key.trim()).filter(Boolean);
+}
+function getThreshold(): number { return Math.max(1, Number(process.env.NEXT_PUBLIC_SETTLEMENT_ORACLE_THRESHOLD) || 2); }
 
 interface AttestationResponseBody {
   attestation?: Attestation;
@@ -152,14 +155,17 @@ export async function requestAttestation(claim: AttestationRequest): Promise<Att
 export function verifyAttestation(attestation: Attestation): boolean {
   try {
     const expectedOracle = process.env.NEXT_PUBLIC_SETTLEMENT_ORACLE_PUBLIC_KEY || ORACLE_PUBLIC_KEY;
-    if (!expectedOracle) return false;
-    if (attestation.oraclePublicKey !== expectedOracle) return false;
-
+    const expected = new Set(getExpectedSigners());
+    const seen = new Set<string>();
     const message = buildClaimMessage(attestation.claim);
-    const signature = Buffer.from(attestation.signature, "hex");
-    if (signature.length !== 64) return false;
-
-    return Keypair.fromPublicKey(expectedOracle).verify(message, signature);
+    let valid = 0;
+    for (const entry of attestation.signatures) {
+      if (seen.has(entry.signer) || !expected.has(entry.signer)) continue;
+      seen.add(entry.signer);
+      const signature = Buffer.from(entry.signature, "hex");
+      if (signature.length === 64 && Keypair.fromPublicKey(entry.signer).verify(message, signature)) valid += 1;
+    }
+    return valid >= getThreshold();
   } catch {
     return false;
   }

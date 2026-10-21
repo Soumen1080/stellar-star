@@ -14,9 +14,14 @@ import { TripDetailNav } from "@/components/trips/TripDetailNav";
 import { TripExpensesPanel } from "@/components/trips/TripExpensesPanel";
 import { TripNotFound } from "@/components/trips/TripNotFound";
 import { TripPaymentProgressBanner } from "@/components/trips/TripPaymentProgressBanner";
+import { TripRecurringRules } from "@/components/trips/TripRecurringRules";
+import { TripWalletChangeBanner } from "@/components/trips/TripWalletChangeBanner";
 import { TripTabs, type TripTab } from "@/components/trips/TripTabs";
+import { RecurringPanel } from "@/components/recurring/RecurringPanel";
 import { TravelWorkspacePanel } from "@/components/trips/workspace/TravelWorkspacePanel";
 import { InviteMemberModal } from "@/components/trips/InviteMemberModal";
+import { SaveTripTemplateForm } from "@/components/trips/SaveTripTemplateForm";
+import { DuplicateTripFlow } from "@/components/trips/TripCopyFlow";
 import { TripExportMenu } from "@/components/export/TripExportMenu";
 import { ReminderSchedulePanel } from "@/components/reminders/ReminderSchedulePanel";
 import { useAuth } from "@/context/AuthContext";
@@ -27,6 +32,8 @@ import { useTripAutoSettlement } from "@/hooks/useTripAutoSettlement";
 import { useWallet } from "@/hooks/useWallet";
 import { Spinner } from "@/components/ui/Spinner";
 import { sanitizeMetadata, sanitizeText, sanitizeWalletLabel } from "@/lib/utils";
+import { memberHasPermission, memberRole } from "@/lib/trip/roles";
+import type { RecurringExpenseRule } from "@/types/trip";
 
 /**
  * Builds safe page metadata and enforces a content security policy for trip details,
@@ -82,7 +89,7 @@ export function generateTripMetadata({
 export default function TripDetailPage() {
   const params = useParams<{ id: string }>();
   const safeId = sanitizeText(params?.id ?? "");
-  const { trips, getTrip, settleTrip, addExpenseToTrip, isLoading } = useTrip();
+  const { trips, getTrip, settleTrip, addExpenseToTrip, isLoading, refresh } = useTrip();
   const { expenses } = useExpense();
   const { publicKey } = useWallet();
   const { user } = useAuth();
@@ -140,9 +147,27 @@ export default function TripDetailPage() {
     return <TripNotFound />;
   }
 
-  // The creator can always do both; everyone else follows the trip settings.
-  const canAddExpenses = canPerformTripAction(trip, publicKey, "membersCanAddExpenses");
-  const canInvite = canPerformTripAction(trip, publicKey, "membersCanInvite");
+  const callerMember = trip.members.find(
+    (member) => member.walletAddress?.trim().toUpperCase() === publicKey?.trim().toUpperCase(),
+  );
+  const callerRole = callerMember ? memberRole(callerMember, trip) : null;
+  const isOwner = callerRole === "owner";
+  const canAddExpenses = isOwner || Boolean(
+    callerMember &&
+    memberHasPermission(callerMember, "expenses.manage", trip) &&
+    trip.permissions?.membersCanAddExpenses !== false,
+  );
+  const canInvite = Boolean(
+    callerMember &&
+    memberHasPermission(callerMember, "members.manage", trip) &&
+    (callerRole === "owner" || callerRole === "organizer" || trip.permissions?.membersCanInvite !== false),
+  );
+  const canExport = isOwner || Boolean(
+    callerMember && memberHasPermission(callerMember, "exports.view", trip),
+  );
+  const canManageReminders = isOwner || Boolean(
+    callerMember && memberHasPermission(callerMember, "reminders.manage", trip),
+  );
   const openExpenseForm = (rule: RecurringExpenseRule | null) => {
     setRuleForExpense(rule);
     setShowExpenseForm(true);
@@ -157,6 +182,8 @@ export default function TripDetailPage() {
           <TripDetailHeader
             trip={trip}
             expenses={tripExpenses}
+            currentWallet={publicKey}
+            onRoleChanged={refresh}
             onOpenInvite={canInvite ? () => setShowInviteModal(true) : undefined}
             onSaveTemplate={() => setShowSaveTemplate(true)}
             onDuplicate={() => setShowDuplicate(true)}
@@ -168,8 +195,8 @@ export default function TripDetailPage() {
           />
           {!trip.settled && <TripWalletChangeBanner tripId={trip.id} />}
           {publicKey && <TripPaymentProgressBanner shares={myShares} />}
-          <TripExportMenu trip={trip} expenses={tripExpenses} />
-          {publicKey && <ReminderSchedulePanel tripId={trip.id} />}
+          {canExport && <TripExportMenu trip={trip} expenses={tripExpenses} />}
+          {publicKey && canManageReminders && <ReminderSchedulePanel tripId={trip.id} />}
           <TripTabs activeTab={activeTab} onChange={setActiveTab} />
 
           <AnimatePresence mode="wait">

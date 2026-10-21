@@ -8,6 +8,7 @@ import {
   Address,
   xdr,
   NotFoundError,
+  Keypair,
 } from "@stellar/stellar-sdk";
 import type { Attestation } from "@/lib/settlement/attest";
 import { sorobanServer } from "./soroban";
@@ -15,6 +16,7 @@ import { server } from "./client";
 import { signXDR } from "@/lib/freighter";
 import {
   SOROBAN_RPC_URL,
+  HORIZON_URL,
   CONTRACT_ID,
   SETTLEMENT_ASSET_ID,
   NETWORK_PASSPHRASE,
@@ -71,6 +73,8 @@ export function decodeContractError(raw: string): string {
         return "The attestation is for a different asset than this contract settles in.";
       case ContractErrorCode.UnknownStorageVersion:
         return "The contract's stored data is newer than this app understands. Update the app.";
+      case ContractErrorCode.InvalidSignerSet:
+        return "The attestation did not contain the configured number of distinct valid signers.";
       default:
         return `Contract error #${code}.`;
     }
@@ -355,7 +359,7 @@ async function submitAndPoll(
   if (sendResult.status === "ERROR") {
     throw new Error(
       `Contract send failed: ${
-        sendResult.errorResult?.result()?.toXDR("base64") ?? "unknown error"
+        sendResult.errorResult?.result?.toXDR("base64") ?? "unknown error"
       }`,
     );
   }
@@ -388,18 +392,22 @@ function contractReady(caller: string): boolean {
  *
  * Soroban represents such a struct as an `ScMap` keyed by field-name symbols,
  * and the host requires those keys in sorted order — hence the field ordering
- * below (asset, expires_at, nonce, signature), which is alphabetical rather
+ * below (asset, expires_at, nonce, signatures), which is alphabetical rather
  * than the declaration order in `attest.rs`.
  */
 function attestationToScVal(attestation: Attestation): xdr.ScVal {
   const entry = (key: string, val: xdr.ScVal) =>
     new xdr.ScMapEntry({ key: xdr.ScVal.scvSymbol(key), val });
 
+  const signatures = attestation.signatures.map((signature) => xdr.ScVal.scvMap([
+    entry("signature", xdr.ScVal.scvBytes(Buffer.from(signature.signature, "hex"))),
+    entry("signer", xdr.ScVal.scvBytes(Buffer.from(Keypair.fromPublicKey(signature.signer).rawPublicKey()))),
+  ]));
   return xdr.ScVal.scvMap([
     entry("asset", new Address(attestation.claim.asset).toScVal()),
     entry("expires_at", nativeToScVal(BigInt(attestation.claim.expiresAt), { type: "u64" })),
     entry("nonce", xdr.ScVal.scvBytes(Buffer.from(attestation.claim.nonce, "hex"))),
-    entry("signature", xdr.ScVal.scvBytes(Buffer.from(attestation.signature, "hex"))),
+    entry("signatures", xdr.ScVal.scvVec(signatures)),
   ]);
 }
 
@@ -603,7 +611,7 @@ export async function depositPoolBalance(
     const assembled = rpc.assembleTransaction(tx, simResult).build();
 
     onStatus?.("signing");
-    const signedXdr = await signXDR(assembled.toXDR(), NETWORK_PASSPHRASE);
+    const signedXdr = await signXDR(assembled.toXDR(), NETWORK_PASSPHRASE, memberPublicKey);
 
     const { ledger } = await submitAndPoll(signedXdr, onStatus);
     return { success: true, ledger };
@@ -676,7 +684,7 @@ export async function recordPaymentOnChain(
     const assembled = rpc.assembleTransaction(tx, simResult).build();
 
     onStatus?.("signing");
-    const signedXdr = await signXDR(assembled.toXDR(), NETWORK_PASSPHRASE);
+    const signedXdr = await signXDR(assembled.toXDR(), NETWORK_PASSPHRASE, memberPublicKey);
 
     const { ledger } = await submitAndPoll(signedXdr, onStatus);
     return { success: true, ledger };
@@ -770,7 +778,7 @@ export async function recordNetSettlementOnChain(
     const assembled = rpc.assembleTransaction(tx, simResult).build();
 
     onStatus?.("signing");
-    const signedXdr = await signXDR(assembled.toXDR(), NETWORK_PASSPHRASE);
+    const signedXdr = await signXDR(assembled.toXDR(), NETWORK_PASSPHRASE, memberPublicKey);
 
     const { ledger } = await submitAndPoll(signedXdr, onStatus);
     return { success: true, ledger };

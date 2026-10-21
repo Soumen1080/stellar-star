@@ -12,6 +12,7 @@ Stellar-star uses an **ordered, versioned, idempotent migration pipeline**:
 migrations/
   ├── 0001_baseline.sql                    # Initial idempotent schema & tables
   ├── 0002_explicit_trigger_pipeline.sql   # Deterministic trigger execution order
+  ├── 0016_trip_roles_and_permissions.sql  # Trip roles, permissions, and audit history
   └── ...
 ```
 
@@ -128,6 +129,10 @@ versioned track.
 
 > Any change to `supabase-setup.sql` requires a matching migration, and any new
 > migration requires the same objects in `supabase-setup.sql`.
+
+The owner/organizer/contributor/viewer/custom permission matrix and ownership
+transfer flow are documented in
+[TRIP_ROLES_AND_PERMISSIONS.md](./TRIP_ROLES_AND_PERMISSIONS.md).
 
 `__tests__/database/schemaDrift.test.ts` enforces this statically in CI: it
 extracts every table, function and index from both paths and fails if either

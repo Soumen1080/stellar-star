@@ -25,6 +25,8 @@ import { Button } from "@/components/ui/Button";
 import { Spinner } from "@/components/ui/Spinner";
 import { formatAssetLabel } from "@/lib/stellar/assets";
 import { Money } from "@/components/ui/Money";
+import { getSuggestedBaseFee } from "@/lib/stellar/fees";
+import type { PathReferenceRate } from "@/hooks/usePathPayment";
 import {
   isQuoteFresh,
   quoteAgeRemainingMs,
@@ -47,6 +49,8 @@ interface PathPaymentConfirmProps {
   onSlippageChange: (bps: number) => void;
   onRefreshQuote: () => void;
   onConfirm: () => void;
+  referenceRate?: PathReferenceRate | null;
+  impactThresholdBps?: number;
 }
 
 function bpsToPercent(bps: number): string {
@@ -90,8 +94,19 @@ export function PathPaymentConfirm({
   onSlippageChange,
   onRefreshQuote,
   onConfirm,
+  referenceRate = null,
+  impactThresholdBps = Number(process.env.NEXT_PUBLIC_PATH_PRICE_IMPACT_THRESHOLD_BPS) || 500,
 }: PathPaymentConfirmProps) {
   const [secondsLeft, setSecondsLeft] = useState(0);
+  const [riskAcknowledged, setRiskAcknowledged] = useState(false);
+  const [feeStroops, setFeeStroops] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    let active = true;
+    getSuggestedBaseFee().then((fee) => { if (active) setFeeStroops(fee); });
+    return () => { active = false; };
+  }, [open]);
 
   useEffect(() => {
     if (!open || !path || loading || failure) return;
@@ -107,6 +122,8 @@ export function PathPaymentConfirm({
   }, [open, path, loading, failure]);
 
   const isFresh = Boolean(path && isQuoteFresh(path) && secondsLeft > 0);
+  const requiresAcknowledgement = Boolean(path && (path.priceImpactBps >= impactThresholdBps || !referenceRate || (referenceRate?.impactBps ?? 0) >= impactThresholdBps));
+  useEffect(() => setRiskAcknowledged(false), [path, referenceRate]);
 
   return (
     <Modal
@@ -168,12 +185,16 @@ export function PathPaymentConfirm({
           </div>
 
           <dl className="space-y-2 text-sm">
+            <div className="flex justify-between gap-4"><dt className="text-white/50">Quoted source amount</dt><dd className="text-white/80"><Money amount={path.sourceAmount} asset={formatAssetLabel(path.sourceAsset)} showExact /></dd></div>
+            <div className="flex justify-between gap-4"><dt className="text-white/50">Destination amount</dt><dd className="text-white/80"><Money amount={path.destinationAmount} asset={formatAssetLabel(path.destinationAsset)} showExact /></dd></div>
             <div className="flex justify-between gap-4">
               <dt className="text-white/50">Expected to spend</dt>
               <dd className="text-white/80">
                 <Money amount={path.sourceAmount} asset={formatAssetLabel(path.sourceAsset)} showExact />
               </dd>
             </div>
+            <div className="flex justify-between gap-4"><dt className="text-white/50">Independent reference rate</dt><dd className="text-right text-white/80">{referenceRate ? <>~{referenceRate.expectedSourceAmount} {formatAssetLabel(path.sourceAsset)} ({referenceRate.source}; {bpsToPercent(referenceRate.impactBps)} estimated impact)</> : "Unavailable — confirm this risk to continue"}</dd></div>
+            <div className="flex justify-between gap-4"><dt className="text-white/50">Network fee</dt><dd className="text-white/80">{feeStroops ? `~${(Number(feeStroops) / 10_000_000).toFixed(7)} XLM (estimate)` : "Loading fee estimate…"}; actual fee may vary</dd></div>
             <div className="flex justify-between gap-4">
               <dt className="font-medium text-white/70">Maximum you can spend</dt>
               {/* Invariant 2: this is the network-enforced ceiling. */}
@@ -242,6 +263,7 @@ export function PathPaymentConfirm({
               </p>
             </div>
           )}
+          {requiresAcknowledgement && <label className="flex items-start gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-100"><input type="checkbox" className="mt-1 size-4 accent-amber-400" checked={riskAcknowledged} onChange={(event) => setRiskAcknowledged(event.target.checked)} /><span>{!referenceRate ? "I understand no independent reference rate is available and this quote is an estimate." : `I understand the estimated price impact is at or above ${bpsToPercent(impactThresholdBps)}.`} The network does not guarantee this quoted exchange rate.</span></label>}
 
           {/* Freshness: a stale quote cannot be signed against. */}
           <div
@@ -255,7 +277,7 @@ export function PathPaymentConfirm({
               <Clock size={14} className={isFresh ? "text-white/40" : "text-amber-400"} />
               <span className={isFresh ? "text-white/60" : "text-amber-100"}>
                 {isFresh
-                  ? `Quote valid for ${secondsLeft}s`
+                  ? `Quote expires at ${new Date(path.quotedAt + 30_000).toLocaleTimeString()} (${secondsLeft}s remaining)`
                   : "Quote expired — the rate may have moved"}
               </span>
             </div>
@@ -273,7 +295,7 @@ export function PathPaymentConfirm({
             <Button variant="ghost-white" onClick={onClose}>
               Cancel
             </Button>
-            <Button onClick={onConfirm} disabled={!isFresh}>
+            <Button onClick={onConfirm} disabled={!isFresh || (requiresAcknowledgement && !riskAcknowledged)}>
               {isFresh ? `Confirm — spend up to ${path.sendMax}` : "Refresh quote to continue"}
             </Button>
           </div>

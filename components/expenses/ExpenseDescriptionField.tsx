@@ -5,11 +5,12 @@ import { Textarea } from "@/components/ui/Input";
 interface ExpenseDescriptionFieldProps {
   value: string;
   onChange: (value: string) => void;
+  maxLength?: number;
 }
 
-export function ExpenseDescriptionField({ value, onChange }: ExpenseDescriptionFieldProps) {
+export function ExpenseDescriptionField({ value, onChange, maxLength = 100 }: ExpenseDescriptionFieldProps) {
   const counterClass =
-    value.length >= 100 ? "text-red-500" : value.length >= 80 ? "text-amber-500" : "text-[#CCC]";
+    value.length >= maxLength ? "text-red-500" : value.length >= maxLength * 0.8 ? "text-amber-500" : "text-[#CCC]";
 
   return (
     <div className="flex flex-col gap-1.5">
@@ -18,13 +19,13 @@ export function ExpenseDescriptionField({ value, onChange }: ExpenseDescriptionF
           Description
         </label>
         <span className={`text-[10px] font-medium tabular-nums ${counterClass}`}>
-          {value.length}/100
+          {value.length}/{maxLength}
         </span>
       </div>
       <Textarea
         placeholder="Add a short note about this expense..."
         value={value}
-        maxLength={100}
+        maxLength={maxLength}
         onChange={(event) => onChange(event.target.value)}
       />
     </div>

@@ -32,6 +32,8 @@ export type UserRow = {
 };
 
 export type ExpenseRow = {
+  category?: string | null;
+  tags?: string[];
   id: string;
   title: string;
   description: string | null;
@@ -78,6 +80,29 @@ export type TripRow = {
   updated_at: string;
 };
 
+export type TripTemplateRow = {
+  id: string; owner_wallet: string; name: string; description: string | null;
+  members: Json; recurring_rules: Json; permissions: Json; duration_days: number | null;
+  source_trip_id: string | null; created_at: string; updated_at: string;
+};
+export type TripCopyEventRow = {
+  id: string; idempotency_key: string; operation: "trip_to_template" | "template_to_trip" | "trip_to_trip";
+  actor_wallet: string; source_kind: "template" | "trip"; source_id: string;
+  target_kind: "template" | "trip"; target_id: string; summary: Json; created_at: string;
+};
+export type TripTemplateUpdate = Partial<Omit<TripTemplateRow, "id" | "owner_wallet" | "created_at" | "updated_at">>;
+export type ContactRow = {
+  id: string; owner_wallet: string; display_name: string; wallet_address: string | null;
+  wallet_verified: boolean; claimed_by_wallet: string | null; verified_at: string | null;
+  invite_destination: string | null; invite_channel: "email" | "phone" | "other" | null;
+  claim_token_hash: string | null; claim_expires_at: string | null; created_at: string; updated_at: string;
+};
+export type ContactWalletChangeRow = {
+  id: string; contact_id: string; owner_wallet: string; contact_name: string;
+  old_wallet: string | null; new_wallet: string; status: "pending_notice" | "applied" | "cancelled";
+  affected_trip_ids: string[]; notice_until: string; verified: boolean; created_at: string; applied_at: string | null;
+};
+
 export type ExportAuditEventRow = {
   id: string;
   actor_wallet: string;
@@ -114,6 +139,30 @@ export type SettlementProposalResponseRow = {
   decision: "approve" | "reject" | "request_edit";
   reason: string | null;
   content_hash: string;
+  created_at: string;
+};
+
+export type ExpenseDisputeRow = {
+  id: string; trip_id: string; expense_id: string; share_member_id: string;
+  opened_by_wallet: string; category: "incorrect_amount" | "incorrect_split" | "not_shared" | "duplicate" | "already_paid" | "missing_context" | "other"; comment: string; evidence_receipt_ids: string[];
+  status: "open" | "upheld" | "resolved"; created_at: string; resolved_at: string | null;
+};
+
+export type ExpenseDisputeEventRow = {
+  id: string; dispute_id: string; actor_wallet: string;
+  action: "opened" | "upheld" | "dismissed" | "adjusted";
+  reason: string; created_at: string;
+};
+
+export type TripRoleAuditRow = {
+  id: string;
+  trip_id: string;
+  member_id: string;
+  previous_role: "owner" | "organizer" | "contributor" | "viewer" | "custom";
+  next_role: "owner" | "organizer" | "contributor" | "viewer" | "custom";
+  previous_custom_permissions: string[];
+  next_custom_permissions: string[];
+  changed_by_wallet: string;
   created_at: string;
 };
 
@@ -163,6 +212,7 @@ export type SettlementIntentRow = {
   ledger: number | null;
   on_chain: boolean;
   error_message: string | null;
+  quote_metadata: Json | null;
   created_by_wallet: string;
   created_at: string;
   updated_at: string;
@@ -313,6 +363,46 @@ export type SchemaMigrationRow = {
   checksum: string;
 };
 
+export type SupportAuditLogRow = {
+  id: string;
+  staff_identifier: string;
+  query_type: string;
+  query_value: string;
+  results_count: number;
+  ip_address: string;
+  user_agent: string | null;
+  created_at: string;
+};
+
+export type SupportCorrectiveActionRow = {
+  id: string;
+  action_type: string;
+  target_id: string;
+  target_type: string;
+  ticket_ref: string;
+  reason: string;
+  details: Json;
+  proposed_by: string;
+  proposed_at: string;
+  approved_by: string | null;
+  approved_at: string | null;
+  status: "pending_approval" | "approved" | "executed" | "rejected" | "expired";
+  execution_result: Json | null;
+  created_at: string;
+};
+
+export type IdempotencyRecordRow = {
+  key: string;
+  wallet_address: string;
+  endpoint: string;
+  request_fingerprint: string;
+  status: "pending" | "completed" | "failed";
+  response_status: number | null;
+  response_body: Json;
+  created_at: string;
+  locked_until: string;
+};
+
 export type Database = {
   public: {
     Tables: {
@@ -397,6 +487,12 @@ export type Database = {
         >;
         Relationships: [];
       };
+      trip_role_audit: {
+        Row: TripRoleAuditRow;
+        Insert: Record<string, never>;
+        Update: Record<string, never>;
+        Relationships: [];
+      };
       trip_templates: {
         Row: TripTemplateRow;
         Insert: Omit<TripTemplateRow, "id" | "created_at" | "updated_at"> & {
@@ -452,6 +548,18 @@ export type Database = {
         Row: SettlementProposalResponseRow;
         Insert: Omit<SettlementProposalResponseRow, "id" | "created_at">;
         // Append-only.
+        Update: Record<string, never>;
+        Relationships: [];
+      };
+      expense_disputes: {
+        Row: ExpenseDisputeRow;
+        Insert: Pick<ExpenseDisputeRow, "trip_id" | "expense_id" | "share_member_id" | "opened_by_wallet" | "category" | "comment" | "evidence_receipt_ids">;
+        Update: Partial<Pick<ExpenseDisputeRow, "status" | "resolved_at">>;
+        Relationships: [];
+      };
+      expense_dispute_events: {
+        Row: ExpenseDisputeEventRow;
+        Insert: Omit<ExpenseDisputeEventRow, "id" | "created_at">;
         Update: Record<string, never>;
         Relationships: [];
       };
@@ -611,6 +719,22 @@ export type Database = {
         Update: Partial<Omit<SchemaMigrationRow, "version">>;
         Relationships: [];
       };
+      idempotency_records: {
+        Row: IdempotencyRecordRow;
+        Insert: {
+          key: string;
+          wallet_address: string;
+          endpoint: string;
+          request_fingerprint: string;
+          status: "pending" | "completed" | "failed";
+          response_status?: number | null;
+          response_body?: Json;
+          created_at?: string;
+          locked_until?: string;
+        };
+        Update: Partial<IdempotencyRecordRow>;
+        Relationships: [];
+      };
       auth_challenges: {
         Row: AuthChallengeRow;
         Insert: {
@@ -620,6 +744,25 @@ export type Database = {
           created_at?: string;
         };
         Update: Partial<AuthChallengeRow>;
+        Relationships: [];
+      };
+
+      support_audit_logs: {
+        Row: SupportAuditLogRow;
+        Insert: Omit<SupportAuditLogRow, "id" | "created_at"> & {
+          id?: string;
+          created_at?: string;
+        };
+        Update: Partial<SupportAuditLogRow>;
+        Relationships: [];
+      };
+      support_corrective_actions: {
+        Row: SupportCorrectiveActionRow;
+        Insert: Omit<SupportCorrectiveActionRow, "id" | "created_at"> & {
+          id?: string;
+          created_at?: string;
+        };
+        Update: Partial<SupportCorrectiveActionRow>;
         Relationships: [];
       };
       auth_rate_limits: {
@@ -636,9 +779,56 @@ export type Database = {
     };
     Views: { [_ in never]: never };
     Functions: {
+      resolve_expense_dispute: {
+        Args: { p_dispute_id: string; p_action: "upheld" | "dismissed" | "adjusted"; p_reason: string };
+        Returns: undefined;
+      };
+      search_expenses: {
+        Args: { p_trip_id: string | null; p_terms: string[] | null; p_category: string | null;
+          p_tags: string[] | null; p_payer: string | null; p_status: string | null; p_asset: string | null;
+          p_from: string | null; p_to: string | null; p_cursor_created_at: string | null; p_cursor_id: string | null; p_limit: number };
+        Returns: ExpenseRow[];
+      };
+      save_trip_template: {
+        Args: { p_idempotency_key: string; p_source_trip_id: string; p_template: Json };
+        Returns: TripTemplateRow[];
+      };
+      create_trip_from_copy: {
+        Args: { p_idempotency_key: string; p_source_kind: string; p_source_id: string; p_trip: Json };
+        Returns: TripRow[];
+      };
       current_wallet: {
         Args: Record<string, never>;
         Returns: string;
+      };
+      trip_member_role: {
+        Args: { p_trip_id: string; p_wallet: string };
+        Returns: string;
+      };
+      trip_has_permission: {
+        Args: { p_trip_id: string; p_permission: string };
+        Returns: boolean;
+      };
+      expense_has_permission: {
+        Args: { p_expense_id: string; p_permission: string };
+        Returns: boolean;
+      };
+      set_trip_member_role: {
+        Args: {
+          p_trip_id: string;
+          p_member_id: string;
+          p_role: string;
+          p_custom_permissions?: string[];
+        };
+        Returns: TripRow;
+      };
+      transfer_trip_ownership: {
+        Args: { p_trip_id: string; p_new_owner_member_id: string };
+        Returns: TripRow;
+      };
+      add_expense_to_trip: {
+        Args: { p_trip_id: string; p_expense_id: string };
+        Returns: string[];
       };
       consume_auth_challenge: {
         Args: {

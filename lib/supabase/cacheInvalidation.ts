@@ -14,6 +14,7 @@ type InvalidationInput = Omit<QueryCacheInvalidation, "revision">;
 
 const INVALIDATION_EVENT = "stellar-star:query-cache-invalidated";
 const INVALIDATION_BROADCAST_KEY = "StellarStar:cache-invalidation";
+export const LAST_SYNC_PREFIX = "StellarStar:last-synced:";
 
 const cachePrefixes: Record<QueryCacheDomain, string> = {
   trips: LS_TRIPS,
@@ -98,4 +99,19 @@ export function subscribeToQueryInvalidation(
 
 export function walletCollectionCacheKey(domain: QueryCacheDomain, wallet: string): string {
   return `${cachePrefixes[domain]}:${wallet}`;
+}
+
+/** Removes read-only authenticated snapshots when a wallet session ends. */
+export function clearWalletReadOnlyCache(wallet: string): void {
+  if (typeof window === "undefined" || !wallet) return;
+  const workspacePrefix = `stellar_star_workspace:${wallet}:`;
+  try {
+    const remove: string[] = [];
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index);
+      if (!key) continue;
+      if (key === walletCollectionCacheKey("trips", wallet) || key === walletCollectionCacheKey("expenses", wallet) || key === `${LAST_SYNC_PREFIX}${wallet}` || key.startsWith(workspacePrefix) || key.startsWith("stellar_star_workspace_")) remove.push(key);
+    }
+    remove.forEach((key) => localStorage.removeItem(key));
+  } catch { /* Storage may be unavailable in private browsing. */ }
 }

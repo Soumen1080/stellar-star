@@ -21,6 +21,7 @@ const ORACLE = Keypair.random();
 
 // A second key standing in for an attacker who signs their own attestations.
 const ATTACKER = Keypair.random();
+const SECONDARY = Keypair.random();
 
 const CONTRACT_ID = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4";
 const ASSET_ID = "CBQWCYLBMFQWCYLBMFQWCYLBMFQWCYLBMFQWCYLBMFQWCYLBMFQWCV5G";
@@ -140,9 +141,12 @@ describe("cross-expense and cross-trip reuse", () => {
 describe("verifyAttestation", () => {
   // The module reads the expected oracle key from constants at import time, so
   // each case sets the env var and loads a fresh copy.
-  async function loadModule(oraclePublicKey: string) {
+  async function loadModule(oraclePublicKey: string | string[], threshold = 1) {
     jest.resetModules();
-    process.env.NEXT_PUBLIC_SETTLEMENT_ORACLE_PUBLIC_KEY = oraclePublicKey;
+    const keys = Array.isArray(oraclePublicKey) ? oraclePublicKey : oraclePublicKey ? [oraclePublicKey] : [];
+    process.env.NEXT_PUBLIC_SETTLEMENT_ORACLE_PUBLIC_KEYS = keys.join(",");
+    process.env.NEXT_PUBLIC_SETTLEMENT_ORACLE_PUBLIC_KEY = keys[0] || "";
+    process.env.NEXT_PUBLIC_SETTLEMENT_ORACLE_THRESHOLD = String(threshold);
     process.env.NEXT_PUBLIC_CONTRACT_ID = CONTRACT_ID;
     process.env.NEXT_PUBLIC_SETTLEMENT_ASSET_ID = ASSET_ID;
     return import("@/lib/settlement/attest");
@@ -162,8 +166,7 @@ describe("verifyAttestation", () => {
     expect(
       verifyAttestation({
         claim,
-        signature: sign(claim).toString("hex"),
-        oraclePublicKey: ORACLE.publicKey(),
+        signatures: [{ signer: ORACLE.publicKey(), signature: sign(claim).toString("hex") }],
       }),
     ).toBe(true);
   });
@@ -175,8 +178,7 @@ describe("verifyAttestation", () => {
     expect(
       verifyAttestation({
         claim,
-        signature: sign(claim, ATTACKER).toString("hex"),
-        oraclePublicKey: ORACLE.publicKey(),
+        signatures: [{ signer: ATTACKER.publicKey(), signature: sign(claim, ATTACKER).toString("hex") }],
       }),
     ).toBe(false);
   });
@@ -190,8 +192,7 @@ describe("verifyAttestation", () => {
     expect(
       verifyAttestation({
         claim,
-        signature: sign(claim, ATTACKER).toString("hex"),
-        oraclePublicKey: ATTACKER.publicKey(),
+        signatures: [{ signer: ATTACKER.publicKey(), signature: sign(claim, ATTACKER).toString("hex") }],
       }),
     ).toBe(false);
   });
@@ -204,8 +205,7 @@ describe("verifyAttestation", () => {
     expect(
       verifyAttestation({
         claim: { ...claim, amountStroops: "1" },
-        signature,
-        oraclePublicKey: ORACLE.publicKey(),
+        signatures: [{ signer: ORACLE.publicKey(), signature }],
       }),
     ).toBe(false);
   });
@@ -216,8 +216,7 @@ describe("verifyAttestation", () => {
     expect(
       verifyAttestation({
         claim: baseClaim(),
-        signature: "not-hex",
-        oraclePublicKey: ORACLE.publicKey(),
+        signatures: [{ signer: ORACLE.publicKey(), signature: "not-hex" }],
       }),
     ).toBe(false);
   });
@@ -229,8 +228,7 @@ describe("verifyAttestation", () => {
     expect(
       verifyAttestation({
         claim,
-        signature: sign(claim).toString("hex"),
-        oraclePublicKey: ORACLE.publicKey(),
+        signatures: [{ signer: ORACLE.publicKey(), signature: sign(claim).toString("hex") }],
       }),
     ).toBe(false);
   });
@@ -240,11 +238,41 @@ describe("verifyAttestation", () => {
     const claim = baseClaim();
     const attestation = {
       claim,
-      signature: sign(claim).toString("hex"),
-      oraclePublicKey: ORACLE.publicKey(),
+      signatures: [{ signer: ORACLE.publicKey(), signature: sign(claim).toString("hex") }],
     };
 
     expect(isAttestationExpired(attestation, claim.expiresAt * 1000 - 1)).toBe(false);
     expect(isAttestationExpired(attestation, claim.expiresAt * 1000)).toBe(true);
+  });
+
+  it("accepts 2-of-3 distinct valid signers", async () => {
+    const { verifyAttestation } = await loadModule([ORACLE.publicKey(), SECONDARY.publicKey(), ATTACKER.publicKey()], 2);
+    const claim = baseClaim();
+    expect(verifyAttestation({ claim, signatures: [
+      { signer: ORACLE.publicKey(), signature: sign(claim).toString("hex") },
+      { signer: SECONDARY.publicKey(), signature: sign(claim, SECONDARY).toString("hex") },
+    ] })).toBe(true);
+  });
+
+  it("rejects duplicate signer votes and an unavailable signer quorum", async () => {
+    const { verifyAttestation } = await loadModule([ORACLE.publicKey(), SECONDARY.publicKey(), ATTACKER.publicKey()], 2);
+    const claim = baseClaim();
+    const vote = { signer: ORACLE.publicKey(), signature: sign(claim).toString("hex") };
+    expect(verifyAttestation({ claim, signatures: [vote, vote] })).toBe(false);
+    expect(verifyAttestation({ claim, signatures: [vote] })).toBe(false);
+  });
+
+  it("rejects a removed or compromised signer", async () => {
+    const { verifyAttestation } = await loadModule([ORACLE.publicKey(), SECONDARY.publicKey(), ATTACKER.publicKey()], 2);
+    const claim = baseClaim();
+    expect(verifyAttestation({ claim, signatures: [
+      { signer: ORACLE.publicKey(), signature: sign(claim).toString("hex") },
+      { signer: ATTACKER.publicKey(), signature: sign(claim, ATTACKER).toString("hex") },
+    ] })).toBe(true);
+    const rotated = await loadModule([ORACLE.publicKey(), SECONDARY.publicKey()], 2);
+    expect(rotated.verifyAttestation({ claim, signatures: [
+      { signer: ORACLE.publicKey(), signature: sign(claim).toString("hex") },
+      { signer: ATTACKER.publicKey(), signature: sign(claim, ATTACKER).toString("hex") },
+    ] })).toBe(false);
   });
 });

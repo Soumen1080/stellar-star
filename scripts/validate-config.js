@@ -90,7 +90,7 @@ function classifyExplorer(url) {
  * @param {Record<string, string | undefined>} [env=process.env]
  * @param {object} [options={}]
  * @param {boolean} [options.isProduction=false]
- * @returns {{ valid: boolean, errors: string[], warnings: string[], summary: object }}
+ * @returns {{ valid: boolean, errors: string[], warnings: string[], summary: { network: string, isProduction: boolean, horizon: string, sorobanRpc: string, explorer: string, contractIdConfigured: boolean, usdcIssuerConfigured: boolean, siteUrlConfigured: boolean } }}
  */
 function validateConfig(env = process.env, options = {}) {
   const errors = [];

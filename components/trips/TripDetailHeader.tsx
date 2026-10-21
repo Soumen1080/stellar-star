@@ -17,6 +17,8 @@ interface TripDetailHeaderProps {
   onSaveTemplate?: () => void;
   /** Start a new trip from this one's structure. */
   onDuplicate?: () => void;
+  currentWallet?: string | null;
+  onRoleChanged?: () => Promise<void>;
 }
 
 function formatTripDates(startsOn?: string, endsOn?: string): string | null {
@@ -32,6 +34,8 @@ export function TripDetailHeader({
   onOpenInvite,
   onSaveTemplate,
   onDuplicate,
+  currentWallet,
+  onRoleChanged,
 }: TripDetailHeaderProps) {
   // Group by SETTLEMENT asset. Grouping by `expense.currency` split a trip of
   // EUR- and USD-entered expenses into two buckets and labelled it "Mixed
@@ -122,7 +126,13 @@ export function TripDetailHeader({
         )}
       </div>
 
-      <TripMembersList members={trip.members} onOpenInvite={onOpenInvite} />
+      <TripMembersList
+        trip={trip}
+        members={trip.members}
+        currentWallet={currentWallet}
+        onRoleChanged={onRoleChanged}
+        onOpenInvite={onOpenInvite}
+      />
     </div>
   );
 }

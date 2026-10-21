@@ -81,7 +81,7 @@ describe("depositPool locale freshness (issue #223)", () => {
     mockedDeposit.mockResolvedValue({ success: true } as Awaited<
       ReturnType<typeof depositPoolBalance>
     >);
-    mockedPoolBalance.mockResolvedValue("0" as Awaited<
+    mockedPoolBalance.mockResolvedValue(0n as Awaited<
       ReturnType<typeof getPoolBalanceStroops>
     >);
   });
@@ -96,7 +96,7 @@ describe("depositPool locale freshness (issue #223)", () => {
   describe.each([
     ["usePayment", () => usePayment({ expenseId: "expense-1" })],
     ["useNetPayment", () => useNetPayment({ tripId: "trip-1" })],
-  ])("%s", (_name, useHook) => {
+  ])("%s", (_name, useHook: () => Pick<ReturnType<typeof usePayment>, "depositPool">) => {
     it("formats the deposit toast with the locale restored after mount", async () => {
       // A returning German user: the provider reads this on mount and moves off
       // its "en-US" initial value, which is the transition the stale callback

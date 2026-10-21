@@ -58,6 +58,8 @@ async function lockQuote(currency: string): Promise<LockedQuote | null> {
 }
 
 export interface UseExpenseFormOptions {
+  /** Optional review gate for receipt-assisted drafts. */
+  beforeCreate?: () => boolean | Promise<boolean>;
   onSuccess?: (expenseId?: string) => void;
   currentUserPublicKey?: string | null;
   currentUserName?: string | null;
@@ -137,6 +139,7 @@ export function validateExpenseFormFields({
 
 
 export function useExpenseForm({
+  beforeCreate,
   onSuccess,
   currentUserPublicKey,
   currentUserName,
@@ -166,6 +169,7 @@ export function useExpenseForm({
       : initialMembersRef.current![0]?.id ?? "",
   );
   const [submitting, setSubmitting] = useState(false);
+  const saveInFlight = useRef(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   // ── Locked FX quote (#323) ────────────────────────────────────────────────
@@ -277,10 +281,13 @@ export function useExpenseForm({
   const handleSubmit = useCallback(
     async (event: FormEvent) => {
       event.preventDefault();
+      if (saveInFlight.current) return;
       if (!validate()) return;
 
+      saveInFlight.current = true;
       setSubmitting(true);
       try {
+        if (beforeCreate && !(await beforeCreate())) return;
         const cleanMembers = members.map((member) => ({
           ...member,
           name: member.name.trim(),
@@ -334,6 +341,8 @@ export function useExpenseForm({
           exchangeRateTimestamp: provenance.exchangeRateTimestamp,
           exchangeRateSource: provenance.exchangeRateSource,
           settlementAsset: provenance.settlementAsset,
+          category: category || null,
+          tags,
           splitMode,
           paidByMemberId,
           members: cleanMembers,
@@ -342,14 +351,18 @@ export function useExpenseForm({
           settled: false,
         };
 
-        await addExpense(expense);
-        trackAnalyticsEvent("expense_created", {
-          currency: currency.toUpperCase(),
-          split_mode: splitMode,
-          member_count: cleanMembers.length,
-          has_receipt: false,
-        });
-        toastSuccess("Expense created!", `"${expense.title}" split among ${cleanMembers.length} members.`);
+        const saveResult = await addExpense(expense);
+        if (saveResult?.queued) {
+          toastSuccess("Expense draft saved offline", `“${expense.title}” will sync when this wallet is online.`);
+        } else {
+          trackAnalyticsEvent("expense_created", {
+            currency: currency.toUpperCase(),
+            split_mode: splitMode,
+            member_count: cleanMembers.length,
+            has_receipt: false,
+          });
+          toastSuccess("Expense created!", `"${expense.title}" split among ${cleanMembers.length} members.`);
+        }
         onSuccess?.(expense.id);
       } catch (err: unknown) {
         const raw = err instanceof Error ? err.message : "Failed to create expense.";
@@ -361,6 +374,7 @@ export function useExpenseForm({
           toastError("Error", raw);
         }
       } finally {
+        saveInFlight.current = false;
         setSubmitting(false);
       }
     },
@@ -371,6 +385,7 @@ export function useExpenseForm({
     // entirely and persisted the typed amount tagged XLM.
     [
       addExpense,
+      beforeCreate,
       category,
       currency,
       description,

@@ -2,11 +2,24 @@ import type { ExpenseCategory } from "@/lib/expense/categories";
 
 export type SplitMode = "equal" | "custom";
 
+export type TripRole = "owner" | "organizer" | "contributor" | "viewer" | "custom";
+
+export type TripPermission =
+  | "trip.settings.manage"
+  | "members.manage"
+  | "expenses.manage"
+  | "receipts.manage"
+  | "exports.view"
+  | "reminders.manage"
+  | "settlement.proposals.manage";
+
 export interface Member {
   id: string;
   name: string;
   walletAddress?: string;
   weight?: number;
+  role?: TripRole;
+  customPermissions?: TripPermission[];
 }
 
 /**

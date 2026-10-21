@@ -20,7 +20,7 @@ import { useCallback, useState } from "react";
 import { getAccountState, type AccountState, type OnboardingNeed } from "@/lib/stellar/accountState";
 import { describeOnboardingNeed, isBlockingNeed } from "@/lib/stellar/accountState";
 import { assetKey, NATIVE_ASSET, type AssetRef } from "@/lib/stellar/assets";
-import { signXDR } from "@/lib/freeighter";
+import { signXDR } from "@/lib/freighter";
 import { submitSignedTransaction } from "@/lib/stellar/submitTransaction";
 import { getAccessToken } from "@/lib/supabase/session";
 import { NETWORK_PASSPHRASE } from "@/lib/utils/constants";
@@ -169,7 +169,7 @@ export function useAccountOnboarding(asset: AssetRef = NATIVE_ASSET) {
       setState((s) => ({ ...s, phase: "awaiting_signature" }));
 
       try {
-        const signed = await signXDR(body.xdr, NETWORK_PASSPHRASE);
+        const signed = await signXDR(body.xdr, NETWORK_PASSPHRASE, invitee);
 
         setState((s) => ({ ...s, phase: "submitting" }));
         const result = await submitSignedTransaction(signed);

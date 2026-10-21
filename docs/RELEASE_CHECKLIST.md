@@ -17,6 +17,13 @@ Date: 2026-03-29
 - [x] Inter-contract call proof transaction recorded on testnet
 - [x] `NEXT_PUBLIC_CONTRACT_ID` updated in `.env.local`
 - [x] Explorer links documented in README
+- [x] Contract source, deployed WASM hash (`d4b8e2194c776fa3528b17cebf33df0175b902eb7483842cbb105e165463f109`), and deployed contract IDs verified and recorded in [SECURITY_AUDIT_REPORT.md](SECURITY_AUDIT_REPORT.md)
+
+## Security & Verification (Issue #309)
+
+- [x] Independent security review completed and documented in [SECURITY_AUDIT_REPORT.md](SECURITY_AUDIT_REPORT.md)
+- [x] P0/P1 findings resolved and verified prior to mainnet release approval
+- [x] Responsible-disclosure policy and security contact published in [SECURITY.md](../SECURITY.md)
 
 ## CI/CD
 

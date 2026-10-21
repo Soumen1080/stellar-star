@@ -44,7 +44,7 @@ const expenses: ExportableExpense[] = [
     exchangeRate: "3.2493827",
     exchangeRateSource: "coingecko",
     exchangeRateTimestamp: "2026-01-02T10:00:00.000Z",
-    category: "Food",
+    category: "food",
     splitMode: "equal",
     paidByMemberId: "a",
     members: trip.members,
@@ -137,7 +137,7 @@ describe("trip CSV", () => {
 
   it("carries category, exchange-rate provenance and settlement asset", () => {
     const dinner = byType("expense")[0];
-    expect(dinner[col("category")]).toBe("Food");
+    expect(dinner[col("category")]).toBe("food");
     expect(dinner[col("amount")]).toBe("81.2345675");
     expect(dinner[col("settlement_asset")]).toBe("XLM");
     expect(dinner[col("entered_amount")]).toBe("25.00");

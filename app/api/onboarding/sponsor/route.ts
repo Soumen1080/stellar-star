@@ -182,10 +182,12 @@ export async function POST(request: NextRequest) {
   // ── Build and sponsor-sign ─────────────────────────────────────────────────
   try {
     const sponsor = sponsorPublicKey();
+    const capacity = await getCapacity();
     const { xdr } = await buildSponsoredCreation({
       sponsorPublicKey: sponsor,
       newAccountPublicKey: invitee,
       asset,
+      sponsoredCount: capacity.activeCount - 1,
     });
 
     const partiallySigned = signAsSponsor(xdr, loadSponsorKeypair());

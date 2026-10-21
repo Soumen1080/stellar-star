@@ -12,12 +12,14 @@ import {
 } from "@/types/workspace";
 import { useTrip } from "@/hooks/useTrip";
 import { useToast } from "@/components/ui/Toast";
+import { useWalletContext } from "@/context/WalletContext";
 
-const getCacheKey = (tripId: string) => `stellar_star_workspace_${tripId}`;
+const getCacheKey = (tripId: string, wallet: string) => `stellar_star_workspace:${wallet}:${tripId}`;
 
 export function useWorkspace(trip: Trip) {
   const { updateTrip } = useTrip();
   const { success: toastSuccess, error: toastError } = useToast();
+  const { publicKey } = useWalletContext();
 
   const [workspace, setWorkspace] = useState<TravelWorkspace>(() => {
     if (trip.workspace) {
@@ -26,7 +28,7 @@ export function useWorkspace(trip: Trip) {
     // Try localStorage cache
     if (typeof window !== "undefined") {
       try {
-        const cached = localStorage.getItem(getCacheKey(trip.id));
+        const cached = publicKey ? localStorage.getItem(getCacheKey(trip.id, publicKey)) : null;
         if (cached) return normalizeWorkspace(JSON.parse(cached));
       } catch {
         // ignore parse error
@@ -47,8 +49,17 @@ export function useWorkspace(trip: Trip) {
           // ignore cache write error
         }
       }
+    } else {
+      let cachedWorkspace: TravelWorkspace | null = null;
+      if (publicKey) {
+        try {
+          const cached = localStorage.getItem(getCacheKey(trip.id, publicKey));
+          if (cached) cachedWorkspace = normalizeWorkspace(JSON.parse(cached));
+        } catch { /* Ignore malformed wallet-scoped cache entries. */ }
+      }
+      setWorkspace(cachedWorkspace ?? createEmptyWorkspace());
     }
-  }, [trip.id, trip.workspace]);
+  }, [trip.id, trip.workspace, publicKey]);
 
   const saveWorkspace = useCallback(
     async (next: TravelWorkspace) => {
@@ -60,7 +71,7 @@ export function useWorkspace(trip: Trip) {
 
       if (typeof window !== "undefined") {
         try {
-          localStorage.setItem(getCacheKey(trip.id), JSON.stringify(withTimestamp));
+          if (publicKey) localStorage.setItem(getCacheKey(trip.id, publicKey), JSON.stringify(withTimestamp));
         } catch {
           // ignore
         }
@@ -72,7 +83,7 @@ export function useWorkspace(trip: Trip) {
         console.warn("Failed to persist workspace to remote server, saved locally:", err);
       }
     },
-    [trip.id, updateTrip]
+    [trip.id, updateTrip, publicKey]
   );
 
   // ─── Itinerary actions ────────────────────────────────────────────────────────

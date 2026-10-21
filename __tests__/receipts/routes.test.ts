@@ -6,9 +6,13 @@ import { signWalletSession } from "@/lib/supabase/serverAuth";
 import * as store from "@/lib/receipts/store";
 import type { ExpenseReceipt } from "@/types/receipt";
 
+jest.mock("@/lib/supabase/queries", () => ({
+  hasExpensePermission: jest.fn(async (_id, _permission, client) => client.wallet === "GDQAXCC66ZI3RLPA72TTWGI2MN6K4LH3JEM6NKXKR7LPJ3R7OYIJF5LV"),
+}));
+
 jest.mock("@/lib/supabase/server", () => ({
   isServerSupabaseConfigured: () => true,
-  createServerClientForToken: () => ({ kind: "user" }),
+  createServerClientForToken: (token: string) => ({ kind: "user", wallet: jest.requireActual("@/lib/supabase/serverAuth").verifyWalletSession(token)?.wallet_address }),
   createServiceRoleClient: () => ({ kind: "service" }),
 }));
 

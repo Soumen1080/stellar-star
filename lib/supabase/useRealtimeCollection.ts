@@ -9,6 +9,7 @@ import {
   subscribeToQueryInvalidation,
   walletCollectionCacheKey,
   type QueryCacheDomain,
+  LAST_SYNC_PREFIX,
 } from "./cacheInvalidation";
 
 /**
@@ -150,6 +151,10 @@ export function useRealtimeCollection<T>({
       setIsOffline(false);
       setError(null);
       setNeedsSetup(false);
+      try {
+        localStorage.setItem(`${LAST_SYNC_PREFIX}${wallet}`, new Date().toISOString());
+        window.dispatchEvent(new Event("stellar-star:last-synced"));
+      } catch { /* The in-memory collection still updates without storage. */ }
     } catch (err) {
       if (isStale()) return;
 
@@ -168,7 +173,7 @@ export function useRealtimeCollection<T>({
     } finally {
       if (!isStale()) setIsLoading(false);
     }
-  }, [fetchAll, readCache, table, writeCache]);
+  }, [fetchAll, readCache, table, wallet, writeCache]);
 
   // Runs on wallet change AND on session change: a token appearing after
   // sign-up is what makes the first real fetch happen.

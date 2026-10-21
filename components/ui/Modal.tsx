@@ -99,14 +99,14 @@ export function Modal({
                       </Dialog.Title>
                     )}
                     {description && (
-                      <Dialog.Description className="mt-1 text-sm text-[#888]">
+                      <Dialog.Description className="mt-1 text-sm text-[#666]">
                         {description}
                       </Dialog.Description>
                     )}
                   </div>
                   <Dialog.Close asChild>
                     <button
-                      className="shrink-0 w-7 h-7 rounded-lg flex items-center justify-center text-[#AAA] hover:text-[#555] hover:bg-[#F5F5F5] transition-colors"
+                      className="shrink-0 min-w-11 min-h-11 rounded-lg flex items-center justify-center text-[#555] hover:text-[#222] hover:bg-[#F5F5F5] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0F766E]"
                       aria-label="Close modal"
                     >
                       <X size={15} />
@@ -119,7 +119,7 @@ export function Modal({
               {!title && !description && (
                 <Dialog.Close asChild>
                   <button
-                    className="absolute top-4 right-4 z-10 w-7 h-7 rounded-lg flex items-center justify-center text-[#AAA] hover:text-[#555] hover:bg-[#F5F5F5] transition-colors"
+                    className="absolute top-4 right-4 z-10 min-w-11 min-h-11 rounded-lg flex items-center justify-center text-[#555] hover:text-[#222] hover:bg-[#F5F5F5] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0F766E]"
                     aria-label="Close modal"
                   >
                     <X size={15} />

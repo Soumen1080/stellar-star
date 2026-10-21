@@ -99,6 +99,7 @@ function ExpenseMemberRow({
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             <input
               placeholder="Name *"
+              aria-label={`Member ${index + 1} name`}
               value={member.name}
               onChange={(event) => onUpdateMember(member.id, { name: event.target.value })}
               className={`w-full rounded-lg border px-3 py-2 text-sm bg-white outline-none transition-all ${

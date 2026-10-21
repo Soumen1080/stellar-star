@@ -404,7 +404,7 @@ export async function claimTripInvite(
     throw new Error("TRIP_NOT_FOUND: Associated trip no longer exists.");
   }
 
-  const members: Member[] = Array.isArray(tripData.members) ? [...tripData.members] : [];
+  const members: Member[] = Array.isArray(tripData.members) ? tripData.members as unknown as Member[] : [];
   const targetMemberId = inviteData.member_id || selectedMemberId;
 
   // Single-membership check: ensure claiming wallet does not already hold another member slot in this trip
@@ -462,7 +462,7 @@ export async function claimTripInvite(
   // Update trip members
   await db
     .from("trips")
-    .update({ members })
+    .update({ members: members as unknown as import("@/types/supabase").Json })
     .eq("id", tripData.id);
 
   // Increment invite uses
@@ -542,3 +542,4 @@ export async function fetchTripInvites(
     updatedAt: row.updated_at,
   }));
 }
+export type { TripInviteSummary } from "@/types/trip";

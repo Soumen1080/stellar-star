@@ -45,6 +45,7 @@ function NetworkBadge({ network }: { network: string | null }) {
 // ─── Dropdown menu ────────────────────────────────────────────────────────────
 
 interface WalletDropdownProps {
+  id: string;
   publicKey: string;
   balance: string | null;
   network: string | null;
@@ -55,6 +56,7 @@ interface WalletDropdownProps {
 }
 
 function WalletDropdown({
+  id,
   publicKey,
   balance,
   network,
@@ -76,6 +78,9 @@ function WalletDropdown({
 
   return (
     <motion.div
+      id={id}
+      role="region"
+      aria-label="Connected wallet actions"
       initial={{ opacity: 0, y: -8, scale: 0.96 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
       exit={{ opacity: 0, y: -8, scale: 0.96 }}
@@ -98,8 +103,8 @@ function WalletDropdown({
           </p>
           <button
             onClick={handleCopy}
-            className="flex items-center justify-center w-7 h-7 rounded-lg hover:bg-[#E5E5E5] transition-colors"
-            title="Copy address"
+            className="flex items-center justify-center min-w-11 min-h-11 rounded-lg hover:bg-[#E5E5E5] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0F766E]"
+            aria-label={copied ? "Wallet address copied" : "Copy wallet address"}
           >
             {copied ? (
               <Check size={13} className="text-[#134E4A]" />
@@ -111,8 +116,8 @@ function WalletDropdown({
             href={explorerUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="flex items-center justify-center w-7 h-7 rounded-lg hover:bg-[#E5E5E5] transition-colors"
-            title="View on Stellar Explorer"
+            className="flex items-center justify-center min-w-11 min-h-11 rounded-lg hover:bg-[#E5E5E5] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0F766E]"
+            aria-label="View wallet on Stellar Explorer (opens in a new tab)"
           >
             <ExternalLink size={13} className="text-[#888]" />
           </a>
@@ -137,8 +142,8 @@ function WalletDropdown({
           <button
             onClick={onRefreshBalance}
             disabled={isLoadingBalance}
-            className="flex items-center justify-center w-8 h-8 rounded-xl hover:bg-[#F0F0F0] transition-colors disabled:opacity-40"
-            title="Refresh balance"
+            className="flex items-center justify-center min-w-11 min-h-11 rounded-xl hover:bg-[#F0F0F0] transition-colors disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0F766E]"
+            aria-label="Refresh wallet balance"
           >
             <RefreshCw
               size={14}
@@ -196,6 +201,19 @@ export function ConnectWalletButton({
 
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!dropdownOpen) return;
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setDropdownOpen(false);
+        triggerRef.current?.focus();
+      }
+    }
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [dropdownOpen]);
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -239,10 +257,14 @@ export function ConnectWalletButton({
     return (
       <div ref={ref} className={cn("relative", className)}>
         <button
+          ref={triggerRef}
           onClick={() => setDropdownOpen((prev) => !prev)}
+          aria-label={`Connected wallet ${formatAddress(publicKey, 5)}${dropdownOpen ? ", close wallet menu" : ", open wallet menu"}`}
+          aria-expanded={dropdownOpen}
+          aria-controls={dropdownOpen ? "connected-wallet-menu" : undefined}
           className={cn(
             "inline-flex items-center gap-2 pl-1 pr-2 sm:pr-3 py-1.5 rounded-xl border transition-all duration-200 max-w-[180px] sm:max-w-none",
-            "bg-white border-[#E5E5E5] hover:border-[#2DD4BF]/60 hover:shadow-[0_2px_12px_-2px_rgba(185,255,102,0.3)]"
+            "bg-white border-[#E5E5E5] hover:border-[#2DD4BF]/60 hover:shadow-[0_2px_12px_-2px_rgba(185,255,102,0.3)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[#0F766E]"
           )}
         >
           {/* Avatar dot */}
@@ -282,6 +304,7 @@ export function ConnectWalletButton({
         <AnimatePresence>
           {dropdownOpen && (
             <WalletDropdown
+              id="connected-wallet-menu"
               publicKey={publicKey}
               balance={balance}
               network={network}
@@ -301,7 +324,7 @@ export function ConnectWalletButton({
   if (error) {
     return (
       <div className={cn("flex items-center gap-2", className)}>
-        <span className="text-xs text-red-500 max-w-[160px] truncate">{error}</span>
+        <span role="alert" className="text-xs text-red-700 max-w-[160px]">{error}</span>
         <button
           onClick={() => { clearError(); connect(); }}
           className="text-xs font-semibold text-[#0F0F14] underline"
@@ -318,6 +341,7 @@ export function ConnectWalletButton({
     <button
       onClick={connect}
       disabled={isConnecting}
+      aria-label={isConnecting ? "Connecting wallet" : "Connect wallet"}
       className={cn(
         "inline-flex items-center gap-2 px-3 sm:px-4 py-2.5 rounded-xl text-xs sm:text-sm font-semibold transition-all duration-200",
         "bg-[#2DD4BF] text-[#0F0F14] hover:shadow-[0_4px_16px_-4px_rgba(185,255,102,0.6)] active:scale-95",

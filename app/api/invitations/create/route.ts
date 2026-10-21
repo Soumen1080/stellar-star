@@ -2,6 +2,14 @@ import { NextRequest, NextResponse } from "next/server";
 import { verifyWalletSession } from "@/lib/supabase/serverAuth";
 import { createServerClientForToken } from "@/lib/supabase/server";
 import { createTripInvite } from "@/lib/invitations/claim";
+import {
+  extractIdempotencyKey,
+  withIdempotency,
+  idempotentJsonResponse,
+  IdempotencyConflictError,
+  IdempotencyLockedError,
+} from "@/lib/idempotency/store";
+import { enforceAbuseProtection, enforceIdempotencyKeyLimit } from "@/lib/security/abuseProtection";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -17,12 +25,15 @@ export async function POST(request: NextRequest) {
       { status: 401 },
     );
   }
+  const abuse = await enforceAbuseProtection(request, "invitation.create", session.wallet_address);
+  if (!abuse.ok) return abuse.response;
 
   let body: {
     tripId?: string;
     memberId?: string | null;
     maxUses?: number;
     expiresInDays?: number;
+    idempotencyKey?: string;
   };
 
   try {
@@ -38,20 +49,46 @@ export async function POST(request: NextRequest) {
   try {
     const origin = request.nextUrl.origin;
     const serverClient = createServerClientForToken(token);
-    const result = await createTripInvite(
-      {
-        tripId: body.tripId,
-        createdByWallet: session.wallet_address,
-        memberId: body.memberId || null,
-        maxUses: body.maxUses,
-        expiresInDays: body.expiresInDays,
-        baseUrl: origin,
-      },
-      serverClient,
-    );
+    const idempotencyKey = extractIdempotencyKey(request, body);
+    const keyLimit = await enforceIdempotencyKeyLimit(request, session.wallet_address, idempotencyKey);
+    if (!keyLimit.ok) return keyLimit.response;
 
-    return NextResponse.json(result);
+    const result = await withIdempotency({
+      client: serverClient,
+      key: idempotencyKey,
+      walletAddress: session.wallet_address,
+      endpoint: "/api/invitations/create",
+      payload: body,
+      execute: async () => {
+        const created = await createTripInvite(
+          {
+            tripId: body.tripId!,
+            createdByWallet: session.wallet_address,
+            memberId: body.memberId || null,
+            maxUses: body.maxUses,
+            expiresInDays: body.expiresInDays,
+            baseUrl: origin,
+          },
+          serverClient,
+        );
+        return { data: created, status: 200 };
+      },
+    });
+
+    return idempotentJsonResponse(result);
   } catch (err) {
+    if (err instanceof IdempotencyConflictError) {
+      return NextResponse.json(
+        { error: err.message, code: err.code },
+        { status: 409 }
+      );
+    }
+    if (err instanceof IdempotencyLockedError) {
+      return NextResponse.json(
+        { error: err.message, code: err.code },
+        { status: 409 }
+      );
+    }
     const message = err instanceof Error ? err.message : "Failed to create invitation.";
     return NextResponse.json({ error: message }, { status: 500 });
   }

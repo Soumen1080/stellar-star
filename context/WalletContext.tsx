@@ -8,7 +8,7 @@ import React, {
   useRef,
   useState,
 } from "react";
-import { getFreighterNetwork, isFreighterInstalled } from "@/lib/freighter";
+import { getFreighterNetwork } from "@/lib/freighter";
 import { getWalletsKit, FREIGHTER_ID, StellarWalletsKit, type WalletId } from "@/lib/stellar/walletsKit";
 import { getE2eTestWallet } from "@/lib/stellar/e2eWallet";
 import { getXLMBalance } from "@/lib/stellar/getBalance";
@@ -60,7 +60,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     let active = true;
     const check = async () => {
       try {
-        const net = await getFreighterNetwork().catch(() => "TESTNET");
+        const net = await getFreighterNetwork().catch(() => null);
         if (active) setNetwork(net);
       } catch {
         /* keep last known network */
@@ -110,7 +110,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       const net = await getFreighterNetwork();
       setNetwork(net);
     } catch {
-      setNetwork("TESTNET");
+      setNetwork(null);
     }
   }, []);
 
@@ -227,7 +227,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
 
       if (walletError || !resolvedAddress) return;
 
-      const net = await getFreighterNetwork().catch(() => "TESTNET");
+      const net = await getFreighterNetwork().catch(() => null);
 
       setPublicKey(resolvedAddress);
       setNetwork(net);

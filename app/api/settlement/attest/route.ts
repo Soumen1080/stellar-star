@@ -24,9 +24,9 @@ import {
 } from "@/lib/settlement/attestationMessage";
 import {
   isOracleConfigured,
-  loadOracleKeypair,
+  configuredOracleSignerCount,
   OracleKeyUnavailableError,
-  signClaimMessage,
+  signClaimMessages,
 } from "@/lib/settlement/oracleKey";
 import {
   HorizonVerificationError,
@@ -98,9 +98,7 @@ function isNonEmptyBoundedString(value: unknown, maxLength: number): value is st
 }
 
 /** The oracle's `G...` address, for a response that reuses a stored signature. */
-function oraclePublicKeyOrThrow(): string {
-  return loadOracleKeypair().publicKey();
-}
+function oracleThreshold(): number { return Math.max(1, Number(process.env.SETTLEMENT_ORACLE_THRESHOLD) || 2); }
 
 export async function POST(request: NextRequest) {
   const requestId = getOrCreateRequestId(request.headers.get(REQUEST_ID_HEADER));
@@ -223,7 +221,7 @@ export async function POST(request: NextRequest) {
       member,
       claimedAmountStroops: claimedAmount,
       totalPaymentStroops: payment.amountStroops,
-      createEntry: () => {
+      createEntry: async () => {
         const nonce = crypto.randomBytes(NONCE_BYTES).toString("hex");
         const expiresAt = Math.floor(Date.now() / 1000) + ATTESTATION_TTL_SECONDS;
 
@@ -240,7 +238,8 @@ export async function POST(request: NextRequest) {
           expiresAt,
         };
 
-        const signed = signClaimMessage(buildClaimMessage(claim));
+        const signed = await signClaimMessages(buildClaimMessage(claim));
+        if (signed.length < oracleThreshold()) throw new OracleKeyUnavailableError("Configured signer count is below the attestation threshold.");
         return {
           txHash: normalisedTxHash,
           expenseId,
@@ -248,7 +247,7 @@ export async function POST(request: NextRequest) {
           amountStroops: claim.amountStroops,
           nonce,
           expiresAt,
-          signature: signed.signature,
+          signature: JSON.stringify(signed.map(({ signature, publicKey }) => ({ signer: publicKey, signature }))),
         };
       },
     });
@@ -278,9 +277,11 @@ export async function POST(request: NextRequest) {
   }
 
   const stored = allocationResult.entry;
-  let oraclePublicKey: string;
+  let signatures: Array<{ signer: string; signature: string }>;
   try {
-    oraclePublicKey = oraclePublicKeyOrThrow();
+    if (configuredOracleSignerCount() < oracleThreshold()) throw new Error("Configured signer count is below the attestation threshold.");
+    signatures = JSON.parse(stored.signature) as Array<{ signer: string; signature: string }>;
+    if (signatures.length < oracleThreshold()) throw new Error("Stored signature quorum is incomplete.");
   } catch (err) {
     return jsonError(
       err instanceof Error ? err.message : "Oracle key unavailable.",
@@ -306,8 +307,7 @@ export async function POST(request: NextRequest) {
     {
       attestation: {
         claim: finalClaim,
-        signature: stored.signature,
-        oraclePublicKey,
+        signatures,
       },
       reused: allocationResult.reused,
       durableLedger: isDurable(),

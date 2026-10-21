@@ -244,8 +244,7 @@ describe("usePayment — partial share settlement (#325)", () => {
       ok: true,
       attestation: {
         claim: { ...claim, nonce: `nonce-${claim.expenseId}`, expiresAt: 1900000000 },
-        signature: "sig",
-        oraclePublicKey: "GORACLE",
+        signatures: [{ signer: "GORACLE", signature: "sig" }],
       },
     }));
   });

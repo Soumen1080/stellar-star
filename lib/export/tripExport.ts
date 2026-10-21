@@ -23,11 +23,7 @@ import { amount, raw, text, toCsv, type CsvCell } from "./csv";
  * arrive with #323; category with a future feature). Read defensively so the
  * export works whichever of those has shipped.
  */
-export type ExportableExpense = Expense & {
-  enteredAmount?: string;
-  exchangeRateSource?: string;
-  category?: string;
-};
+export type ExportableExpense = Expense;
 
 export const CSV_HEADER = [
   "record_type",

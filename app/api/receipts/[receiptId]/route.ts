@@ -1,5 +1,6 @@
 import type { NextRequest } from "next/server";
-import { canRemoveReceipt, receiptViewDecision } from "@/lib/receipts/access";
+import { receiptViewDecision } from "@/lib/receipts/access";
+import { hasExpensePermission } from "@/lib/supabase/queries";
 import {
   createReceiptLink,
   loadExpenseAccess,
@@ -62,8 +63,11 @@ export async function DELETE(request: NextRequest, context: Context) {
     const access = found.receipt.expenseId
       ? await loadExpenseAccess(clients.userClient, found.receipt.expenseId)
       : null;
-    if (!canRemoveReceipt(found.receipt, access, clients.wallet)) {
-      return receiptError("Only the uploader or the expense creator can remove this receipt.", 403);
+    const canRemove = access
+      ? await hasExpensePermission(found.receipt.expenseId, "receipts.manage", clients.userClient)
+      : found.receipt.uploadedByWallet.trim().toUpperCase() === clients.wallet.trim().toUpperCase();
+    if (!canRemove) {
+      return receiptError("You do not have permission to remove this receipt.", 403);
     }
 
     await removeReceipt(clients.serviceClient, {
