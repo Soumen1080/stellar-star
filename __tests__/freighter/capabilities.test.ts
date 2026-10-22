@@ -23,8 +23,8 @@ describe("wallet capability detection matrix", () => {
 
   it.each([
     [FREIGHTER_ID, "freighterApi", { getPublicKey: jest.fn(), signXDR: jest.fn() }],
-    [XBULL_ID, "xBulls", { getPublicKey: jest.fn(), signXDR: jest.fn(), getNetwork: async () => "TESTNET" }],
-    [LOBSTR_ID, "lobstr", { getPublicKey: jest.fn(), signTransaction: jest.fn(), getNetwork: async () => "TESTNET" }],
+    [XBULL_ID, "xBulls", { getPublicKey: jest.fn(), signXDR: jest.fn(), getNetwork: async (): Promise<string> => "TESTNET" }],
+    [LOBSTR_ID, "lobstr", { getPublicKey: jest.fn(), signTransaction: jest.fn(), getNetwork: async (): Promise<string> => "TESTNET" }],
   ] as const)("detects address, signing, network, and path-XDR support for %s", async (walletId, globalName, api) => {
     (window as unknown as Record<string, unknown>)[globalName] = api;
     const capabilities = await kit.detectCapabilities(walletId);

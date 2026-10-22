@@ -14,7 +14,7 @@ import { useTrip } from "@/hooks/useTrip";
 import { useToast } from "@/components/ui/Toast";
 import { useWalletContext } from "@/context/WalletContext";
 
-const getCacheKey = (tripId: string, wallet: string) => `stellar_star_workspace:${wallet}:${tripId}`;
+const getCacheKey = (tripId: string, wallet: string = "anonymous") => `stellar_star_workspace:${wallet}:${tripId}`;
 
 export function useWorkspace(trip: Trip) {
   const { updateTrip } = useTrip();

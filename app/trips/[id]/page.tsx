@@ -8,28 +8,17 @@ import { AuthGuard } from "@/components/auth/AuthGuard";
 import { ExpenseForm } from "@/components/expenses/ExpenseForm";
 import { Modal } from "@/components/ui/Modal";
 import { useToast } from "@/components/ui/Toast";
-import { SettlementSummary } from "@/components/trips/SettlementSummary";
-import { TripDetailHeader } from "@/components/trips/TripDetailHeader";
-import { TripDetailNav } from "@/components/trips/TripDetailNav";
-import { TripExpensesPanel } from "@/components/trips/TripExpensesPanel";
-import { TripNotFound } from "@/components/trips/TripNotFound";
-import { TripPaymentProgressBanner } from "@/components/trips/TripPaymentProgressBanner";
-import { TripRecurringRules } from "@/components/trips/TripRecurringRules";
-import { TripWalletChangeBanner } from "@/components/trips/TripWalletChangeBanner";
-import { TripTabs, type TripTab } from "@/components/trips/TripTabs";
-import { RecurringPanel } from "@/components/recurring/RecurringPanel";
-import { TravelWorkspacePanel } from "@/components/trips/workspace/TravelWorkspacePanel";
-import { InviteMemberModal } from "@/components/trips/InviteMemberModal";
-import { SaveTripTemplateForm } from "@/components/trips/SaveTripTemplateForm";
-import { DuplicateTripFlow } from "@/components/trips/TripCopyFlow";
-import { TripExportMenu } from "@/components/export/TripExportMenu";
-import { ReminderSchedulePanel } from "@/components/reminders/ReminderSchedulePanel";
-import { HouseholdCoordinationPanel } from "@/components/household/HouseholdCoordinationPanel";
-import { useAuth } from "@/context/AuthContext";
-import { useContractEvents } from "@/hooks/useContractEvents";
-import { useExpense } from "@/hooks/useExpense";
-import { useTrip } from "@/hooks/useTrip";
-import { useTripAutoSettlement } from "@/hooks/useTripAutoSettlement";
+import { SettlementSummary } from "@/components/trips/SettlementSummary"; import { TripDetailHeader } from "@/components/trips/TripDetailHeader";
+import { TripDetailNav } from "@/components/trips/TripDetailNav"; import { TripExpensesPanel } from "@/components/trips/TripExpensesPanel";
+import { TripNotFound } from "@/components/trips/TripNotFound"; import { TripPaymentProgressBanner } from "@/components/trips/TripPaymentProgressBanner";
+import { TripRecurringRules } from "@/components/trips/TripRecurringRules"; import { TripWalletChangeBanner } from "@/components/trips/TripWalletChangeBanner";
+import { TripTabs, type TripTab } from "@/components/trips/TripTabs"; import { RecurringPanel } from "@/components/recurring/RecurringPanel";
+import { TravelWorkspacePanel } from "@/components/trips/workspace/TravelWorkspacePanel"; import { InviteMemberModal } from "@/components/trips/InviteMemberModal";
+import { SaveTripTemplateForm } from "@/components/trips/SaveTripTemplateForm"; import { DuplicateTripFlow } from "@/components/trips/TripCopyFlow";
+import { TripExportMenu } from "@/components/export/TripExportMenu"; import { ReminderSchedulePanel } from "@/components/reminders/ReminderSchedulePanel";
+import { HouseholdCoordinationPanel } from "@/components/household/HouseholdCoordinationPanel"; import { useAuth } from "@/context/AuthContext";
+import { useContractEvents } from "@/hooks/useContractEvents"; import { useExpense } from "@/hooks/useExpense";
+import { useTrip } from "@/hooks/useTrip"; import { useTripAutoSettlement } from "@/hooks/useTripAutoSettlement";
 import { useWallet } from "@/hooks/useWallet";
 import { Spinner } from "@/components/ui/Spinner";
 import { sanitizeMetadata, sanitizeText, sanitizeWalletLabel } from "@/lib/utils";
@@ -40,51 +29,16 @@ import type { RecurringExpenseRule } from "@/types/trip";
  * Builds safe page metadata and enforces a content security policy for trip details,
  * ensuring trip names, wallet labels, and IDs are sanitized to prevent stored or reflected XSS.
  */
-export function generateTripMetadata({
-  tripName,
-  walletAddress,
-  tripId,
-}: {
-  tripName?: string;
-  walletAddress?: string;
-  tripId?: string;
-}): Metadata {
+export function generateTripMetadata({ tripName, walletAddress, tripId }: { tripName?: string; walletAddress?: string; tripId?: string }): Metadata {
   const safeId = sanitizeMetadata(tripId ?? "", 50);
   const safeName = tripName ? sanitizeMetadata(tripName, 100) : "";
   const safeWallet = walletAddress ? sanitizeWalletLabel(walletAddress, 60) : "";
-
   let title = "Trip Details | Stellar Star";
-  if (safeName && safeWallet) {
-    title = `${safeName} (by ${safeWallet}) | Stellar Star`;
-  } else if (safeName) {
-    title = `${safeName} | Stellar Star`;
-  } else if (safeId) {
-    title = `Trip ${safeId} | Stellar Star`;
-  }
-
-  const description = safeName
-    ? `View and settle expenses for ${safeName} on Stellar Star.`
-    : safeId
-    ? `View details and expenses for trip ${safeId} on Stellar Star.`
-    : "Group expense splitting on the Stellar blockchain.";
-
-  return {
-    title,
-    description,
-    openGraph: {
-      title,
-      description,
-    },
-    twitter: {
-      card: "summary",
-      title,
-      description,
-    },
-    other: {
-      "content-security-policy":
-        "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https:;",
-    },
-  };
+  if (safeName && safeWallet) title = `${safeName} (by ${safeWallet}) | Stellar Star`;
+  else if (safeName) title = `${safeName} | Stellar Star`;
+  else if (safeId) title = `Trip ${safeId} | Stellar Star`;
+  const description = safeName ? `View and settle expenses for ${safeName} on Stellar Star.` : safeId ? `View details and expenses for trip ${safeId} on Stellar Star.` : "Group expense splitting on the Stellar blockchain.";
+  return { title, description, openGraph: { title, description } };
 }
 
 export default function TripDetailPage() {

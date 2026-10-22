@@ -185,7 +185,7 @@ describe("Issue #316: Reversals and Corrections Engine", () => {
       const reversal = buildLinkedReversal({
         originalExpense: settledExpense,
         reason: "Event was cancelled by organizer and fully refunded.",
-        actorWallet: ALICE.walletAddress,
+        actorWallet: ALICE.walletAddress!,
       });
 
       // Preserves original expense
@@ -232,7 +232,7 @@ describe("Issue #316: Reversals and Corrections Engine", () => {
       const reversal = buildLinkedReversal({
         originalExpense: multiMemberSettled,
         reason: "Duplicate bill submitted.",
-        actorWallet: ALICE.walletAddress,
+        actorWallet: ALICE.walletAddress!,
       });
 
       expect(reversal.totalAmount).toBe("100.0000000");
@@ -247,7 +247,7 @@ describe("Issue #316: Reversals and Corrections Engine", () => {
         buildLinkedReversal({
           originalExpense: unsettled,
           reason: "Trying to reverse an unsettled expense",
-          actorWallet: ALICE.walletAddress,
+          actorWallet: ALICE.walletAddress!,
         }),
       ).toThrow(/unsettled expenses can be edited or voided directly/i);
     });
@@ -271,7 +271,7 @@ describe("Issue #316: Reversals and Corrections Engine", () => {
         originalExpense: settledExpense,
         reason: "Merchant applied a 10% group discount voucher retroactively.",
         adjustmentType: "adjustment",
-        actorWallet: ALICE.walletAddress,
+        actorWallet: ALICE.walletAddress!,
         adjustedTotalAmount: "90.0000000",
       });
 
@@ -303,7 +303,7 @@ describe("Issue #316: Reversals and Corrections Engine", () => {
         originalExpense: settledExpense,
         reason: "Adjusting to 70 XLM with exact remainder apportionment.",
         adjustmentType: "adjustment",
-        actorWallet: ALICE.walletAddress,
+        actorWallet: ALICE.walletAddress!,
         adjustedTotalAmount: "70.0000000",
       });
 
@@ -363,7 +363,7 @@ describe("Issue #316: Reversals and Corrections Engine", () => {
       const reversal = buildLinkedReversal({
         originalExpense: original,
         reason: "Full reversal after merchant cancellation",
-        actorWallet: ALICE.walletAddress,
+        actorWallet: ALICE.walletAddress!,
       });
 
       const balances = calculateEffectiveExpenseBalances([original, reversal]);
@@ -394,7 +394,7 @@ describe("Issue #316: Reversals and Corrections Engine", () => {
         originalExpense: original,
         reason: "Additional service tip added.",
         adjustmentType: "adjustment",
-        actorWallet: ALICE.walletAddress,
+        actorWallet: ALICE.walletAddress!,
         adjustedTotalAmount: "120.0000000",
       });
 
@@ -403,7 +403,7 @@ describe("Issue #316: Reversals and Corrections Engine", () => {
         originalExpense: original,
         reason: "Corrected tip percentage.",
         adjustmentType: "adjustment",
-        actorWallet: ALICE.walletAddress,
+        actorWallet: ALICE.walletAddress!,
         adjustedTotalAmount: "110.0000000",
       });
 
@@ -422,7 +422,7 @@ describe("Issue #316: Reversals and Corrections Engine", () => {
         originalExpense: original,
         reason: "Initial correction",
         adjustmentType: "adjustment",
-        actorWallet: ALICE.walletAddress,
+        actorWallet: ALICE.walletAddress!,
         adjustedTotalAmount: "80.0000000",
       });
       correctionA.id = "exp-corr-a";
@@ -433,7 +433,7 @@ describe("Issue #316: Reversals and Corrections Engine", () => {
         originalExpense: correctionA,
         reason: "Secondary adjustment of correction A",
         adjustmentType: "adjustment",
-        actorWallet: ALICE.walletAddress,
+        actorWallet: ALICE.walletAddress!,
         adjustedTotalAmount: "70.0000000",
       });
       correctionB.id = "exp-corr-b";

@@ -489,12 +489,12 @@ export function SupportConsole() {
                   {incident.expense?.title || "Expense Record N/A"}
                 </p>
                 <p className="text-sm font-semibold text-emerald-700 mt-0.5">
-                  {incident.expense ? `${incident.expense.amount} ${incident.expense.currency || "XLM"}` : "—"}
+                  {incident.expense ? `${(incident.expense as any).totalAmount || (incident.expense as any).amount} ${(incident.expense as any).currency || "XLM"}` : "—"}
                 </p>
               </div>
               <div className="pt-2 border-t border-[#F0F0F0] text-xs space-y-1 text-[#666]">
-                <p>Trip: {incident.trip?.title || incident.expense?.trip_id?.slice(0, 8) || "—"}</p>
-                <p>Created: {incident.expense?.created_at ? new Date(incident.expense.created_at).toLocaleDateString() : "—"}</p>
+                <p>Trip: {incident.trip?.title || (incident.expense as any)?.tripId?.slice(0, 8) || (incident.expense as any)?.trip_id?.slice(0, 8) || "—"}</p>
+                <p>Created: {(incident.expense as any)?.createdAt ? new Date((incident.expense as any).createdAt).toLocaleDateString() : (incident.expense as any)?.created_at ? new Date((incident.expense as any).created_at).toLocaleDateString() : "—"}</p>
               </div>
             </div>
 

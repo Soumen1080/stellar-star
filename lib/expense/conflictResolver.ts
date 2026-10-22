@@ -220,6 +220,7 @@ export function mergeExpenseUpdates(
         };
       }
 
+      const parsedTotal = Money.parse(updatedTotal);
       if (parsedTotal.lessThan(settledTotal)) {
         return {
           success: false,

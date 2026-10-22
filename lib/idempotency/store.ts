@@ -36,7 +36,7 @@ export interface IdempotencyRecord {
   endpoint: string;
   request_fingerprint: string;
   status: "pending" | "completed" | "failed";
-  response_status: number;
+  response_status: number | null;
   response_body: any;
   created_at: string;
   locked_until: string;
@@ -147,7 +147,7 @@ export async function withIdempotency<T>({
     if (existingMem.status === "completed") {
       return {
         data: existingMem.response_body as T,
-        status: existingMem.response_status,
+        status: existingMem.response_status ?? 200,
         replayed: true,
       };
     }

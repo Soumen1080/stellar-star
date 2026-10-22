@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { AlertTriangle, RefreshCw, GitMerge, Check, X, ShieldAlert } from "lucide-react";
 import type { ConflictDetails } from "@/lib/expense/conflictResolver";
 import type { Expense } from "@/types/expense";
@@ -20,18 +20,22 @@ export function ExpenseConflictModal({
   onReloadLatest,
   onResolveAndMerge,
 }: ExpenseConflictModalProps) {
+    // Track resolution choices for each conflicting scalar field: "mine" vs "server"
+  const [resolutions, setResolutions] = useState<Record<string, "mine" | "server">>({});
+
+  useEffect(() => {
+    if (conflict?.fields) {
+      const initial: Record<string, "mine" | "server"> = {};
+      for (const field of conflict.fields) {
+        initial[field] = "mine";
+      }
+      setResolutions(initial);
+    }
+  }, [conflict]);
+
   if (!open || !conflict) return null;
 
   const { serverExpense, proposedUpdates, fields, reason } = conflict;
-
-  // Track resolution choices for each conflicting scalar field: "mine" vs "server"
-  const [resolutions, setResolutions] = useState<Record<string, "mine" | "server">>(() => {
-    const initial: Record<string, "mine" | "server"> = {};
-    for (const field of fields) {
-      initial[field] = "mine"; // default to keeping local edits
-    }
-    return initial;
-  });
 
   const handleApplyMerge = () => {
     const resolvedUpdates: Partial<Expense> = { ...proposedUpdates };
@@ -94,7 +98,7 @@ export function ExpenseConflictModal({
             }`}
           >
             <div className="flex items-center justify-between mb-1">
-              <span className="font-semibold text-[#0F0F14]">Server's Value</span>
+              <span className="font-semibold text-[#0F0F14]">Server&apos;s Value</span>
               <input
                 type="radio"
                 name={`res-${field}`}
@@ -133,7 +137,7 @@ export function ExpenseConflictModal({
         </div>
 
         <p className="text-xs text-[#555] leading-relaxed">
-          {reason} To prevent silently overwriting someone else's changes, choose whether to reload the latest version from the server or merge your changes.
+          {reason} To prevent silently overwriting someone else&apos;s changes, choose whether to reload the latest version from the server or merge your changes.
         </p>
 
         {fields.length > 0 && (

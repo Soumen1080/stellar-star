@@ -59,7 +59,7 @@ describe("household persistence mappers", () => {
       copied_from_trip_id: null,
       created_at: "2026-10-20T00:00:00.000Z",
       updated_at: "2026-10-20T00:00:00.000Z",
-    } as TripRow;
+    } as unknown as TripRow;
     expect(rowToTrip(tripRow).householdCoordinationEnabled).toBe(false);
   });
 });

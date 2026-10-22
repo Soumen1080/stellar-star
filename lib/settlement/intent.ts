@@ -48,7 +48,7 @@ export interface SettlementIntent {
   ledger: number | null;
   onChain: boolean;
   errorMessage: string | null;
-  quoteMetadata: SettlementIntentRow["quote_metadata"];
+  quoteMetadata?: SettlementIntentRow["quote_metadata"] | null;
   createdByWallet: string;
   createdAt: string;
   updatedAt: string;

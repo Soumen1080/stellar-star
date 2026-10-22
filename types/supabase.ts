@@ -127,6 +127,58 @@ export type ContactWalletChangeRow = {
   affected_trip_ids: string[]; notice_until: string; verified: boolean; created_at: string; applied_at: string | null;
 };
 
+
+export type PaymentReminderRow = {
+  id: string;
+  trip_id: string;
+  expense_id: string;
+  member_id: string;
+  recipient_wallet: string;
+  sender_wallet: string;
+  amount: string;
+  asset: string;
+  note: string | null;
+  trigger: "manual" | "schedule";
+  schedule_id: string | null;
+  state: "delivered" | "read" | "dismissed" | "cancelled" | "muted";
+  channels: string[];
+  created_at: string;
+  updated_at: string;
+  read_at: string | null;
+};
+
+export type ReminderEventRow = {
+  id: string;
+  reminder_id: string | null;
+  actor_wallet: string;
+  kind: string;
+  channel: "in_app" | "email" | "push" | null;
+  detail: string | null;
+  created_at: string;
+};
+
+export type ReminderPreferencesRow = {
+  wallet: string;
+  email_opt_in: boolean;
+  email_address: string | null;
+  push_opt_in: boolean;
+  push_endpoint: string | null;
+  muted_trip_ids: string[];
+  muted_sender_wallets: string[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type ReminderScheduleRow = {
+  id: string;
+  trip_id: string;
+  owner_wallet: string;
+  interval_days: number;
+  next_run_at: string;
+  active: boolean;
+  created_at: string;
+  updated_at: string;
+};
 export type ExportAuditEventRow = {
   id: string;
   actor_wallet: string;
@@ -254,6 +306,41 @@ export type SettlementAttestationRow = {
   expires_at: number;
   signature: string;
   created_at: string;
+};
+
+export type ReconciliationJobRow = {
+  id: string;
+  intent_id: string | null;
+  trip_id: string;
+  expense_id: string;
+  member_id: string;
+  payer_wallet: string;
+  member_wallet: string;
+  asset: string;
+  amount: string;
+  amount_stroops: string;
+  expected_memo: string | null;
+  request_id: string | null;
+  tx_hash: string | null;
+  ledger: number | null;
+  status: "not_submitted" | "submitted_not_confirmed" | "confirmed_not_recorded" | "recorded" | "escalated" | "failed";
+  attempts: number;
+  max_attempts: number;
+  backoff_ms: number;
+  last_attempt_at: string | null;
+  next_attempt_at: string;
+  escalation_reason: string | null;
+  error_message: string | null;
+  verified_at: string | null;
+  recorded_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type DeletedAccountRow = {
+  wallet_address: string;
+  deleted_at: string;
+  reason: string;
 };
 
 export type SponsoredAccountRow = {
@@ -620,6 +707,37 @@ export type Database = {
         Update: Record<string, never>;
         Relationships: [];
       };
+
+      payment_reminders: {
+        Row: PaymentReminderRow;
+        Insert: Omit<
+          PaymentReminderRow,
+          "id" | "state" | "created_at" | "updated_at" | "read_at"
+        > &
+          Partial<Omit<PaymentReminderRow, "id" | "created_at" | "updated_at">>;
+        Update: Partial<Pick<PaymentReminderRow, "state" | "read_at" | "channels">>;
+        Relationships: [];
+      };
+      reminder_events: {
+        Row: ReminderEventRow;
+        Insert: Omit<ReminderEventRow, "id" | "created_at">;
+        Update: Record<string, never>;
+        Relationships: [];
+      };
+      reminder_preferences: {
+        Row: ReminderPreferencesRow;
+        Insert: Pick<ReminderPreferencesRow, "wallet"> &
+          Partial<Omit<ReminderPreferencesRow, "wallet" | "created_at" | "updated_at">>;
+        Update: Partial<Omit<ReminderPreferencesRow, "wallet" | "created_at">>;
+        Relationships: [];
+      };
+      reminder_schedules: {
+        Row: ReminderScheduleRow;
+        Insert: Pick<ReminderScheduleRow, "trip_id" | "owner_wallet" | "interval_days" | "next_run_at"> &
+          Partial<Pick<ReminderScheduleRow, "active">>;
+        Update: Partial<Pick<ReminderScheduleRow, "interval_days" | "next_run_at" | "active">>;
+        Relationships: [];
+      };
       export_audit_events: {
         Row: ExportAuditEventRow;
         Insert: Pick<ExportAuditEventRow, "actor_wallet" | "export_kind" | "status"> &
@@ -645,6 +763,49 @@ export type Database = {
           updated_at?: string;
         };
         Update: Partial<TripInviteRow>;
+        Relationships: [];
+      };
+      deleted_accounts: {
+        Row: DeletedAccountRow;
+        Insert: {
+          wallet_address: string;
+          deleted_at?: string;
+          reason?: string;
+        };
+        Update: Partial<DeletedAccountRow>;
+        Relationships: [];
+      };
+      reconciliation_queue: {
+        Row: ReconciliationJobRow;
+        Insert: {
+          id?: string;
+          intent_id?: string | null;
+          trip_id: string;
+          expense_id: string;
+          member_id: string;
+          payer_wallet: string;
+          member_wallet: string;
+          asset?: string;
+          amount: string;
+          amount_stroops: string;
+          expected_memo?: string | null;
+          request_id?: string | null;
+          tx_hash?: string | null;
+          ledger?: number | null;
+          status?: "not_submitted" | "submitted_not_confirmed" | "confirmed_not_recorded" | "recorded" | "escalated" | "failed";
+          attempts?: number;
+          max_attempts?: number;
+          backoff_ms?: number;
+          last_attempt_at?: string | null;
+          next_attempt_at?: string;
+          escalation_reason?: string | null;
+          error_message?: string | null;
+          verified_at?: string | null;
+          recorded_at?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: Partial<Omit<ReconciliationJobRow, "id" | "created_at">>;
         Relationships: [];
       };
       settlement_intents: {
@@ -1012,6 +1173,8 @@ export type AuthChallengeInsert = Database["public"]["Tables"]["auth_challenges"
 
 export type SettlementIntentInsert = Database["public"]["Tables"]["settlement_intents"]["Insert"];
 export type SettlementIntentUpdate = Database["public"]["Tables"]["settlement_intents"]["Update"];
+export type ReconciliationJobInsert = Database["public"]["Tables"]["reconciliation_queue"]["Insert"];
+export type ReconciliationJobUpdate = Database["public"]["Tables"]["reconciliation_queue"]["Update"];
 export type SettlementAttestationInsert =
   Database["public"]["Tables"]["settlement_attestations"]["Insert"];
 export type SponsoredAccountInsert = Database["public"]["Tables"]["sponsored_accounts"]["Insert"];

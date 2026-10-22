@@ -39,7 +39,7 @@ export interface HouseholdChoreDraft {
   nextDueOn: string;
 }
 
-export interface HouseholdChoreRow {
+export type HouseholdChoreRow = {
   id: string;
   trip_id: string;
   title: string;
@@ -54,7 +54,7 @@ export interface HouseholdChoreRow {
   updated_at: string;
 }
 
-export interface HouseholdChoreCompletionRow {
+export type HouseholdChoreCompletionRow = {
   id: string;
   chore_id: string;
   trip_id: string;
@@ -64,7 +64,7 @@ export interface HouseholdChoreCompletionRow {
   completed_at: string;
 }
 
-export interface HouseholdChorePreferenceRow {
+export type HouseholdChorePreferenceRow = {
   trip_id: string;
   wallet_address: string;
   opted_out: boolean;

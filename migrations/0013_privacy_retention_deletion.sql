@@ -18,10 +18,12 @@ CREATE INDEX IF NOT EXISTS idx_deleted_accounts_deleted_at
 ALTER TABLE public.deleted_accounts ENABLE ROW LEVEL SECURITY;
 
 -- Service role and authenticated users can read deletion status
+DROP POLICY IF EXISTS "deleted_accounts_select_all" ON public.deleted_accounts;
 CREATE POLICY "deleted_accounts_select_all" ON public.deleted_accounts
   FOR SELECT USING (true);
 
 -- Only authenticated users for their own wallet can record deletion
+DROP POLICY IF EXISTS "deleted_accounts_insert_self" ON public.deleted_accounts;
 CREATE POLICY "deleted_accounts_insert_self" ON public.deleted_accounts
   FOR INSERT WITH CHECK (
     wallet_address = NULLIF(COALESCE(current_setting('request.jwt.claims', true)::jsonb ->> 'wallet_address', ''), '')

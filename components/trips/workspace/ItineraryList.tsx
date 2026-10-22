@@ -33,7 +33,7 @@ interface ItineraryListProps {
 
 const CATEGORY_ICONS: Record<
   ItineraryCategory,
-  React.ComponentType<{ size?: number; className?: string }>
+  React.ComponentType<any>
 > = {
   activity: Compass,
   flight: Plane,

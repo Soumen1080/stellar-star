@@ -1,5 +1,6 @@
 import { isServerSupabaseConfigured, createServiceRoleClient } from "@/lib/supabase/server";
 import type { Trip } from "@/types/trip";
+import type { Member } from "@/types/expense";
 import type { Expense } from "@/types/expense";
 
 declare global {
@@ -107,7 +108,7 @@ export async function fetchTripById(
             id: data.id,
             name: data.name,
             description: data.description ?? "",
-            members: Array.isArray(data.members) ? data.members : [],
+            members: (Array.isArray(data.members) ? data.members : []) as unknown as Member[],
             expenseIds: Array.isArray(data.expense_ids) ? data.expense_ids : [],
             startsOn: data.starts_on ?? undefined,
             endsOn: data.ends_on ?? undefined,
@@ -139,7 +140,7 @@ export async function insertTrip(trip: Trip): Promise<Trip> {
           .map((m) => m.walletAddress?.trim().toUpperCase())
           .filter(Boolean) as string[];
 
-        await client.from("trips").insert({
+        await (client.from("trips") as any).insert({
           id: trip.id,
           name: trip.name,
           description: trip.description || null,

@@ -96,7 +96,7 @@ describe("Travel Workspace Privacy, Chain Isolation, and Data Portability", () =
         id: "book-restricted",
         tripId: "trip-paris-2026",
         title: "Special Wine Tour",
-        bookingType: "activity",
+        bookingType: "other",
         confirmationCode: "WINE-VIP-777",
         permission: "permitted_members",
         permittedMemberIds: ["mem-bob"], // Only Bob is permitted

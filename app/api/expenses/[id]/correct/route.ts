@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyWalletSession } from "@/lib/supabase/serverAuth";
 import { createServerClientForToken, isServerSupabaseConfigured } from "@/lib/supabase/server";
-import { insertExpense, fetchExpenseById, addExpenseToTripRow } from "@/lib/supabase/queries";
+import { insertExpense, fetchExpenseById, addExpenseIdToTrip } from "@/lib/supabase/queries";
 import {
   canCorrectExpense,
   buildLinkedReversal,
@@ -97,7 +97,7 @@ export async function POST(
 
     if (tripId && typeof tripId === "string") {
       try {
-        await addExpenseToTripRow(tripId, saved.id, client);
+        await addExpenseIdToTrip(tripId, saved.id, client);
       } catch {
         // Linking failure non-fatal if already added
       }

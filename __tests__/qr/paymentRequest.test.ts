@@ -134,7 +134,7 @@ describe("SEP-0007 encodings", () => {
     // A signature over this transaction is only valid on the passphrase it was
     // built for: the same envelope hashes differently on Mainnet.
     const onMainnet = TransactionBuilder.fromXDR(q.get("xdr")!, Networks.PUBLIC) as Transaction;
-    expect(onMainnet.hash().equals(tx.hash())).toBe(false);
+    expect(Buffer.from(onMainnet.hash()).equals(Buffer.from(tx.hash()))).toBe(false);
   });
 
   it("requires the payer's account for a tx request", () => {

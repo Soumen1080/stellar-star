@@ -288,6 +288,24 @@ export function getAssetRegistry(net: StellarNetwork = defaultNetwork()): AssetD
  * Used as a map key and for equality. The issuer is always included for
  * non-native assets, so two different "USDC"s never collide.
  */
+/**
+ * Normalizes an asset string or AssetRef to its canonical asset key string.
+ */
+export function normalizeAssetKey(s?: string | AssetRef | null): string {
+  if (!s) return "native";
+  if (typeof s === "string") {
+    const trimmed = s.trim();
+    if (!trimmed || trimmed === "native" || trimmed.toUpperCase() === "XLM") return "native";
+    try {
+      const parsed = parseAssetKey(trimmed);
+      return assetKey(parsed);
+    } catch {
+      return trimmed;
+    }
+  }
+  return assetKey(s);
+}
+
 export function assetKey(ref: AssetRef): string {
   if (isNative(ref)) return NATIVE_ASSET_KEY;
   if (!ref.issuer) {

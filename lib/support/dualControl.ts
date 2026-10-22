@@ -110,14 +110,14 @@ export async function proposeCorrectiveAction(
   // Durable Supabase record
   if (client) {
     try {
-      await client.from("support_corrective_actions").insert({
+      await (client.from("support_corrective_actions") as any).insert({
         id: proposal.id,
         action_type: proposal.actionType,
         target_id: proposal.targetId,
         target_type: proposal.targetType,
         ticket_ref: proposal.ticketRef,
         reason: proposal.reason,
-        details: proposal.details,
+        details: proposal.details as any,
         proposed_by: proposal.proposedBy,
         proposed_at: proposal.proposedAt,
         status: proposal.status,
@@ -160,18 +160,18 @@ export async function approveCorrectiveAction(
       if (data) {
         proposal = {
           id: data.id,
-          actionType: data.action_type,
+          actionType: data.action_type as CorrectiveActionType,
           targetId: data.target_id,
-          targetType: data.target_type,
+          targetType: data.target_type as "expense" | "intent",
           ticketRef: data.ticket_ref,
           reason: data.reason,
-          details: data.details || {},
+          details: (data.details || {}) as Record<string, unknown>,
           proposedBy: data.proposed_by,
           proposedAt: data.proposed_at,
           approvedBy: data.approved_by,
           approvedAt: data.approved_at,
-          status: data.status,
-          executionResult: data.execution_result,
+          status: data.status as any,
+          executionResult: (data.execution_result as Record<string, unknown>) || undefined,
           expiresAt: new Date(new Date(data.proposed_at).getTime() + 86400000).toISOString(),
         };
       }
@@ -258,13 +258,12 @@ export async function approveCorrectiveAction(
 
   if (client) {
     try {
-      await client
-        .from("support_corrective_actions")
+      await (client.from("support_corrective_actions") as any)
         .update({
           status: proposal.status,
           approved_by: proposal.approvedBy,
           approved_at: proposal.approvedAt,
-          execution_result: proposal.executionResult,
+          execution_result: proposal.executionResult as any,
         })
         .eq("id", proposal.id);
     } catch {}
@@ -294,11 +293,9 @@ export async function rejectCorrectiveAction(
 
   if (client) {
     try {
-      await client
-        .from("support_corrective_actions")
-        .update({
+      await (client.from("support_corrective_actions") as any).update({
           status: "rejected",
-          execution_result: proposal.executionResult,
+          execution_result: proposal.executionResult as any,
         })
         .eq("id", proposal.id);
     } catch {}

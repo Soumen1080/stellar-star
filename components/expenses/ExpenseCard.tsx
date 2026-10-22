@@ -70,7 +70,7 @@ export function ExpenseCard({ expense, currentUserPublicKey, onDelete, tripId }:
     : undefined;
   const connectedShareAmount = connectedShare ? shareBalance(connectedShare).remaining : null;
   const readinessKey = `${currentUserPublicKey ?? ""}:${expense.id}:${settlementAssetOf(expense)}:${connectedShareAmount ?? ""}`;
-  const readinessChanged = useCallback((ready: boolean) => setWalletReady({ key: readinessKey, ready }), [readinessKey]);
+  // Readiness callback placeholder
 
   const handlePay = async (share: SplitShare, amount?: string) => {
     if (expense.voided) return;
@@ -334,7 +334,7 @@ interface ExpenseCardFooterProps {
   isSettledOrPaid: boolean;
   confirmDelete: boolean;
   canDelete: boolean;
-  canEdit: boolean;
+  canEdit?: boolean;
   showDeleteHint: boolean;
   onCancelDelete: () => void;
   onConfirmDelete: () => void;

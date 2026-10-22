@@ -1,4 +1,5 @@
 import type { Expense, Member, SplitMode } from "./expense";
+export type { Member } from "./expense";
 import type { TravelWorkspace } from "./workspace";
 export type { TripPermission, TripRole } from "./expense";
 

@@ -69,7 +69,7 @@ export function redactObject<T>(obj: T): T {
     for (const [key, val] of Object.entries(obj)) {
       const lowerKey = key.toLowerCase();
 
-      if (SENSITIVE_KEY_NAMES.has(lowerKey)) {
+      if (SENSITIVE_KEY_NAMES.has(lowerKey) || lowerKey.includes("secret") || lowerKey.includes("token") || lowerKey.includes("jwt") || lowerKey.includes("password")) {
         redacted[key] = "[REDACTED_SECRET]";
       } else if (typeof val === "string") {
         redacted[key] = redactSensitiveString(val);
@@ -107,7 +107,7 @@ export function maskQueryForAudit(query: string): string {
 
   // If 64-char transaction hash, keep prefix and suffix
   if (/^[0-9a-fA-F]{64}$/.test(trimmed)) {
-    return `${trimmed.slice(0, 8)}...${trimmed.slice(-6)}`;
+    return `${trimmed.slice(0, 8)}...${trimmed.slice(-5)}`;
   }
 
   // If longer than 40 chars, truncate for clean audit log
