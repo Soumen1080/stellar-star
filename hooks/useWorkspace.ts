@@ -7,8 +7,13 @@ import {
   normalizeWorkspace,
   type BookingReference,
   type ChecklistItem,
+  type ChoreCadence,
+  type RecurringChore,
   type ItineraryItem,
   type TravelWorkspace,
+  chorePeriodKey,
+  choreCompletedThisPeriod,
+  currentChoreAssignee,
 } from "@/types/workspace";
 import { useTrip } from "@/hooks/useTrip";
 import { useToast } from "@/components/ui/Toast";
@@ -193,6 +198,92 @@ export function useWorkspace(trip: Trip) {
     [workspace, saveWorkspace]
   );
 
+  // ─── Chore coordination (kept separate from expenses and settlement) ────────
+
+  const addChore = useCallback(
+    async (input: {
+      title: string;
+      cadence: ChoreCadence;
+      rotationMemberIds: string[];
+      linkedExpenseId?: string | null;
+    }) => {
+      if (!publicKey) throw new Error("Sign in with your wallet to add a chore.");
+      const chore: RecurringChore = {
+        ...input,
+        id: crypto.randomUUID ? crypto.randomUUID() : `chore-${Date.now()}`,
+        tripId: trip.id,
+        rotationMemberIds: [...new Set(input.rotationMemberIds)],
+        completionHistory: [],
+        createdByWallet: publicKey,
+        createdAt: new Date().toISOString(),
+      };
+      const next = { ...workspace, chores: [...workspace.chores, chore] };
+      await saveWorkspace(next);
+      toastSuccess("Recurring chore added", chore.title);
+      return chore;
+    },
+    [trip.id, workspace, saveWorkspace, publicKey, toastSuccess]
+  );
+
+  const completeChore = useCallback(
+    async (choreId: string) => {
+      if (!publicKey) throw new Error("Sign in with your wallet to complete a chore.");
+      if (workspace.choreOptOutWallets.includes(publicKey.toUpperCase())) {
+        throw new Error("Opt back in to chore coordination before completing chores.");
+      }
+      const chore = workspace.chores.find((item) => item.id === choreId);
+      if (!chore) throw new Error("This chore no longer exists.");
+      const periodKey = chorePeriodKey(chore.cadence);
+      if (choreCompletedThisPeriod(chore)) {
+        throw new Error("This chore is already marked complete for this period.");
+      }
+      const optedOutMemberIds = trip.members
+        .filter((member) =>
+          member.walletAddress &&
+          workspace.choreOptOutWallets.includes(member.walletAddress.trim().toUpperCase())
+        )
+        .map((member) => member.id);
+      const assignedMemberId = currentChoreAssignee(chore, optedOutMemberIds);
+      if (!assignedMemberId) throw new Error("Assign at least one member to this chore.");
+
+      const completion = {
+        completedAt: new Date().toISOString(),
+        completedByWallet: publicKey,
+        assignedMemberId,
+        periodKey,
+      };
+      await saveWorkspace({
+        ...workspace,
+        chores: workspace.chores.map((item) =>
+          item.id === choreId
+            ? { ...item, completionHistory: [...item.completionHistory, completion] }
+            : item
+        ),
+      });
+      toastSuccess("Chore completed", "This does not record or change a payment.");
+    },
+    [workspace, saveWorkspace, publicKey, toastSuccess, trip.members]
+  );
+
+  const toggleChoreOptOut = useCallback(async () => {
+    if (!publicKey) throw new Error("Sign in with your wallet to change this preference.");
+    const wallet = publicKey.toUpperCase();
+    const optedOut = workspace.choreOptOutWallets.includes(wallet);
+    await saveWorkspace({
+      ...workspace,
+      choreOptOutWallets: optedOut
+        ? workspace.choreOptOutWallets.filter((item) => item !== wallet)
+        : [...workspace.choreOptOutWallets, wallet],
+    });
+  }, [workspace, saveWorkspace, publicKey]);
+
+  const setChoresEnabled = useCallback(
+    async (enabled: boolean) => {
+      await saveWorkspace({ ...workspace, choresEnabled: enabled });
+    },
+    [workspace, saveWorkspace]
+  );
+
   // ─── Booking reference actions ────────────────────────────────────────────────
 
   const addBookingReference = useCallback(
@@ -258,6 +349,10 @@ export function useWorkspace(trip: Trip) {
     toggleChecklistItem,
     updateChecklistItem,
     deleteChecklistItem,
+    addChore,
+    completeChore,
+    toggleChoreOptOut,
+    setChoresEnabled,
     addBookingReference,
     updateBookingReference,
     deleteBookingReference,

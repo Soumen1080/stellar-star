@@ -54,6 +54,28 @@ export interface ChecklistItem {
   createdAt: string;
 }
 
+export type ChoreCadence = "daily" | "weekly" | "monthly";
+
+export interface ChoreCompletion {
+  completedAt: string;
+  completedByWallet: string;
+  assignedMemberId: string;
+  periodKey: string;
+}
+
+export interface RecurringChore {
+  id: string;
+  tripId: string;
+  title: string;
+  cadence: ChoreCadence;
+  rotationMemberIds: string[];
+  completionHistory: ChoreCompletion[];
+  /** Reference only; chore completion never creates or changes an expense. */
+  linkedExpenseId?: string | null;
+  createdByWallet: string;
+  createdAt: string;
+}
+
 export type BookingType = "flight" | "hotel" | "rental" | "train" | "ticket" | "other";
 
 export type BookingPermission = "all_members" | "creator_only" | "permitted_members";
@@ -92,6 +114,9 @@ export interface TravelWorkspace {
   itinerary: ItineraryItem[];
   checklists: ChecklistItem[];
   bookings: BookingReference[];
+  chores: RecurringChore[];
+  choreOptOutWallets: string[];
+  choresEnabled: boolean;
   updatedAt?: string;
 }
 
@@ -100,8 +125,38 @@ export function createEmptyWorkspace(): TravelWorkspace {
     itinerary: [],
     checklists: [],
     bookings: [],
+    chores: [],
+    choreOptOutWallets: [],
+    choresEnabled: true,
     updatedAt: new Date().toISOString(),
   };
+}
+
+function isChoreCompletion(value: unknown): value is ChoreCompletion {
+  if (!value || typeof value !== "object") return false;
+  const completion = value as Record<string, unknown>;
+  return typeof completion.completedAt === "string" &&
+    typeof completion.completedByWallet === "string" &&
+    typeof completion.assignedMemberId === "string" &&
+    typeof completion.periodKey === "string";
+}
+
+function isRecurringChore(value: unknown): value is RecurringChore {
+  if (!value || typeof value !== "object") return false;
+  const chore = value as Record<string, unknown>;
+  return typeof chore.id === "string" &&
+    typeof chore.tripId === "string" &&
+    typeof chore.title === "string" &&
+    typeof chore.createdByWallet === "string" &&
+    typeof chore.createdAt === "string" &&
+    ["daily", "weekly", "monthly"].includes(String(chore.cadence)) &&
+    Array.isArray(chore.rotationMemberIds) &&
+    chore.rotationMemberIds.every((memberId) => typeof memberId === "string") &&
+    Array.isArray(chore.completionHistory) &&
+    chore.completionHistory.every(isChoreCompletion) &&
+    (chore.linkedExpenseId === undefined ||
+      chore.linkedExpenseId === null ||
+      typeof chore.linkedExpenseId === "string");
 }
 
 export function normalizeWorkspace(raw: unknown): TravelWorkspace {
@@ -127,13 +182,51 @@ export function normalizeWorkspace(raw: unknown): TravelWorkspace {
         (item) => item && typeof item === "object" && typeof item.title === "string"
       )
     : [];
+  const chores = Array.isArray(obj.chores)
+    ? obj.chores.filter(isRecurringChore)
+    : [];
+  const choreOptOutWallets = Array.isArray(obj.choreOptOutWallets)
+    ? obj.choreOptOutWallets.filter((wallet): wallet is string => typeof wallet === "string")
+    : [];
 
   return {
     itinerary,
     checklists,
     bookings,
+    chores,
+    choreOptOutWallets,
+    choresEnabled: obj.choresEnabled !== false,
     updatedAt: typeof obj.updatedAt === "string" ? obj.updatedAt : new Date().toISOString(),
   };
+}
+
+export function chorePeriodKey(cadence: ChoreCadence, date = new Date()): string {
+  const day = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  if (cadence === "daily") return day.toISOString().slice(0, 10);
+  if (cadence === "monthly") return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
+
+  const weekday = day.getUTCDay() || 7;
+  day.setUTCDate(day.getUTCDate() - weekday + 1);
+  return day.toISOString().slice(0, 10);
+}
+
+export function currentChoreAssignee(
+  chore: RecurringChore,
+  excludedMemberIds: string[] = [],
+): string | null {
+  if (chore.rotationMemberIds.length === 0) return null;
+  const excluded = new Set(excludedMemberIds);
+  for (let offset = 0; offset < chore.rotationMemberIds.length; offset += 1) {
+    const index = (chore.completionHistory.length + offset) % chore.rotationMemberIds.length;
+    const memberId = chore.rotationMemberIds[index];
+    if (!excluded.has(memberId)) return memberId;
+  }
+  return null;
+}
+
+export function choreCompletedThisPeriod(chore: RecurringChore, date = new Date()): boolean {
+  const periodKey = chorePeriodKey(chore.cadence, date);
+  return chore.completionHistory.some((completion) => completion.periodKey === periodKey);
 }
 
 /**

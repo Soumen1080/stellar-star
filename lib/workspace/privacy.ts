@@ -24,7 +24,7 @@ import {
 export const TRAVEL_WORKSPACE_PRIVACY_POLICY = `Stellar Star Travel Workspace Privacy Policy:
 
 1. Zero On-Chain Leakage & Off-Chain Storage Isolation:
-All travel workspace content (dated itinerary items, collaborative checklists, packing lists, booking references, and file attachments) is stored solely in private workspace storage (Postgres with RLS and browser storage). It is NEVER submitted to the Stellar blockchain, Soroban smart contracts, Horizon transaction memos, or public attestations.
+All travel workspace content (dated itinerary items, collaborative checklists, packing lists, recurring chores and their completion history, booking references, and file attachments) is stored solely in private workspace storage (Postgres with RLS and browser storage). It is NEVER submitted to the Stellar blockchain, Soroban smart contracts, Horizon transaction memos, or public attestations. Chore completion is coordination metadata, not a payment, and cannot change balances.
 
 2. Permission-Controlled Booking Data:
 Booking confirmation numbers, tickets, private URLs, and notes can be permissioned to "all members", "trip creator only", or "specific permitted members". Unauthorized trip members cannot view or export restricted booking details.
@@ -45,6 +45,9 @@ export interface TravelExportPayload {
     itinerary: TravelWorkspace["itinerary"];
     checklists: TravelWorkspace["checklists"];
     bookings: BookingReference[];
+    chores: TravelWorkspace["chores"];
+    choreOptOutWallets: TravelWorkspace["choreOptOutWallets"];
+    choresEnabled: boolean;
   };
 }
 
@@ -94,6 +97,9 @@ export function buildTravelWorkspaceExport(
       itinerary: normalized.itinerary,
       checklists: normalized.checklists,
       bookings: safeBookings,
+      chores: normalized.chores,
+      choreOptOutWallets: normalized.choreOptOutWallets,
+      choresEnabled: normalized.choresEnabled,
     },
   };
 }

@@ -3,7 +3,7 @@
  */
 
 import React from "react";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { TravelWorkspacePanel } from "@/components/trips/workspace/TravelWorkspacePanel";
 import type { Trip } from "@/types/trip";
 import type { Expense } from "@/types/expense";
@@ -13,6 +13,10 @@ jest.mock("@/hooks/useTrip", () => ({
   useTrip: () => ({
     updateTrip: mockUpdateTrip,
   }),
+}));
+
+jest.mock("@/context/WalletContext", () => ({
+  useWalletContext: () => ({ publicKey: "GALICE111" }),
 }));
 
 const mockToastSuccess = jest.fn();
@@ -37,6 +41,21 @@ describe("TravelWorkspacePanel", () => {
     settled: false,
     createdByWallet: "GALICE111",
     workspace: {
+      chores: [
+        {
+          id: "chore-bins",
+          tripId: "trip-kyoto-1",
+          title: "Take out the bins",
+          cadence: "weekly",
+          rotationMemberIds: ["mem-1", "mem-2"],
+          completionHistory: [],
+          linkedExpenseId: "exp-shinkansen-1",
+          createdByWallet: "GALICE111",
+          createdAt: "2026-10-20T10:00:00Z",
+        },
+      ],
+      choreOptOutWallets: [],
+      choresEnabled: true,
       itinerary: [
         {
           id: "itin-1",
@@ -116,7 +135,8 @@ describe("TravelWorkspacePanel", () => {
     );
 
     expect(screen.getByText("Shared Travel Workspace")).toBeTruthy();
-    expect(screen.getByText("1")).toBeTruthy(); // 1 Itinerary event
+    const itineraryStat = screen.getByText("Itinerary Events").closest("div");
+    expect(itineraryStat?.textContent).toContain("1");
     expect(screen.getByText("Itinerary Events")).toBeTruthy();
     expect(screen.getByText("Bookings & Passes")).toBeTruthy();
   });
@@ -176,6 +196,29 @@ describe("TravelWorkspacePanel", () => {
     expect(screen.getByText("Alice Private Flight Ticket")).toBeTruthy();
     expect(screen.getByText(/Restricted Access:\s*Confirmation details are only visible to authorized members/i)).toBeTruthy();
     expect(screen.queryByText("SECRET-PNR-999")).toBeNull();
+  });
+
+  it("records chore completion as workspace history without updating financial fields", async () => {
+    render(
+      <TravelWorkspacePanel
+        trip={mockTrip}
+        expenses={mockExpenses}
+        currentUserPublicKey="GALICE111"
+      />
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Chores/i }));
+    expect(screen.getByText("Supply expense: Shinkansen Tickets")).toBeTruthy();
+    expect(screen.queryByText(/280\.0000000/)).toBeNull();
+
+    mockUpdateTrip.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Mark complete" }));
+    await waitFor(() => expect(screen.getByText("Done this period")).toBeTruthy());
+
+    const [tripId, patch] = mockUpdateTrip.mock.calls[0];
+    expect(tripId).toBe("trip-kyoto-1");
+    expect(Object.keys(patch)).toEqual(["workspace"]);
+    expect(patch.workspace.chores[0].completionHistory).toHaveLength(1);
+    expect(patch.workspace.chores[0].completionHistory[0].assignedMemberId).toBe("mem-1");
   });
 
   it("opens the Calendar Export modal when export button is clicked", () => {
