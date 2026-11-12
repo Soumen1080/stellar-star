@@ -97,7 +97,7 @@ export const EVENT_TAXONOMY: Record<AnalyticsEventName, TaxonomyEventDef> = {
     name: "expense_created",
     stage: "expense",
     description: "Emitted when an expense is split and saved.",
-    allowedProperties: ["split_mode", "currency", "member_count", "has_receipt"],
+    allowedProperties: ["split_mode", "currency", "member_count", "attachment_present"],
     strictlyForbidden: ["title", "description", "amount", "receipt_file", "ocr_data", "walletAddress"],
     rationale: "Measures bill-splitting completion and preferred split methods.",
   },
