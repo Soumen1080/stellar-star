@@ -1,1142 +1,210 @@
-# Stellar-star — sequenced product and engineering backlog
+# Stellar-star: 50 production-scale implementation issues
 
-**Purpose.** This is the proposed next-60-issues backlog for Stellar-star. It
-starts with the work needed before real-money use, then improves the current
-expense-sharing experience, and ends with optional product expansions. Issues
-are deliberately sequenced: a later item should not be started before its
-dependencies are complete.
+This replacement backlog contains exactly 50 independently deliverable, evidence-based changes for a million-user production service.
 
-**Conventions**
+## Shared definition of done
 
-- **Priority:** P0 blocks safe production use; P1 is a near-term product need;
-  P2 is a planned enhancement; P3 is an optional exploration.
-- **Size:** S (up to 2 days), M (3–5 days), L (1–2 weeks), XL (multi-sprint).
-- **Definition of done:** implementation, relevant unit/integration tests,
-  accessible UI where applicable, updated documentation, and no regression in
-  the existing payment path.
-- Existing capabilities are not duplicated here: wallet authentication,
-  invitations, equal/custom splits, real-time sync, path payments, and
-  attested on-chain settlement are already present.
+- Add focused unit/integration tests plus authorization and failure-path coverage.
+- Preserve decimal-string money values, RLS tenant isolation, and request-ID propagation.
+- Database work includes a uniquely named migration, index/RLS analysis, rollback notes, and a query-plan fixture.
+- Public errors use stable safe codes; detailed causes are only redacted telemetry.
 
----
+## 001 - Fail closed without durable rate limiting
 
-## Phase 1 — Production safety and operational foundations
+lib/auth/rateLimiter.ts falls back to an instance-local map if its RPC fails, multiplying limits across nodes. Production protected routes must return 503 if durable limiting is unavailable; memory mode is development/test only. Done: outage, local-dev, and metric-state tests pass.
 
-### 001 — Establish a mainnet go/no-go gate
+## 002 - Trust forwarded IPs only from ingress
 
-**Priority:** P0 · **Size:** M · **Depends on:** none
+lib/auth/rateLimiter.ts accepts forwarded IP headers from direct callers. Add an ingress-aware, IPv4/IPv6-normalizing resolver and migrate every rate-limited route. Done: spoofed headers do not alter direct request keys and deployment fixtures resolve expected client IPs.
 
-Create a single, auditable release gate for moving from testnet to public
-network. The current mainnet-readiness document identifies the risks, but the
-decision needs named owners, evidence links, and an explicit approval record.
+## 003 - Atomically claim idempotency keys
 
-**Acceptance criteria**
+lib/idempotency/store.ts reads then upserts, allowing concurrent duplicate mutations. Implement a transactional RPC returning claimed, replay, conflict, or locked and atomically complete responses. Done: parallel tests execute once, conflicts return 409, and lease expiry recovery is safe.
 
-- `docs/MAINNET_READINESS.md` has a dated checklist for security, finance,
-  support, contracts, monitoring, legal/privacy review, and rollback.
-- Each item has an owner, status, proof link, and an expiry/review date.
-- Production deployment is blocked in CI until required P0 checks pass.
-- The release runbook documents who can approve, pause, and roll back a
-  release.
+## 004 - Require idempotency keys for public mutations
 
-### 002 — Validate production configuration in CI and at startup
+The wrapper permits missing keys. Require validated Idempotency-Key headers for public POST/PATCH/DELETE money, invitation, receipt, recurring, and support actions; document cron exemptions. Done: missing/oversized keys return 400 and retry tests replay original responses.
 
-**Priority:** P0 · **Size:** M · **Depends on:** 001
+## 005 - Expire and redact idempotency response data
 
-Turn network configuration validation into a mandatory deployment control.
-The app already validates many client settings; this issue makes that check
-unavoidable before a public deployment.
+Completed idempotency JSON is unbounded and has no retention policy. Persist an allowlisted response summary/digest, cap size, add indexed TTL cleanup, and retain minimum audit facts. Done: oversized results are safe and replay works only within documented retention.
 
-**Acceptance criteria**
+## 006 - Secure and schedule reconciliation work
 
-- A CI command validates the selected network, Horizon, Soroban RPC, explorer,
-  contract IDs, asset issuer values, and public app URL without printing
-  secrets.
-- CI rejects testnet endpoints or placeholder contract IDs in a production
-  deployment.
-- Startup exposes a clear, non-sensitive diagnostic when configuration is
-  invalid and prevents payment actions.
-- Tests cover valid testnet, valid public network, and cross-network failures.
+app/api/settlement/reconciliation-worker/route.ts has no effective authorization and vercel.json does not schedule it. Require constant-time cron authentication or explicit staff access, cap batches, and schedule execution. Done: anonymous calls fail and runs record actor, duration, cap, and request ID.
 
-### 003 — Add durable error monitoring and payment-path alerts
+## 007 - Move reconciliation to a leased queue
 
-**Priority:** P0 · **Size:** M · **Depends on:** 001
+Reconciliation performs Horizon/RPC work inside HTTP and may time out or duplicate. Add SKIP LOCKED job claims, leases, heartbeats, backoff, and dead-letter handling. Done: duplicate workers cannot process a job, leases recover, and backlog throughput is load-tested.
 
-Structured client errors are currently routable to a server endpoint. Connect
-that seam to a durable monitoring provider and define alerting for failures
-that may leave a user uncertain whether funds moved.
+## 008 - Make large archive exports asynchronous
 
-**Acceptance criteria**
+app/api/exports/archive/route.ts fetches all trips/expenses and serializes in route memory. Use durable export jobs, paginated reads, compressed private artifacts, and expiring signed URLs. Done: million-row fixtures stay memory-bounded and artifacts are owner-scoped/audited.
 
-- Capture payment submission, attestation, contract-recording, and
-  reconciliation failures with a correlation ID and no secret/XDR payload.
-- Alert an on-call channel for repeated failures, a spike in partial success,
-  and unavailable critical services.
-- Provide a runbook for investigating an alert from correlation ID to Stellar
-  transaction and database record.
-- Add a test or smoke check that verifies the reporter receives a redacted
-  event.
+## 009 - Batch archive permission checks
 
-### 004 — Back up Supabase data and rehearse recovery
+The archive route checks hasTripPermission once per trip. Add an RLS-safe batch permission query/RPC. Done: query count is constant from 1 to 1,000 trips, unauthorized IDs remain non-disclosing 403s, and plans use indexes.
 
-**Priority:** P0 · **Size:** L · **Depends on:** 001
+## 010 - Enforce API request and response byte limits
 
-Expenses, memberships, invitations, session-related records, and settlement
-intent state need a recovery story even though transfers are independently
-verifiable on Stellar.
+Direct JSON/text parsing can consume memory before validation. Build shared media-type, declared-length, streamed-byte, schema validation with per-route caps. Done: oversized chunks return 413, wrong type returns 415, and fuzz tests cannot crash handlers.
 
-**Acceptance criteria**
+## 011 - Standardize authenticated route guards
 
-- Automated, encrypted database backups have documented retention and access
-  controls.
-- Migration files, storage policies, and environment configuration can rebuild
-  a clean staging environment.
-- A restore drill proves that a sampled trip, expense history, invitation, and
-  settlement intent recover correctly.
-- The runbook defines recovery point/time objectives and a customer-facing
-  incident communication template.
+Routes parse tokens and create Supabase clients independently. Build one guard that verifies wallet session, creates an RLS client, and adds actor/request context before data access. Done: protected routes use it and static checks prohibit service-role clients in user paths.
 
-### 005 — Commission a security review and resolve findings
+## 012 - Hide internal errors from API clients
 
-**Priority:** P0 · **Size:** XL · **Depends on:** 001–004
+Several catches return error.message. Map failures to stable public code/messages and log causes only with request ID. Done: injected database/provider errors disclose no internals and support can locate detailed redacted cause by ID.
 
-Perform an independent review of the Next.js API routes, Supabase RLS policies,
-wallet authentication, settlement oracle, Soroban contracts, and deployment
-configuration. This is not a substitute for automated tests.
+## 013 - Add database deadlines and query budgets
 
-**Acceptance criteria**
+Server calls lack consistent timeout, query count, and route budgets. Add deadline propagation, query tracing, and statement/lock/idle transaction timeouts. Done: stalled queries end predictably and dashboards show DB calls, latency, and errors per route.
 
-- Scope, threat model, reviewer, findings, severity, and remediation status
-  are recorded privately or in a suitably redacted security report.
-- P0/P1 findings are fixed and regression-tested before mainnet approval.
-- A responsible-disclosure policy and security contact are published.
-- Contract source, deployed WASM hash, and deployed contract IDs are verified
-  and recorded for release.
+## 014 - Make migration identity immutable
 
-### 006 — Define privacy, retention, and account-deletion behavior
+Duplicate migration prefixes such as 0005, 0007, and 0008 make order filename-dependent. Introduce immutable IDs, checksums, manifest, and DB ledger. Done: CI rejects duplicates/reordering/changes and fresh/upgraded schemas match.
 
-**Priority:** P0 · **Size:** L · **Depends on:** 001
+## 015 - Generate database types in CI
 
-Wallet addresses are public on-chain, while names, trip descriptions, receipts,
-and invitation data are application data. Users need an accurate explanation
-and a way to remove data that can legally and technically be removed.
+types/supabase can drift from SQL/RPC definitions. Generate it reproducibly from the migration schema and enforce a diff gate. Done: schema edits fail until types update and critical RPC boundaries are strongly typed.
 
-**Acceptance criteria**
+## 016 - Partition high-volume operational data
 
-- Publish a privacy notice that distinguishes immutable public-chain records
-  from mutable application data.
-- Define retention for accounts, audit logs, invitations, receipts, analytics,
-  and backups.
-- Implement an authenticated export/delete request flow; deletion removes or
-  anonymizes off-chain personal data without pretending chain records vanish.
-- Verify that deleted accounts cannot access data through stale sessions,
-  realtime subscriptions, or storage URLs.
+Audit, events, notifications, and jobs will grow indefinitely. Partition time-series tables by month, add retention/archive rules and partition-aware indexes. Done: plans prune partitions, cleanup is efficient, and scale fixtures meet latency budget.
 
-### 007 — Strengthen authorization tests for every data boundary
+## 017 - Add a transactional outbox
 
-**Priority:** P0 · **Size:** L · **Depends on:** 004
+State commits can succeed while reminders/webhooks/analytics fail. Persist outbox rows in the same transaction and dispatch them through leased retrying workers. Done: post-commit failures are replayed, events have trace IDs, and dedupe semantics are tested.
 
-Make trip and expense authorization provable at the database and API layers,
-not just in UI guards. In particular, test creator, member, invitee, revoked
-member, and unrelated-wallet scenarios.
+## 018 - Add Stellar circuit breakers and bulkheads
 
-**Acceptance criteria**
+Horizon/Soroban faults can consume all capacity through retries. Add timeouts, bounded jitter, provider breakers, and separated concurrency pools. Done: fault tests open/recover breakers and one dependency cannot starve unrelated requests.
 
-- Maintain an authorization matrix covering read, create, edit, delete,
-  invite, claim, and settlement-intent actions.
-- Add automated Supabase/RLS and route tests for both allowed and denied cases.
-- Realtime subscriptions only expose rows visible to the authenticated wallet.
-- All privileged service-role use is server-only and documented.
+## 019 - Cache immutable chain metadata safely
 
-### 008 — Introduce idempotency keys for money-adjacent mutations
+Repeated asset, trustline, and contract reads load providers. Add bounded distributed cache with network-scoped keys, safe TTL/stale refresh, negative caching, and invalidation. Done: upstream calls fall, changed state is not wrongly stale, and data cannot cross tenants.
 
-**Priority:** P0 · **Size:** L · **Depends on:** 007
+## 020 - Add provider health routing
 
-Networks retry. A repeated click, browser reload, or API retry must not create
-duplicate invitations, expenses, settlement intents, or notifications.
+Single Stellar, FX, OCR, and notification endpoints create vendor outages. Use health-checked provider interfaces with priority/fallback rules and consistency contracts. Done: failure fixtures select compatible fallback without duplicated payments; dashboards/runbooks support disablement.
 
-**Acceptance criteria**
+## 021 - Deduplicate realtime subscriptions
 
-- Mutating API routes accept an idempotency key tied to the authenticated
-  wallet and request fingerprint.
-- A duplicate request returns the first successful result rather than creating
-  new records.
-- Conflicting reuse of a key is rejected with a useful error.
-- Database uniqueness constraints and tests cover concurrent duplicates.
+lib/supabase/useRealtimeCollection.ts can create duplicate channels. Centralize channels by wallet/trip, ref-count consumers, narrow filters, jitter reconnect, and tear down reliably. Done: navigation cannot increase live channels and telemetry reports channel/event rates.
 
-### 009 — Build an automated on-chain reconciliation worker
+## 022 - Use keyset cursors for all large lists
 
-**Priority:** P0 · **Size:** XL · **Depends on:** 003, 008
+Whole-collection and offset paths do not scale. Standardize opaque created-at plus ID cursors, finite limits, stable ordering, and incremental UI. Done: concurrent inserts do not duplicate/skip records and composite index plans are verified.
 
-Move reconciliation beyond a user’s open browser tab. A server-side worker
-should verify pending payments and resolve the states “not submitted,”
-“submitted but not confirmed,” “confirmed but not recorded,” and “recorded.”
+## 023 - Build indexed bounded expense search
 
-**Acceptance criteria**
+History filtering needs full-text indexing and query controls. Add normalized search documents, RLS-scoped text indexes, ranking, minimum-query rules, and cursor paging. Done: million-row tests meet latency and pathological inputs cannot force scans.
 
-- A durable queue or scheduled worker polls only the required accounts and
-  transaction hashes with backoff and rate limits.
-- It verifies destination, asset, amount, memo/intent, and ledger result before
-  changing settlement state.
-- It never marks an ambiguous payment paid; ambiguous records are escalated for
-  review.
-- Operators have a dashboard or queryable report of pending and failed
-  reconciliations, with alert thresholds.
+## 024 - Quarantine and scan receipt uploads
 
-### 010 — Create an incident-response and support console
+Client metadata must not decide readable receipt content. Use short-lived upload intents, streamed limits, magic-byte validation, malware scan, quarantine, and atomic promote. Done: spoofed, oversized, or infected files are unavailable and abandoned uploads clean up.
 
-**Priority:** P1 · **Size:** L · **Depends on:** 003, 009
+## 025 - Move OCR to quota-controlled workers
 
-When a payment fails or is delayed, support needs one read-only view of the
-expense, settlement intent, transaction hash, contract event, and timeline.
+OCR is CPU-heavy and should not block requests. Queue clean uploads, enforce per-user/trip quotas, isolate CPU/time, persist confidence/provenance, and require review before financial writes. Done: upload latency stays low and OCR load cannot starve APIs.
 
-**Acceptance criteria**
+## 026 - Encrypt private objects with key rotation
 
-- Authorized staff can search by transaction hash, wallet, trip ID, expense ID,
-  or correlation ID.
-- The console shows a redacted timeline and links to the correct network
-  explorer without exposing secrets or editing financial state by default.
-- Every staff lookup is audit logged.
-- A documented, dual-control procedure exists for exceptional corrective
-  actions.
+Receipt/export bucket privacy is not sufficient key policy. Enable managed encryption, object access logs, rotation, and crypto-erasure/deletion procedures. Done: staging rotation succeeds, unauthorized metadata/object reads fail, and logs correlate request IDs.
 
----
+## 027 - Define a versioned event envelope
 
-## Phase 2 — Complete the expense-sharing experience
+Realtime, webhooks, analytics, and activity have no shared compatibility contract. Define event ID/type/time/actor/aggregate/causation/payload-version schemas and validate both ends. Done: incompatible changes fail CI and consumers safely ignore unknown fields.
 
-### 011 — Add safe expense editing with version conflict resolution
+## 028 - Create tamper-evident privileged audits
 
-**Priority:** P1 · **Size:** L · **Depends on:** 007, 008
+Support, role, export, and admin actions have scattered audit evidence. Append actor, decision, target, request ID, and chained hash entries; restrict mutation and anchor digests. Done: tampering is detectable and privileged routes are covered.
 
-Users need to correct titles, amounts, payer, members, and split values before
-settlement. Existing version/conflict infrastructure should become a visible,
-safe workflow rather than silently overwriting another member’s changes.
+## 029 - Generate authorization contract tests
 
-**Acceptance criteria**
+New API routes can omit access control tests. Maintain public/wallet/staff/cron route metadata and generate anonymous, wrong-wallet, expired, and authorized cases. Done: CI rejects unclassified routes and all protected endpoints pass their matrix.
 
-- Only authorized trip members can edit an unsettled expense.
-- The editor displays the latest version and offers a clear reload/merge choice
-  when a concurrent change is detected.
-- Editing recomputes shares using exact money arithmetic and blocks an invalid
-  total.
-- Settled or partially settled amounts cannot be changed in place; see issue
-  012 for the corrective flow.
+## 030 - Tighten the Content Security Policy
 
-### 012 — Add reversals and corrections instead of destructive edits
+next.config.mjs globally allows unsafe inline/eval scripts. Use nonce/hash policy, remove unsafe eval in production, minimize origins, and report violations through a protected endpoint. Done: core wallet/OCR/QR flows work under scanner-approved CSP.
 
-**Priority:** P1 · **Size:** L · **Depends on:** 011
+## 031 - Make wallet challenges durable and one-time
 
-Financial history should remain understandable after a mistake. Replace the
-temptation to mutate or delete settled data with linked correction records.
+Login challenge usage needs cross-instance replay protection. Persist hashed ID, wallet, origin, network, expiry, consumed timestamp and atomically consume it. Done: parallel verification works once and cross-origin/network/expired cases fail.
 
-**Acceptance criteria**
+## 032 - Rotate JWT signing keys with key IDs
 
-- A user can void an unsettled expense with an audit reason.
-- A settled expense can be corrected only through a linked adjustment/offset
-  that preserves the original amount and on-chain proof.
-- Trip and settlement views show the effective balance and a readable history.
-- Permission, arithmetic, and repeated-correction edge cases are tested.
+Static secret fallback prevents clean rotation. Support kid-selected active/previous keys, JWKS or approved verifier source, and overlap policy. Done: old/new tokens validate only during overlap, retired/unknown keys fail closed, and secrets never reach clients.
 
-### 013 — Add categories, tags, search, and filterable history
+## 033 - Separate public and server environment config
 
-**Priority:** P1 · **Size:** M · **Depends on:** 011
+Browser-prefixed values are bundled; modules mix public and secret config assumptions. Add typed publicEnv/serverEnv allowlists, startup checks, and bundle secret scans. Done: client code cannot import server settings and invalid production config stops safely.
 
-As a trip grows, a chronological list becomes hard to use. Add lightweight
-organization without changing the financial model.
+## 034 - Test RLS against real Postgres
 
-**Acceptance criteria**
+Application checks cannot replace database tenant boundaries. Test every table/view/function with two wallet claim sets; assert forced RLS and grant safety. Done: cross-wallet read/write/execute fails in DB tests and new tables require policy tests.
 
-- Expenses support a category and zero or more normalized tags.
-- History is searchable by title, description, member, tag, and transaction
-  hash, and filterable by date, category, payer, settlement state, and asset.
-- Filtering is server-side/paginated for large trips and preserves URL state.
-- Keyboard and screen-reader users can operate all search/filter controls.
+## 035 - Add tenant quotas and backpressure
 
-### 014 — Support receipt attachments with secure storage
+One tenant can monopolize storage, queues, realtime, or providers. Atomically meter objects, bytes, jobs, event rate, and API requests with safe limit responses. Done: concurrency tests never exceed quota and no tenant can inspect another's usage.
 
-**Priority:** P1 · **Size:** L · **Depends on:** 006, 007
+## 036 - Protect hot trips from contention
 
-Let a payer attach a bill, invoice, or receipt to an expense while keeping
-private files out of the public repository and public blockchain.
+Popular groups concentrate writes/subscriptions on small keys. Measure contention; apply optimistic versions or narrow locks, event coalescing, and per-aggregate backpressure. Done: p99 hot-aggregate writes meet SLO and stale versions give clear UX.
 
-**Acceptance criteria**
+## 037 - Add performance load and soak gates
 
-- Upload accepts an allowlisted file type, enforces size limits, and scans or
-  quarantines unsafe content according to the chosen provider.
-- Files are stored privately and accessed by short-lived signed URLs only after
-  membership authorization.
-- Metadata includes uploader, timestamp, checksum, and optional caption; it is
-  removable under the retention policy.
-- Mobile upload, access denial, and expired-link cases are tested.
+Current tests do not prove concurrent million-user behavior. Add reproducible login/read/write/export/settlement/reconnect scenarios with budgets. Done: CI runs smoke load, scheduled environments run peak/soak, and p50/p95/p99/errors/saturation gate regressions.
 
-### 015 — Add recurring expenses and scheduled drafts
+## 038 - Instrument OpenTelemetry end-to-end
 
-**Priority:** P1 · **Size:** L · **Depends on:** 008, 011
+Request IDs alone cannot show UI-to-worker causality. Add W3C context, redacted spans, sampling, and outbox propagation across browser/API/DB/Stellar/workers. Done: export/settlement traces are inspectable without exposing JWT, XDR, or receipt data.
 
-Rent, utilities, and subscriptions repeat. Create recurring templates that
-generate reviewable drafts, never unexpected blockchain transactions.
+## 039 - Define SLOs and error-budget alerts
 
-**Acceptance criteria**
+Alerts lack measurable service objectives. Set SLOs for auth, reads, writes, payment submit, worker lag, realtime; create burn-rate alerts and degradation playbooks. Done: dashboards show demand/saturation/dependency health and game-day response is exercised.
 
-- A template defines cadence, start/end dates, members, split, amount rule,
-  category, and reminder preference.
-- A scheduled job creates one idempotent draft per occurrence and records its
-  source template.
-- Users can pause, resume, skip, and edit future occurrences without changing
-  history.
-- Generated expenses require normal review/save; no wallet signature is
-  requested automatically.
+## 040 - Add audited server-evaluated feature flags
 
-### 016 — Add trip budgets and spending alerts
+Rollouts currently expose behavior to everyone. Create typed default-off flags with tenant/percentage targeting, cache safety, owner/expiry, audits, and kill switch. Done: rollout/backout needs no deploy and client edits cannot bypass authorization flags.
 
-**Priority:** P1 · **Size:** M · **Depends on:** 013, 015
+## 041 - Make cron jobs idempotent and overlap-safe
 
-Give groups a way to set a total and per-category budget, then see spending
-against it in the chosen display currency.
+Recurring, reminder, and retention HTTP jobs can overlap/retry/skip. Add durable run records, leases, unique schedule windows, cursors, metrics, and privileged replay. Done: duplicates create no duplicate effects and missed windows are detected.
 
-**Acceptance criteria**
+## 042 - Harden webhook delivery
 
-- A trip supports an optional budget, category caps, currency, and alert
-  thresholds.
-- The dashboard reports committed, pending, and remaining spend without mixing
-  settlement assets incorrectly.
-- Alerts fire once per threshold crossing and can be muted per member.
-- The UI explains when FX conversion makes totals approximate.
+Webhook recipients need signed durable delivery and abuse controls. Dispatch from outbox, sign timestamped canonical payloads, retry with jitter, disable persistent failures, and expose redacted diagnostics. Done: event IDs are idempotent and timeout/429/5xx cannot cause unbounded work.
 
-### 017 — Create trip templates and duplicate-from-history
+## 043 - Enforce developer API compatibility
 
-**Priority:** P2 · **Size:** M · **Depends on:** 015
+A v1 prefix does not prevent accidental contract breaks. Publish lifecycle/deprecation policy, OpenAPI diff checks, sunset headers, and fixtures. Done: CI flags breaks and every endpoint declares auth, paging, errors, idempotency, and limits.
 
-Repeated groups—flatmates, teams, annual trips—should not require recreating
-members, rules, and common expenses from scratch.
+## 044 - Delete account data everywhere
 
-**Acceptance criteria**
+Account deletion must cover queues, objects, indexes, and logs, not only tables. Add a state machine to revoke sessions, cancel jobs, erase objects, anonymize lawful logs, and honor legal holds. Done: staging proves data absence after retention while keeping minimal legal evidence.
 
-- Users can save a trip structure as a reusable template without copying past
-  balances or historic payments.
-- New trips can start from a template or an existing trip, with a preview of
-  what will be copied.
-- Names, dates, members, recurring rules, and permissions are editable before
-  creation.
-- Copy operations are idempotent and audited.
+## 045 - Enforce immutable financial transitions
 
-### 018 — Build a reusable contacts and member-profile layer
+Expenses, shares, settlements, corrections, and disputes need one authoritative transition model. Add database state constraints/RPCs, append-only events, and conservation invariants. Done: API/direct RLS invalid transitions fail and property tests cover concurrent finance races.
 
-**Priority:** P2 · **Size:** L · **Depends on:** 006, 007
+## 046 - Drill database, storage, and queue recovery
 
-Avoid repeatedly entering names and wallet addresses while respecting the fact
-that a wallet can change and some members may not yet have a wallet.
+Backup code needs evidence of full recovery. Automate encrypted verification, point-in-time DB restore, object inventory restore, and outbox recovery in isolation. Done: drill measures RPO/RTO and sampled trips, receipts, audits, and jobs reconcile.
 
-**Acceptance criteria**
+## 047 - Add supply-chain provenance
 
-- Users can maintain private contacts with a display name, optional verified
-  wallet, and optional invite destination.
-- A wallet owner can prove and claim their profile; unverified names never
-  imply ownership of a wallet.
-- Address changes retain historic payment attribution and notify affected
-  active groups before use.
-- Duplicate detection is based on canonical wallet address, not display name.
+Financial releases require build-input evidence and dependency controls. Generate SBOMs and signed provenance, enforce locks, scan dependencies/secrets, and automate reviewed updates. Done: artifacts are retrievable, critical findings gate releases, and updates run compatibility scans.
 
-### 019 — Improve multi-currency entry and FX provenance
+## 048 - Govern Soroban releases
 
-**Priority:** P1 · **Size:** L · **Depends on:** 016
+Contract changes can break settlement assumptions. Version interface/storage, require multisig/timelock approval, simulate upgrade/revert, and verify deployed WASM/contract IDs against release metadata. Done: breaking ABI/storage needs migration and mismatches block unsafe payments.
 
-The app records a quote when a fiat value is converted, but users need to see
-and control that choice. Make display currency, locked quote, and settlement
-asset explicit at expense creation and review.
+## 049 - Establish incident command
 
-**Acceptance criteria**
+Production incidents need authority and communications. Define severity, roles, customer templates, evidence handling, status updates, and postmortems in docs/RUNBOOK.md. Done: tabletops cover payment uncertainty/data exposure and alerts link tested runbooks.
 
-- The form clearly distinguishes entered currency, quote source/time, converted
-  settlement amount, and Stellar settlement asset.
-- Users can refresh a quote before saving; once saved, the original quote is
-  immutable and visible in the expense history.
-- Degraded/expired quote states block accidental conversion but still permit
-  direct settlement-asset entry.
-- Tests cover rounding, stale quotes, provider disagreement, and no conversion
-  for native asset input.
+## 050 - Gate release with a readiness scorecard
 
-### 020 — Deliver CSV/PDF export and a portable trip archive
-
-**Priority:** P1 · **Size:** M · **Depends on:** 006, 012, 013
-
-Users should be able to take their records with them for reimbursement,
-accounting, or personal records.
-
-**Acceptance criteria**
-
-- CSV export includes expenses, shares, adjustments, categories, exchange-rate
-  provenance, settlement asset, and transaction hash.
-- A print-friendly PDF summary includes balances, receipts links when allowed,
-  and explorer links.
-- An archive export is scoped to the requesting user’s authorized trips and is
-  rate-limited/audited.
-- Amounts preserve precision and never coerce into floating-point notation.
-
----
-
-## Phase 3 — Settlement, wallets, and blockchain capabilities
-
-### 021 — Support partial and installment payments per share
-
-**Priority:** P1 · **Size:** XL · **Depends on:** 008, 009, 012
-
-One payment per share is too rigid for real groups. Allow a member to settle a
-share over multiple on-chain payments while preserving exact remaining balance.
-
-**Acceptance criteria**
-
-- Shares have `owed`, `paid`, and `remaining` amounts in integer stroops/base
-  units; an overpayment is rejected or requires an explicit credit flow.
-- Each installment is independently verified and linked to its transaction and
-  attestation.
-- Net settlement never counts partial amounts as fully settled.
-- Concurrent installment attempts and retry-after-submit behavior are covered
-  by integration tests.
-
-### 022 — Add reminder and payment-request delivery
-
-**Priority:** P1 · **Size:** L · **Depends on:** 015, 021
-
-Let a payer politely request a due amount through an in-app notification and
-an opted-in external channel without leaking a trip’s details in a public URL.
-
-**Acceptance criteria**
-
-- Members can receive in-app reminders; email/push is opt-in and rate-limited.
-- A payment request deep link identifies the recipient and requested share but
-  requires authentication before showing private context.
-- Reminder history records sender, time, state, and unsubscribe/mute choices.
-- No reminder sends automatically without a user-configured schedule or action.
-
-### 023 — Add QR and link payment requests for outstanding balances
-
-**Priority:** P1 · **Size:** M · **Depends on:** 021, 022
-
-Extend the existing SEP-0007 QR capability to generate a clear payment request
-for a particular outstanding share or net settlement.
-
-**Acceptance criteria**
-
-- The QR/link includes destination, canonical asset, exact amount, safe memo or
-  intent reference, expiry, and network context.
-- The recipient sees a human-readable preview before their wallet signs.
-- Expired, already-paid, and mismatched-network requests cannot be submitted.
-- The request works with supported wallets and has a copyable fallback URI.
-
-### 024 — Introduce settlement proposals and member confirmation
-
-**Priority:** P2 · **Size:** L · **Depends on:** 021
-
-For larger groups, present a frozen “proposed settlement” snapshot before
-payments begin, so members agree which expenses and balances are included.
-
-**Acceptance criteria**
-
-- A proposal captures included expense versions, balances, asset(s), creator,
-  expiry, and a deterministic content hash.
-- Members can approve, reject with a reason, or request an edit; approval is
-  invalidated by a material change.
-- Paying from a proposal shows the snapshot reference in the UI and memo where
-  feasible.
-- Expired/revoked proposals cannot authorize a new payment.
-
-### 025 — Add a dispute workflow with evidence and pause controls
-
-**Priority:** P1 · **Size:** XL · **Depends on:** 012, 014, 024
-
-Disagreement is a product state, not merely a support ticket. Give members a
-non-custodial way to flag an item, attach evidence, and prevent accidental
-inclusion in a fresh settlement proposal.
-
-**Acceptance criteria**
-
-- A member can open a dispute against an authorized expense/share with a
-  category, comment, and permitted evidence.
-- Disputed amounts are visibly excluded or flagged in settlement calculations;
-  previously confirmed on-chain payments remain factual and immutable.
-- Resolution requires recorded action/reason and restores eligibility only when
-  appropriate.
-- Abuse controls, privacy controls, and notification rules are documented.
-
-### 026 — Provide wallet capability detection and safer fallback UX
-
-**Priority:** P1 · **Size:** M · **Depends on:** 002
-
-Wallet extensions differ in supported networks, signing APIs, QR handling, and
-path-payment behavior. Detect capability before a user reaches a failing
-signature dialog.
-
-**Acceptance criteria**
-
-- The connection screen shows supported wallets and the capabilities detected
-  for the selected network.
-- Unsupported actions offer a compatible wallet, QR/deep-link, or copy-XDR
-  fallback rather than a generic failure.
-- The app rechecks network and active address immediately before signing.
-- A test matrix covers each supported wallet adapter and no-wallet mode.
-
-### 027 — Finish multi-asset settlement-contract support
-
-**Priority:** P1 · **Size:** XL · **Depends on:** 005, 009, 021
-
-The pool is asset-aware, while the settlement contract still pins one
-settlement asset. Extend the attestation and contract model only after a
-security review and migration plan, so an expense can settle safely in approved
-assets.
-
-**Acceptance criteria**
-
-- The contract cryptographically binds the canonical asset (code and issuer or
-  native) to every claim and prevents cross-asset withdrawal.
-- Asset allowlists, issuer verification, decimal precision, and trustline
-  prerequisites are enforced end-to-end.
-- Existing records remain readable and migration/redeployment is documented.
-- Contract, oracle, UI, and reconciliation tests include same-expense,
-  multi-asset and malicious-issuer cases.
-
-### 028 — Add a balance, trustline, and asset-readiness screen
-
-**Priority:** P1 · **Size:** M · **Depends on:** 026, 027
-
-Before a member tries to pay, show whether their selected wallet has the
-required balance, trustline, authorization, reserve, and supported asset.
-
-**Acceptance criteria**
-
-- The screen reports spendable balance, required amount plus fee estimate,
-  trustline state, and issuer authorization in plain language.
-- Users can build and sign an explicit trustline transaction where supported;
-  nothing is created silently.
-- The flow surfaces sponsored-account reserve constraints and network mismatch.
-- Errors map to actionable remediation, not raw Horizon/Soroban messages.
-
-### 029 — Harden path-payment quotes and price-impact disclosure
-
-**Priority:** P1 · **Size:** L · **Depends on:** 019, 026
-
-Path payments are valuable, but users need a clearer basis for conversion cost
-and expiry than a single route comparison.
-
-**Acceptance criteria**
-
-- Show source amount, destination amount, route, network fee, quote expiry,
-  slippage limit, and an independent reference-rate comparison when available.
-- Require explicit confirmation when price impact exceeds a configurable
-  threshold or reference data is unavailable.
-- Re-quote immediately before signing if the original quote is stale.
-- Record quote metadata with the intent for support/reconciliation; never
-  misrepresent an estimate as a guaranteed price.
-
-### 030 — Replace the single settlement oracle key with threshold control
-
-**Priority:** P1 · **Size:** XL · **Depends on:** 005, 027
-
-The current attestation model intentionally leaves one oracle key as a trust
-concentration. Design and implement an M-of-N attestation scheme with safe key
-rotation and failure handling.
-
-**Acceptance criteria**
-
-- Contract verification accepts a quorum of distinct valid signatures over the
-  complete, domain-separated claim.
-- Signers use independent custody/availability domains; no client receives a
-  signing secret.
-- Add/remove/rotate signer changes use a documented governance and recovery
-  procedure with overlap between old and new quorums.
-- Tests cover duplicate signers, insufficient quorum, expired signatures,
-  replay, compromised-key removal, and signer outage.
-
----
-
-## Phase 4 — Quality, accessibility, and platform scale
-
-### 031 — Turn Stellar-star into an installable offline-aware PWA
-
-**Priority:** P2 · **Size:** L · **Depends on:** 008, 009
-
-Members often add expenses while travelling with poor connectivity. Support
-safe offline viewing and queued non-financial drafts while preserving online
-verification for money movement.
-
-**Acceptance criteria**
-
-- The app is installable and has an offline shell with a clear last-synced
-  indicator.
-- Read-only cached data is scoped to the authenticated wallet and is cleared on
-  sign-out/wallet switch.
-- Expense drafts can queue with idempotency keys and display conflict status on
-  reconnect.
-- Signing, payment submission, and authoritative settlement recording remain
-  online-only and say so clearly.
-
-### 032 — Reach WCAG 2.2 AA for core flows
-
-**Priority:** P1 · **Size:** L · **Depends on:** 011, 023
-
-Make wallet connection, authentication, trip creation, expense entry, payment,
-and error recovery usable with keyboard, screen reader, zoom, and reduced
-motion settings.
-
-**Acceptance criteria**
-
-- Complete an automated audit plus manual keyboard and screen-reader testing
-  for each core flow.
-- Fix focus management in modals, semantic labels/error messages, contrast,
-  target size, live status updates, and reduced-motion behavior.
-- Add accessibility tests for the highest-risk reusable components.
-- Publish an accessibility statement and a feedback contact.
-
-### 033 — Add internationalization and locale-aware amounts/dates
-
-**Priority:** P2 · **Size:** L · **Depends on:** 019, 032
-
-Support more users without changing the canonical on-chain values. Translation
-and localized display must never alter the stored decimal representation.
-
-**Acceptance criteria**
-
-- UI copy is externalized and supports an initial set of locales selected by
-  user preference.
-- Dates, numeral grouping, and display currency use locale formatting, while
-  calculation/storage remains exact and locale-independent.
-- Input parsing clearly handles decimal separators and prevents ambiguous
-  amounts.
-- Pseudo-localization and RTL readiness are checked before adding more locales.
-
-### 034 — Establish product analytics with explicit consent
-
-**Priority:** P2 · **Size:** M · **Depends on:** 006, 032
-
-Measure activation and friction without turning payment data into surveillance.
-Analytics should help prioritize work such as wallet support and onboarding
-failures while collecting the minimum necessary data.
-
-**Acceptance criteria**
-
-- Define a public event taxonomy for non-sensitive funnel events and a
-  consent/opt-out experience appropriate to the deployment region.
-- Never send wallet addresses, transaction XDR, receipt contents, or free-text
-  descriptions to analytics by default.
-- Product dashboards show aggregate activation, completion, and failure rates.
-- Event payloads are reviewed, versioned, and tested for redaction.
-
-### 035 — Publish a versioned developer API and webhook framework
-
-**Priority:** P2 · **Size:** XL · **Depends on:** 007–010, 020
-
-Allow trusted integrations—accounting tools, event organizers, or internal
-systems—to consume permitted trip data and settlement events safely.
-
-**Acceptance criteria**
-
-- A versioned, documented API uses scoped tokens or signed OAuth-style grants,
-  never a raw Supabase service key.
-- API resources enforce the same authorization rules as the app and have
-  pagination, rate limits, idempotency, and audit logs.
-- Webhooks use signed payloads, retries, replay protection, delivery logs, and
-  a test endpoint.
-- A stable OpenAPI specification and sandbox examples are published.
-
----
-
-## Phase 5 — Optional product expansions
-
-These are deliberately separated from the core backlog. Validate user demand,
-compliance impact, and operating cost before committing roadmap capacity.
-
-### 036 — Receipt capture with OCR-assisted draft creation
-
-**Priority:** P3 · **Size:** L · **Depends on:** 014, 019, 032
-
-Offer a mobile camera flow that extracts merchant, date, total, currency, and
-line items into an editable draft. OCR is assistance only, never accounting
-truth.
-
-**Acceptance criteria**
-
-- The user explicitly selects/captures a receipt and reviews every extracted
-  field before an expense is created.
-- The original receipt follows issue 014’s storage and retention rules.
-- Low-confidence fields are clearly marked; no total is inferred silently.
-- OCR provider, regions, cost limits, and data-processing terms are reviewed
-  before launch.
-
-### 037 — Create a travel workspace around a trip
-
-**Priority:** P3 · **Size:** L · **Depends on:** 017, 020
-
-Expand a trip from a ledger into a lightweight shared travel workspace with an
-itinerary, packing list, and booking references. Keep private booking details
-out of public chain metadata.
-
-**Acceptance criteria**
-
-- A trip can contain dated itinerary items, collaborative checklists, optional
-  reminders, and permission-controlled booking links/files.
-- Items can link to related expenses without copying financial data.
-- Calendar export uses a standard format and respects each member’s timezone.
-- Members can export or delete travel-only content under the privacy policy.
-
-### 038 — Add shared subscription management
-
-**Priority:** P3 · **Size:** L · **Depends on:** 015, 021, 022
-
-Make recurring services (streaming, utilities, software) first-class: track
-renewal dates, allocation changes, price increases, and reminders while leaving
-merchant billing outside the app.
-
-**Acceptance criteria**
-
-- A subscription records provider, renewal cadence/date, owner, share rule,
-  expected amount/currency, and cancellation/contact notes.
-- It can create a reviewable recurring expense draft and notify members before
-  renewal.
-- Users can record a price change and preserve historical amounts.
-- The app never stores merchant credentials or attempts to charge a card/bank
-  account.
-
-### 039 — Explore a shared household coordination module
-
-**Priority:** P3 · **Size:** M · **Depends on:** 017, 018, 032
-
-For flatmates, value often includes chores and shared supplies as well as
-settlement. Test whether lightweight coordination improves retention without
-forcing it into the finance model.
-
-**Acceptance criteria**
-
-- A research prototype supports recurring chores, rotation, completion history,
-  and optional links to supply expenses.
-- Chore completion is not treated as a financial payment and cannot modify
-  balances.
-- Members can opt out; trip owners can disable the module completely.
-- Pilot feedback defines success metrics before a general release.
-
-**Prototype status:** Implemented as an owner-enabled, trip-scoped research
-prototype. The success thresholds and pilot feedback plan are recorded in
-`docs/PILOT_FEEDBACK_METRICS.md`; no pilot outcomes are claimed. General release
-remains gated on collecting and reviewing pilot results.
-
-### 040 — Explore community funds and milestone-based spending
-
-**Priority:** P3 · **Size:** XL · **Depends on:** 005, 025, 030, 035
-
-This is a separate product direction for clubs, events, or open-source teams:
-members contribute to a shared fund and release money only after a documented
-milestone. It introduces custody, governance, and regulatory risks and must
-not be presented as a minor extension of split expenses.
-
-**Acceptance criteria**
-
-- Complete legal/compliance, custody, sanctions, consumer-protection, and
-  jurisdiction review before implementation.
-- A written product decision explains whether funds are non-custodial,
-  multisignature-controlled, or out of scope.
-- Milestones, voting/quorum, disputes, refunds, and emergency pause rules are
-  explicit and independently audited.
-- Build only as an isolated module/contract with separate threat model,
-  deployment, monitoring, and user disclosures.
-
----
-
-## Phase 6 — Reliability, collaboration, and ecosystem maturity
-
-### 041 — Add database performance budgets and query observability
-
-**Priority:** P1 · **Size:** L · **Depends on:** 007, 013
-
-As trip histories and membership counts grow, slow or unbounded queries can
-degrade the core experience and increase database cost. Establish measurable
-performance expectations before scale makes regressions difficult to find.
-
-**Acceptance criteria**
-
-- Define p95 latency and row-scan budgets for the trip dashboard, expense
-  history, balance calculation, and support-console queries.
-- Add query tracing or database metrics that identify endpoint, query shape,
-  duration, rows returned, and errors without recording private content.
-- Add required indexes and cursor-based pagination where profiling shows a
-  need; document the reasoning for each migration.
-- Load tests cover a large trip and prove that authorized users receive only
-  their permitted rows within the agreed budget.
-
-### 042 — Implement rate limits and abuse protection for public entry points
-
-**Priority:** P0 · **Size:** M · **Depends on:** 003, 007, 008
-
-Invitation, authentication, upload, reminder, and payment-intent endpoints
-need consistent protection against automated abuse without locking out normal
-members during a time-sensitive settlement.
-
-**Acceptance criteria**
-
-- Apply documented per-wallet, per-IP, and endpoint-specific limits with safe
-  burst allowances and server-side enforcement.
-- Return actionable retry information and use progressive challenges only for
-  suspicious traffic, never as the sole authorization control.
-- Limit invitation creation, upload attempts, reminder sends, and idempotency
-  key creation independently.
-- Record redacted security events and alerts for sustained blocking, anomalous
-  retries, and potential enumeration attempts.
-
-### 043 — Provide a data-integrity audit and repair workflow
-
-**Priority:** P1 · **Size:** L · **Depends on:** 009, 012, 041
-
-Application records, aggregates, and independently verifiable chain events can
-drift because of interrupted migrations or historic bugs. Operators need a
-repeatable way to detect and repair that drift without silently changing
-financial history.
-
-**Acceptance criteria**
-
-- A scheduled audit verifies foreign keys, share totals, balance aggregates,
-  settlement states, and expected on-chain references.
-- Each discrepancy receives a stable identifier, severity, evidence, and
-  recommended remediation; results are retained for review.
-- Repair actions are dry-run by default, require authorized approval, and
-  create immutable audit records linking before/after state.
-- Tests include malformed legacy rows, duplicate events, missing aggregates,
-  and an ambiguous chain result that must remain unresolved.
-
-### 044 — Add configurable trip roles and granular permissions
-
-**Priority:** P2 · **Size:** L · **Depends on:** 007, 018
-
-Small groups can share equal powers, but teams may need a distinct organizer,
-treasurer, viewer, or expense contributor. Extend authorization deliberately
-instead of adding one-off boolean flags.
-
-**Acceptance criteria**
-
-- Define a documented role matrix for owner, organizer, contributor, viewer,
-  and custom role assignments where appropriate.
-- Permissions control membership, trip settings, expenses, receipts, exports,
-  reminders, and settlement proposals at both API and RLS layers.
-- Role changes require the right authority, are visible to affected members,
-  and preserve an auditable history.
-- The system prevents removal or demotion of the final eligible trip owner
-  without an explicit ownership-transfer flow.
-
-### 045 — Support member lifecycle states and controlled offboarding
-
-**Priority:** P1 · **Size:** M · **Depends on:** 012, 021, 044
-
-Groups change. A member who leaves must retain accurate historic attribution
-while gaining neither unintended access nor an impossible outstanding balance.
-
-**Acceptance criteria**
-
-- Members can be active, pending, departed, or removed, with a recorded actor,
-  reason, and timestamp for each transition.
-- A departure flow clearly displays unsettled obligations and offers an
-  explicit settlement, transfer, or documented exception choice.
-- Departed and removed members lose future-trip access and realtime visibility
-  while history remains intelligible to authorized remaining members.
-- Reinvitation, wallet changes, open disputes, and active recurring templates
-  have tested, predictable behavior.
-
-### 046 — Introduce notification preferences and a unified inbox
-
-**Priority:** P2 · **Size:** L · **Depends on:** 022, 034, 045
-
-Notifications should be useful context, not an unmanageable stream of alerts.
-Create one place to review activity and control channel-level preferences.
-
-**Acceptance criteria**
-
-- An in-app inbox shows read/unread state, deep links, delivery status, and
-  pagination for activity the current user may view.
-- Users can configure channel and event preferences per account and, where
-  relevant, per trip; legally required notices remain clearly distinguished.
-- Grouped notifications prevent duplicate messages for repeated updates while
-  retaining an accessible activity trail.
-- Preference updates take effect before future sends and are tested for wallet
-  switch, account deletion, and unsubscribe cases.
-
-### 047 — Add collaborative comments and an immutable activity timeline
-
-**Priority:** P2 · **Size:** L · **Depends on:** 007, 014, 044
-
-Members need context around an expense or correction without taking discussion
-into an unconnected channel. Add scoped collaboration while preserving a clear
-line between conversation and financial facts.
-
-**Acceptance criteria**
-
-- Authorized members can add comments to trips, expenses, disputes, and
-  settlement proposals, with edit/delete rules and visible timestamps.
-- A system activity timeline records important financial and permission events
-  separately from user commentary.
-- Mentions and attachments respect membership, storage authorization, abuse
-  controls, and notification preferences.
-- Deleted or moderated comments follow the retention policy without rewriting
-  financial audit entries.
-
-### 048 — Create a guided onboarding and first-settlement checklist
-
-**Priority:** P1 · **Size:** M · **Depends on:** 026, 028, 032, 034
-
-The first trip and payment are the highest-friction moments. Give new members
-a skippable, accessible path that explains the minimum steps and detects
-incomplete setup before a payment request fails.
-
-**Acceptance criteria**
-
-- Onboarding adapts to whether a user is creating, joining, or only viewing a
-  trip, and never blocks access to already-permitted information.
-- A first-settlement checklist covers wallet connection, network, asset
-  readiness, review, signature, confirmation, and recovery status.
-- Help copy is plain-language, keyboard accessible, and linked to the relevant
-  support article without exposing another trip's data.
-- Consent-aware analytics measure step completion and abandonment without
-  collecting wallet addresses or financial free text.
-
-### 049 — Publish a searchable help center and operational status page
-
-**Priority:** P1 · **Size:** M · **Depends on:** 003, 010, 048
-
-Users should be able to understand routine wallet, payment, and recovery
-states without waiting for manual support, and they need honest visibility when
-the service itself is impaired.
-
-**Acceptance criteria**
-
-- Publish versioned, searchable articles for wallet setup, invitations,
-  payments, transaction lookup, corrections, privacy, and safety practices.
-- A public status page distinguishes app, database, notification, quote, and
-  reconciliation components without exposing sensitive infrastructure detail.
-- Incident updates use a documented cadence, owner, and resolved-postmortem
-  template appropriate to impact.
-- Help and status content has an owner and review date, with links checked in
-  CI.
-
-### 050 — Add automated dependency, secret, and supply-chain controls
-
-**Priority:** P0 · **Size:** M · **Depends on:** 001, 005
-
-The frontend, services, contracts, and deployment workflows rely on third-party
-code and credentials. Make routine hygiene continuous rather than a prelaunch
-audit-only activity.
-
-**Acceptance criteria**
-
-- CI scans committed code and build artifacts for secrets, vulnerable
-  dependencies, and known malicious package indicators.
-- Dependency updates are grouped, reviewed, and tested; critical findings have
-  defined remediation targets and escalation owners.
-- Releases record immutable source revision, dependency lockfile digest, build
-  provenance, and deployed artifact hashes.
-- Signing keys and deployment credentials are inventoried, least-privileged,
-  rotated on a schedule, and never written to logs.
-
-### 051 — Establish deployment environments and progressive delivery
-
-**Priority:** P0 · **Size:** L · **Depends on:** 002, 003, 050
-
-Separate preview, staging, and production behavior so risky changes can be
-tested against realistic integrations and released gradually with a credible
-rollback path.
-
-**Acceptance criteria**
-
-- Preview, staging, and production use isolated credentials, data boundaries,
-  callback URLs, and clearly labeled network configuration.
-- Every release passes automated smoke tests in staging, including a safe
-  wallet/payment simulation where feasible.
-- Production supports feature flags or phased rollout with owner, expiry, and
-  rollback instructions for every flag.
-- A failed rollout can be rolled back without data loss, and the procedure is
-  rehearsed and documented.
-
-### 052 — Build contract upgrade governance and compatibility checks
-
-**Priority:** P0 · **Size:** XL · **Depends on:** 005, 027, 030, 051
-
-Soroban contract changes may affect settled records and user funds. Define a
-transparent upgrade path before future contract capabilities create an urgent
-need to deploy one.
-
-**Acceptance criteria**
-
-- Document whether contracts are immutable or upgradeable, the authorized
-  upgrade mechanism, timelock/review expectations, and emergency procedure.
-- A compatibility suite validates new contract behavior against prior claims,
-  assets, attestations, and client versions before deployment.
-- Upgrade proposals include source hash, WASM hash, test evidence, signer
-  approvals, rollout plan, and public change summary.
-- Post-upgrade monitoring verifies expected events and supports a documented
-  pause or remediation path if anomalies appear.
-
-### 053 — Offer read-only shared balance views with privacy-safe sharing
-
-**Priority:** P2 · **Size:** M · **Depends on:** 007, 020, 044
-
-Some organizers need to share a balance snapshot with a sponsor or accountant
-who should not receive wallet access or edit rights. Provide explicit, limited
-sharing rather than exporting sensitive data manually.
-
-**Acceptance criteria**
-
-- Authorized roles can create a revocable, expiring read-only share limited to
-  a selected trip, data scope, and optional date range.
-- Shared views omit hidden notes, receipts, wallet data, and member details by
-  default, with each inclusion chosen explicitly.
-- Access is logged, cannot mutate records, and is invalidated immediately on
-  revocation or trip deletion.
-- Links resist guessing and do not place private data in URLs, metadata, or
-  search indexes.
-
-### 054 — Add configurable expense approval policies
-
-**Priority:** P2 · **Size:** L · **Depends on:** 024, 044, 047
-
-Groups with delegated spend may need a review before an expense affects their
-balances. Make this an optional policy that complements, rather than rewrites,
-the existing financial ledger.
-
-**Acceptance criteria**
-
-- A trip can require approval by role, amount threshold, category, or a
-  configurable quorum before selected expenses become payable.
-- The expense shows draft, pending approval, approved, rejected, and cancelled
-  states with a recorded decision and reason.
-- Edits to material fields invalidate outstanding approval, while approved
-  history remains auditable.
-- Settlement calculations clearly exclude or separately label unapproved
-  expenses, and policy changes affect only future items unless explicitly
-  migrated.
-
-### 055 — Build a safe bulk import and validation workflow
-
-**Priority:** P2 · **Size:** L · **Depends on:** 008, 013, 020, 041
-
-Groups moving from a spreadsheet should not need to retype months of history.
-Allow imports that are reviewable, reversible, and incapable of silently
-creating incorrect balances or duplicate records.
-
-**Acceptance criteria**
-
-- Support a documented CSV template for historic expenses, members, amounts,
-  currencies, categories, and optional external references.
-- Import parsing validates exact money values, member matching, duplicate
-  detection, authorization, and row-level errors before any write occurs.
-- Users receive a review/diff screen and an idempotent import identifier; a
-  completed import creates an auditable batch record.
-- Failed or cancelled imports leave no partial financial data, and a completed
-  import can be logically reversed through a documented corrective action.
-
-### 056 — Add integration testing with Stellar testnet and wallet adapters
-
-**Priority:** P1 · **Size:** L · **Depends on:** 009, 026, 029, 051
-
-Unit tests cannot prove the complete signing and confirmation path. Maintain a
-reliable, non-production test suite that exercises the app against Stellar
-testnet and each supported wallet integration.
-
-**Acceptance criteria**
-
-- CI or a controlled scheduled environment runs critical flows against testnet:
-  connect, create intent, sign, submit, confirm, reconcile, and display proof.
-- Test accounts, funding, and cleanup are isolated from production credentials
-  and rate-limited to avoid shared-network abuse.
-- Adapter contract tests cover capability detection, rejected signature,
-  network switch, timeout, and malformed callback scenarios.
-- Failures retain sanitized diagnostics and are visible to release owners
-  before a related production rollout.
-
-### 057 — Establish service-level objectives and capacity planning
-
-**Priority:** P1 · **Size:** M · **Depends on:** 003, 041, 051, 056
-
-Reliability requires agreed targets, not only alerts. Define what availability
-and latency mean for browsing, financial intent creation, reconciliation, and
-support-critical data, then plan capacity against those targets.
-
-**Acceptance criteria**
-
-- Publish SLOs, error budgets, measurement windows, and owners for core
-  customer journeys and background reconciliation.
-- Dashboards distinguish app failures, dependency failures, user-cancelled
-  wallet actions, and on-chain finality delay.
-- Capacity tests model forecasted users, large trips, notification bursts, and
-  reconciliation backlog with documented headroom assumptions.
-- Error-budget exhaustion triggers a documented release or reliability review
-  rather than an automatic claim that financial operations are healthy.
-
-### 058 — Introduce retention-aware archival for inactive trips
-
-**Priority:** P2 · **Size:** M · **Depends on:** 006, 020, 043
-
-Long-inactive trips need lower-cost storage and a predictable user experience,
-but archival must not break exports, legal obligations, or chain-linked proof.
-
-**Acceptance criteria**
-
-- Define inactivity thresholds, eligibility checks, notices, exceptions, and
-  restoration expectations consistent with the published retention policy.
-- Archived trips remain exportable to authorized users and preserve immutable
-  financial/audit references.
-- Restore access is authenticated, recorded, and tested for privacy and data
-  integrity; no public-chain evidence is altered.
-- Storage lifecycle jobs are idempotent, observable, and safe to retry after
-  partial failure.
-
-### 059 — Create an accessibility and localization regression program
-
-**Priority:** P1 · **Size:** M · **Depends on:** 032, 033, 048
-
-Accessibility and language quality can regress whenever shared components or
-wallet flows change. Make inclusive behavior a release expectation instead of a
-one-time remediation project.
-
-**Acceptance criteria**
-
-- CI runs automated accessibility checks on core screens and flags new serious
-  violations with a documented exception process.
-- Release checklists include keyboard, screen-reader, zoom, reduced-motion,
-  locale, RTL-readiness, and decimal-input smoke tests for changed flows.
-- Translation coverage, missing-key detection, and layout-overflow checks run
-  before release for supported locales.
-- A recurring manual test plan includes people using assistive technology and
-  feeds prioritized findings into the backlog.
-
-### 060 — Run a beta program with feedback-to-roadmap governance
-
-**Priority:** P2 · **Size:** L · **Depends on:** 010, 048, 049, 057, 059
-
-Before expanding the optional product surface, establish a controlled beta
-program that gathers representative evidence without treating participants as
-unconsented production testers for financial risk.
-
-**Acceptance criteria**
-
-- Define eligibility, cohort size, consent, support coverage, feature flags,
-  success measures, and explicit exclusion criteria for beta participants.
-- Feedback, support cases, reliability signals, and security findings are
-  triaged into a transparent decision log with owner and due date.
-- Beta exits are safe: users can export data, disable experimental features,
-  and receive clear communication about changed or ended capabilities.
-- A retrospective recommends promote, iterate, pause, or retire for each beta
-  feature based on evidence, operating cost, and safety review.
-
----
-
-## Recommended delivery order
-
-1. Finish issues **001–010** before any public-network launch or feature that
-   increases financial volume.
-2. Deliver **011–016**, then test their value with active expense-sharing
-   groups before moving to templates, contacts, and exports.
-3. Treat **021**, **027**, and **030** as security-sensitive projects with
-   design review and contract audit checkpoints, not normal UI tickets.
-4. Schedule **031–035** alongside feature work, not as a final polish phase.
-5. Run discovery for **036–040** first; they are opportunities, not promises.
-6. Complete **041–043** and **050–052** before sustained growth or further
-   contract changes; they protect performance, abuse resistance, and release
-   safety.
-7. Sequence collaboration work **044–047**, then validate onboarding and
-   support improvements **048–049** with real users.
-8. Treat **054–055** as opt-in group workflows, and use **056–060** to keep
-   quality high while expanding through a controlled beta program.
+Current safety controls lack one verifiable promotion decision. Build machine-readable checks for migrations, RLS, performance, security, backups, dependencies, SLOs, contracts, and rollback with accountable exceptions. Done: failed requirements block promotion and overrides/evidence are audited.
