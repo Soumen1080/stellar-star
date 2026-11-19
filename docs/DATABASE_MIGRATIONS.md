@@ -68,6 +68,9 @@ and settlement tables.
 Check migration status and database schema agreement:
 
 ```bash
+# Verify migration manifest integrity and checksums
+npm run db:manifest:verify
+
 # View migration status (applied vs pending)
 npm run db:status
 
@@ -78,7 +81,9 @@ npm run db:migrate
 npm run db:check
 ```
 
-In CI/CD, `npm run db:check` fails the build if the database schema is missing any migrations that exist in the codebase.
+See [IMMUTABLE_MIGRATION_IDENTITY.md](./IMMUTABLE_MIGRATION_IDENTITY.md) for full details on migration sequence determinism, duplicate numeric prefix disambiguation, and manifest ledger synchronization.
+
+In CI/CD, `npm run db:check` and `npm run db:manifest:verify` fail the build if the database schema or manifest is missing any migrations or has checksum discrepancies.
 
 ---
 
