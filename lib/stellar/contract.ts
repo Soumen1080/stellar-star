@@ -31,6 +31,9 @@ import type {
   IsPaidResult,
 } from "@/types/contract";
 import { ContractErrorCode, PoolErrorCode } from "@/types/contract";
+import { getCachedPoolContractId, invalidateContractMetadataCache } from "@/lib/stellar/cache";
+
+export { invalidateContractMetadataCache };
 
 const SOROBAN_BASE_FEE        = "1000";
 const MAX_POLL_ATTEMPTS       = 20;
@@ -442,30 +445,32 @@ export interface PoolPrecheckResult {
 }
 
 async function getPoolContractId(callerPublicKey: string): Promise<string> {
-  const account = await loadAccount(callerPublicKey);
-  const contract = new Contract(CONTRACT_ID);
+  return getCachedPoolContractId(CONTRACT_ID, async () => {
+    const account = await loadAccount(callerPublicKey);
+    const contract = new Contract(CONTRACT_ID);
 
-  const tx = new TransactionBuilder(account, {
-    fee: await getSuggestedBaseFee({ fallback: Number(SOROBAN_BASE_FEE) }),
-    networkPassphrase: NETWORK_PASSPHRASE,
-  })
-    .addOperation(contract.call("get_pool_contract"))
-    .setTimeout(30)
-    .build();
+    const tx = new TransactionBuilder(account, {
+      fee: await getSuggestedBaseFee({ fallback: Number(SOROBAN_BASE_FEE) }),
+      networkPassphrase: NETWORK_PASSPHRASE,
+    })
+      .addOperation(contract.call("get_pool_contract"))
+      .setTimeout(30)
+      .build();
 
-  const simResult = await sorobanServer.simulateTransaction(tx);
-  if (rpc.Api.isSimulationError(simResult)) {
-    throw new Error(decodeContractError(simResult.error));
-  }
-  if (!rpc.Api.isSimulationSuccess(simResult) || !simResult.result?.retval) {
-    throw new Error("Unable to read settlement pool contract.");
-  }
+    const simResult = await sorobanServer.simulateTransaction(tx);
+    if (rpc.Api.isSimulationError(simResult)) {
+      throw new Error(decodeContractError(simResult.error));
+    }
+    if (!rpc.Api.isSimulationSuccess(simResult) || !simResult.result?.retval) {
+      throw new Error("Unable to read settlement pool contract.");
+    }
 
-  const native = scValToNative(simResult.result.retval) as unknown;
-  if (typeof native !== "string" || native.length === 0) {
-    throw new Error("Invalid pool contract id returned by settlement contract.");
-  }
-  return native;
+    const native = scValToNative(simResult.result.retval) as unknown;
+    if (typeof native !== "string" || native.length === 0) {
+      throw new Error("Invalid pool contract id returned by settlement contract.");
+    }
+    return native;
+  });
 }
 
 /**
