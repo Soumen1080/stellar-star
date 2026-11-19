@@ -209,10 +209,16 @@ export async function getAccountState(
   horizonUrl: string = HORIZON_URL,
   fetchImpl: typeof fetch = fetch,
 ): Promise<AccountState> {
-  const response = await fetchImpl(`${horizonUrl}/accounts/${publicKey}`, {
-    cache: "no-store",
-    headers: { "Cache-Control": "no-cache" },
-  });
+  const fetchAccounts = () =>
+    fetchImpl(`${horizonUrl}/accounts/${publicKey}`, {
+      cache: "no-store",
+      headers: { "Cache-Control": "no-cache" },
+    });
+
+  const response =
+    fetchImpl === fetch
+      ? await resilientHorizonRead(fetchAccounts)
+      : await fetchAccounts();
 
   const baseReserveStroops = await getNetworkBaseReserve(horizonUrl, fetchImpl);
 
