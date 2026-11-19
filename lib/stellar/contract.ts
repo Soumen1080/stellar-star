@@ -13,6 +13,7 @@ import {
 import type { Attestation } from "@/lib/settlement/attest";
 import { sorobanServer } from "./soroban";
 import { server } from "./client";
+import { resilientSorobanRpc, resilientHorizonRead } from "@/lib/stellar/resilience";
 import { signXDR } from "@/lib/freighter";
 import {
   SOROBAN_RPC_URL,
@@ -37,6 +38,18 @@ const MAX_POLL_ATTEMPTS       = 20;
 const INITIAL_POLL_INTERVAL_MS = 1500;
 const MAX_POLL_INTERVAL_MS    = 6000;
 const POLL_BACKOFF_FACTOR     = 1.5;
+
+async function simulateTransactionResilient(tx: any) {
+  return resilientSorobanRpc(async () => sorobanServer.simulateTransaction(tx));
+}
+
+async function getTransactionResilient(txHash: string) {
+  return resilientSorobanRpc(async () => sorobanServer.getTransaction(txHash));
+}
+
+async function sendTransactionResilient(tx: any) {
+  return resilientSorobanRpc(async () => sorobanServer.sendTransaction(tx));
+}
 
 export function decodeContractError(raw: string): string {
   const match = raw.match(/Error\(Contract,\s*#(\d+)\)/);
@@ -146,10 +159,12 @@ async function loadAccount(
 ): Promise<Account> {
   if (typeof fetch === "function") {
     try {
-      const res = await fetch(
-        `${HORIZON_URL}/accounts/${publicKey}?_ts=${Date.now()}`,
-        { cache: "no-store", headers: { "Cache-Control": "no-cache" } },
-      );
+      const res = await resilientHorizonRead(async () => {
+        return fetch(
+          `${HORIZON_URL}/accounts/${publicKey}?_ts=${Date.now()}`,
+          { cache: "no-store", headers: { "Cache-Control": "no-cache" } },
+        );
+      });
       if (res.status === 404 && fallbackSequence !== undefined) {
         return new Account(publicKey, fallbackSequence);
       }
@@ -311,7 +326,7 @@ export async function pollTransactionStatus(
           );
         });
 
-        const pollResult = await sorobanServer.getTransaction(txHash);
+        const pollResult = await getTransactionResilient(txHash);
 
         if (pollResult.status === rpc.Api.GetTransactionStatus.SUCCESS) {
           return { ledger: (pollResult as { ledger: number }).ledger };
@@ -352,7 +367,7 @@ async function submitAndPoll(
   signal?: AbortSignal,
 ): Promise<{ ledger: number }> {
   onStatus?.("sending");
-  const sendResult = await sorobanServer.sendTransaction(
+  const sendResult = await sendTransactionResilient(
     TransactionBuilder.fromXDR(signedXdr, NETWORK_PASSPHRASE)
   );
 
@@ -453,7 +468,7 @@ async function getPoolContractId(callerPublicKey: string): Promise<string> {
     .setTimeout(30)
     .build();
 
-  const simResult = await sorobanServer.simulateTransaction(tx);
+  const simResult = await simulateTransactionResilient(tx);
   if (rpc.Api.isSimulationError(simResult)) {
     throw new Error(decodeContractError(simResult.error));
   }
@@ -502,7 +517,7 @@ export async function getPoolBalanceStroops(
     .setTimeout(30)
     .build();
 
-  const simResult = await sorobanServer.simulateTransaction(tx);
+  const simResult = await simulateTransactionResilient(tx);
   if (rpc.Api.isSimulationError(simResult)) {
     throw new Error(decodePoolError(simResult.error));
   }
@@ -599,7 +614,7 @@ export async function depositPoolBalance(
       .build();
 
     onStatus?.("simulating");
-    const simResult = await sorobanServer.simulateTransaction(tx);
+    const simResult = await simulateTransactionResilient(tx);
 
     if (rpc.Api.isSimulationError(simResult)) {
       throw new Error(decodePoolError(simResult.error));
@@ -672,7 +687,7 @@ export async function recordPaymentOnChain(
       .build();
 
     onStatus?.("simulating");
-    const simResult = await sorobanServer.simulateTransaction(tx);
+    const simResult = await simulateTransactionResilient(tx);
 
     if (rpc.Api.isSimulationError(simResult)) {
       throw new Error(decodeContractError(simResult.error));
@@ -766,7 +781,7 @@ export async function recordNetSettlementOnChain(
     const tx = txBuilder.setTimeout(60).build();
 
     onStatus?.("simulating");
-    const simResult = await sorobanServer.simulateTransaction(tx);
+    const simResult = await simulateTransactionResilient(tx);
 
     if (rpc.Api.isSimulationError(simResult)) {
       throw new Error(decodeContractError(simResult.error));
@@ -818,7 +833,7 @@ export async function getContractPayments(
       .setTimeout(30)
       .build();
 
-    const simResult = await sorobanServer.simulateTransaction(tx);
+    const simResult = await simulateTransactionResilient(tx);
 
     if (rpc.Api.isSimulationError(simResult)) {
       const errStr = String(simResult.error ?? "");
@@ -905,7 +920,7 @@ export async function checkIsPaid(
       .setTimeout(30)
       .build();
 
-    const simResult = await sorobanServer.simulateTransaction(tx);
+    const simResult = await simulateTransactionResilient(tx);
 
     if (
       rpc.Api.isSimulationError(simResult) ||

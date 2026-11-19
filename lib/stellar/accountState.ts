@@ -21,6 +21,7 @@
 
 import { HORIZON_URL } from "@/lib/utils/constants";
 import { assetKey, fromHorizonFields, isNative, type AssetRef } from "@/lib/stellar/assets";
+import { resilientHorizonRead } from "@/lib/stellar/resilience";
 
 /**
  * Last-resort base reserve, in stroops (0.5 XLM at protocol 19+).
@@ -202,10 +203,16 @@ export async function getAccountState(
   horizonUrl: string = HORIZON_URL,
   fetchImpl: typeof fetch = fetch,
 ): Promise<AccountState> {
-  const response = await fetchImpl(`${horizonUrl}/accounts/${publicKey}`, {
-    cache: "no-store",
-    headers: { "Cache-Control": "no-cache" },
-  });
+  const fetchAccounts = () =>
+    fetchImpl(`${horizonUrl}/accounts/${publicKey}`, {
+      cache: "no-store",
+      headers: { "Cache-Control": "no-cache" },
+    });
+
+  const response =
+    fetchImpl === fetch
+      ? await resilientHorizonRead(fetchAccounts)
+      : await fetchAccounts();
 
   const baseReserveStroops = await getNetworkBaseReserve(horizonUrl, fetchImpl);
 

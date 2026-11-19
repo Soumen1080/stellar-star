@@ -3,6 +3,7 @@ import { createHorizonServer, server } from "./client";
 import { NETWORK_PASSPHRASE } from "@/lib/utils/constants";
 import type { StellarSubmitResult, HorizonErrorResponse } from "@/types/stellar";
 import { reportError } from "@/lib/observability/reportError";
+import { resilientHorizonWrite } from "@/lib/stellar/resilience";
 
 export type { StellarSubmitResult };
 
@@ -26,7 +27,9 @@ export async function submitSignedTransaction(
   try {
     const tx = TransactionBuilder.fromXDR(signedXDR, NETWORK_PASSPHRASE);
     const horizon = requestId ? createHorizonServer(requestId) : server;
-    const response = await horizon.submitTransaction(tx);
+    const response = await resilientHorizonWrite(async () => {
+      return horizon.submitTransaction(tx);
+    });
     return { hash: response.hash, ledger: response.ledger, successful: true };
   } catch (err: unknown) {
     const horizonErr = err as { response?: { data?: HorizonErrorResponse } };
