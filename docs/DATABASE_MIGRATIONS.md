@@ -61,6 +61,11 @@ household chore prototype, its append-only completion record, member opt-out
 preferences, and RLS policies. Chore completion is isolated from the expense
 and settlement tables.
 
+Migration `0022_transactional_outbox.sql` introduces the Transactional Outbox
+Pattern, adding `public.transactional_outbox`, concurrency-safe `SKIP LOCKED`
+worker batch leasing, deduplication constraints, exponential backoff, and
+distributed trace ID propagation. See [TRANSACTIONAL_OUTBOX.md](./TRANSACTIONAL_OUTBOX.md).
+
 ---
 
 ## 3. Verification & CLI Commands
