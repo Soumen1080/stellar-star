@@ -155,6 +155,11 @@ jobs:
       - name: Migration manifest is readable
         run: npm run db:status
 
+      # Release gate: builds disposable schema from migrations, checks type
+      # agreement, and fails if committed types/supabase.ts drifts from SQL/RPCs (#423).
+      - name: Database types match disposable schema (Release Gate)
+        run: npm run db:types:verify
+
   playwright:
     name: Playwright E2E — ${{ matrix.project }}
     runs-on: ubuntu-latest

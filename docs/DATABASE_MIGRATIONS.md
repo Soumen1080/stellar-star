@@ -68,6 +68,9 @@ and settlement tables.
 Check migration status and database schema agreement:
 
 ```bash
+# Verify database schema & TypeScript type synchronization
+npm run db:types:verify
+
 # View migration status (applied vs pending)
 npm run db:status
 
@@ -78,7 +81,9 @@ npm run db:migrate
 npm run db:check
 ```
 
-In CI/CD, `npm run db:check` fails the build if the database schema is missing any migrations that exist in the codebase.
+See [DATABASE_TYPE_GENERATION.md](./DATABASE_TYPE_GENERATION.md) for details on disposable schema type verification, CI release gates, and strongly typed RPC boundaries.
+
+In CI/CD, `npm run db:check` and `npm run db:types:verify` fail the build if the database schema is missing any migrations or TypeScript types diverge from SQL definitions.
 
 ---
 

@@ -26,6 +26,8 @@
     "db:check": "node scripts/check-supabase.mjs",
     "db:migrate": "node scripts/migrate.mjs",
     "db:status": "node scripts/migrate.mjs --status",
+    "db:types:generate": "node scripts/generate-database-types.mjs",
+    "db:types:verify": "node scripts/generate-database-types.mjs --check",
     "db:backup": "node scripts/backup-supabase.mjs",
     "db:staging:rebuild": "node scripts/rebuild-staging.mjs",
     "db:drill": "node scripts/recovery-drill.mjs",

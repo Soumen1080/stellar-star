@@ -472,6 +472,9 @@ export type SchemaMigrationRow = {
   name: string;
   applied_at: string;
   checksum: string;
+  migration_id?: string | null;
+  sequence?: number | null;
+  manifest_checksum?: string | null;
 };
 
 export type SupportAuditLogRow = {
@@ -1077,7 +1080,26 @@ export type Database = {
           p_window_ms: number;
           p_now: number;
         };
-        Returns: Json;
+        Returns: {
+          allowed: boolean;
+          remaining: number;
+          resetMs: number;
+          count: number;
+        };
+      };
+      check_rate_limit: {
+        Args: {
+          p_key: string;
+          p_limit: number;
+          p_window_ms: number;
+          p_now: number;
+        };
+        Returns: {
+          allowed: boolean;
+          remaining: number;
+          resetMs: number;
+          count: number;
+        };
       };
       claim_trip_invite: {
         Args: {
@@ -1086,13 +1108,29 @@ export type Database = {
           p_selected_member_id?: string;
           p_expected_trip_id?: string;
         };
-        Returns: Json;
+        Returns: {
+          success: boolean;
+          trip_id: string;
+          trip_name: string;
+          member_id: string;
+          member_name: string;
+        };
       };
       verify_trip_invite: {
         Args: {
           p_token_hash: string;
         };
-        Returns: Json;
+        Returns: {
+          invite_id: string;
+          trip_id: string;
+          trip_name: string;
+          trip_description: string | null;
+          member_id: string | null;
+          member_name: string | null;
+          inviter_wallet: string;
+          expires_at: string;
+          unclaimed_members: Array<{ id: string; name: string }> | null;
+        };
       };
       update_expense_versioned: {
         Args: {
@@ -1155,7 +1193,30 @@ export type Database = {
       };
       claim_contact_profile: {
         Args: { p_token_hash: string };
-        Returns: Json;
+        Returns: {
+          status: "verified" | "pending_notice";
+          contact_name: string;
+          owner_wallet: string;
+          notice_until?: string | null;
+        };
+      };
+      delete_user_account: {
+        Args: { p_wallet_address: string };
+        Returns: {
+          success: boolean;
+          wallet_address: string;
+          deleted_at: string;
+        };
+      };
+      record_migration_v2: {
+        Args: {
+          p_version: string;
+          p_name: string;
+          p_migration_id: string;
+          p_sequence: number;
+          p_manifest_checksum: string;
+        };
+        Returns: undefined;
       };
     };
     Enums: { [_ in never]: never };
