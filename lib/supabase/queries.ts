@@ -55,6 +55,7 @@ import {
 } from "@/lib/trip/templates";
 
 export { ExpenseConflictError, type ConflictDetails };
+export * from "./queryBudget";
 
 export function cacheDomainsForMutation(mutation: "trip_write" | "trip_members_write" | "trip_expense_link" | "expense_write"): QueryCacheDomain[] {
   return mutation === "trip_write" ? ["trips"] : ["trips", "expenses"];
@@ -147,6 +148,9 @@ export const PG_SCHEMA_CACHE_MISS = "PGRST205";
 export const PG_UNIQUE_VIOLATION = "23505";
 export const PG_INSUFFICIENT_PRIVILEGE = "42501";
 export const PG_JWT_INVALID = "PGRST301";
+export const PG_STATEMENT_TIMEOUT = "57014";
+export const PG_LOCK_NOT_AVAILABLE = "55P03";
+export const PG_IDLE_IN_TRANSACTION_TIMEOUT = "25P03";
 
 export class DatabaseError extends Error {
   readonly code: string | undefined;
@@ -177,6 +181,27 @@ function isAuthProblem(error: PostgrestError): boolean {
   );
 }
 
+function isTimeoutProblem(error: PostgrestError): boolean {
+  return (
+    error.code === PG_STATEMENT_TIMEOUT ||
+    /statement timeout|query_canceled|canceling statement due to statement timeout/i.test(error.message)
+  );
+}
+
+function isLockProblem(error: PostgrestError): boolean {
+  return (
+    error.code === PG_LOCK_NOT_AVAILABLE ||
+    /lock timeout|canceling statement due to lock timeout|could not obtain lock/i.test(error.message)
+  );
+}
+
+function isIdleProblem(error: PostgrestError): boolean {
+  return (
+    error.code === PG_IDLE_IN_TRANSACTION_TIMEOUT ||
+    /idle-in-transaction session timeout|terminating connection due to idle-in-transaction timeout/i.test(error.message)
+  );
+}
+
 /** Turns a PostgREST error into something worth putting in front of a user. */
 export function toDatabaseError(error: PostgrestError, action: string): DatabaseError {
   if (isMissingTable(error)) {
@@ -193,6 +218,27 @@ export function toDatabaseError(error: PostgrestError, action: string): Database
     return new DatabaseError(
       "Your wallet session is no longer valid. Please sign in with your wallet again.",
       error.code,
+      error
+    );
+  }
+  if (isTimeoutProblem(error)) {
+    return new DatabaseError(
+      "The database query took too long to execute and was terminated. Please retry with a narrower date or search filter.",
+      error.code || PG_STATEMENT_TIMEOUT,
+      error
+    );
+  }
+  if (isLockProblem(error)) {
+    return new DatabaseError(
+      "The database record is currently locked by another concurrent operation. Please retry in a moment.",
+      error.code || PG_LOCK_NOT_AVAILABLE,
+      error
+    );
+  }
+  if (isIdleProblem(error)) {
+    return new DatabaseError(
+      "The database transaction was idle for too long and timed out. Please retry.",
+      error.code || PG_IDLE_IN_TRANSACTION_TIMEOUT,
       error
     );
   }
