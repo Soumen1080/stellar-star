@@ -337,10 +337,50 @@ export type ReconciliationJobRow = {
   updated_at: string;
 };
 
+export type TransactionalOutboxRow = {
+  id: string;
+  aggregate_type: string;
+  aggregate_id: string;
+  event_type: string;
+  channel: "webhook" | "reminder" | "analytics";
+  payload: Json;
+  headers: Json;
+  trace_id: string;
+  deduplication_key: string;
+  status: "pending" | "leased" | "delivered" | "failed" | "dead_letter";
+  attempts: number;
+  max_attempts: number;
+  backoff_ms: number;
+  lease_id: string | null;
+  leased_at: string | null;
+  lease_expires_at: string | null;
+  next_attempt_at: string;
+  last_attempt_at: string | null;
+  delivered_at: string | null;
+  error_message: string | null;
+  created_by_wallet: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export type DeletedAccountRow = {
   wallet_address: string;
   deleted_at: string;
   reason: string;
+};
+
+export type DatabaseQueryTraceRow = {
+  id: string;
+  route: string;
+  request_id: string;
+  operation: string;
+  table_name: string | null;
+  duration_ms: number;
+  query_count: number;
+  rows_count: number;
+  status: "ok" | "slow" | "chatty" | "timeout" | "error";
+  error_code: string | null;
+  created_at: string;
 };
 
 export type SponsoredAccountRow = {
@@ -472,6 +512,9 @@ export type SchemaMigrationRow = {
   name: string;
   applied_at: string;
   checksum: string;
+  migration_id?: string | null;
+  sequence?: number | null;
+  manifest_checksum?: string | null;
 };
 
 export type SupportAuditLogRow = {
@@ -808,6 +851,54 @@ export type Database = {
         Update: Partial<Omit<ReconciliationJobRow, "id" | "created_at">>;
         Relationships: [];
       };
+      database_query_traces: {
+        Row: DatabaseQueryTraceRow;
+        Insert: {
+          id?: string;
+          route: string;
+          request_id: string;
+          operation: string;
+          table_name?: string | null;
+          duration_ms: number;
+          query_count?: number;
+          rows_count?: number;
+          status: "ok" | "slow" | "chatty" | "timeout" | "error";
+          error_code?: string | null;
+          created_at?: string;
+        };
+        Update: Partial<Omit<DatabaseQueryTraceRow, "id" | "created_at">>;
+        Relationships: [];
+      };
+      transactional_outbox: {
+        Row: TransactionalOutboxRow;
+        Insert: {
+          id?: string;
+          aggregate_type: string;
+          aggregate_id: string;
+          event_type: string;
+          channel: "webhook" | "reminder" | "analytics";
+          payload: Json;
+          headers?: Json;
+          trace_id: string;
+          deduplication_key: string;
+          status?: "pending" | "leased" | "delivered" | "failed" | "dead_letter";
+          attempts?: number;
+          max_attempts?: number;
+          backoff_ms?: number;
+          lease_id?: string | null;
+          leased_at?: string | null;
+          lease_expires_at?: string | null;
+          next_attempt_at?: string;
+          last_attempt_at?: string | null;
+          delivered_at?: string | null;
+          error_message?: string | null;
+          created_by_wallet?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: Partial<Omit<TransactionalOutboxRow, "id" | "created_at">>;
+        Relationships: [];
+      };
       settlement_intents: {
         Row: SettlementIntentRow;
         // Only the identifying/settlement fields are required. Everything the
@@ -1077,7 +1168,26 @@ export type Database = {
           p_window_ms: number;
           p_now: number;
         };
-        Returns: Json;
+        Returns: {
+          allowed: boolean;
+          remaining: number;
+          resetMs: number;
+          count: number;
+        };
+      };
+      check_rate_limit: {
+        Args: {
+          p_key: string;
+          p_limit: number;
+          p_window_ms: number;
+          p_now: number;
+        };
+        Returns: {
+          allowed: boolean;
+          remaining: number;
+          resetMs: number;
+          count: number;
+        };
       };
       claim_trip_invite: {
         Args: {
@@ -1086,13 +1196,29 @@ export type Database = {
           p_selected_member_id?: string;
           p_expected_trip_id?: string;
         };
-        Returns: Json;
+        Returns: {
+          success: boolean;
+          trip_id: string;
+          trip_name: string;
+          member_id: string;
+          member_name: string;
+        };
       };
       verify_trip_invite: {
         Args: {
           p_token_hash: string;
         };
-        Returns: Json;
+        Returns: {
+          invite_id: string;
+          trip_id: string;
+          trip_name: string;
+          trip_description: string | null;
+          member_id: string | null;
+          member_name: string | null;
+          inviter_wallet: string;
+          expires_at: string;
+          unclaimed_members: Array<{ id: string; name: string }> | null;
+        };
       };
       update_expense_versioned: {
         Args: {
@@ -1155,7 +1281,82 @@ export type Database = {
       };
       claim_contact_profile: {
         Args: { p_token_hash: string };
-        Returns: Json;
+        Returns: {
+          status: "verified" | "pending_notice";
+          contact_name: string;
+          owner_wallet: string;
+          notice_until?: string | null;
+        };
+      };
+      delete_user_account: {
+        Args: { p_wallet_address: string };
+        Returns: {
+          success: boolean;
+          wallet_address: string;
+          deleted_at: string;
+        };
+      };
+      record_migration_v2: {
+        Args: {
+          p_version: string;
+          p_name: string;
+          p_migration_id: string;
+          p_sequence: number;
+          p_manifest_checksum: string;
+        };
+        Returns: undefined;
+      };
+      create_monthly_partition: {
+        Args: { p_table: string; p_year: number; p_month: number };
+        Returns: string;
+      };
+      archive_partition: {
+        Args: { p_parent_table: string; p_partition_name: string };
+        Returns: undefined;
+      };
+      prune_old_partitions: {
+        Args: { p_parent_table: string; p_cutoff_date: string };
+        Returns: number;
+      };
+      claim_outbox_batch: {
+        Args: {
+          p_worker_id: string;
+          p_batch_size?: number;
+          p_lease_duration_seconds?: number;
+        };
+        Returns: TransactionalOutboxRow[];
+      };
+      complete_outbox_event: {
+        Args: {
+          p_id: string;
+          p_lease_id: string;
+        };
+        Returns: boolean;
+      };
+      fail_outbox_event: {
+        Args: {
+          p_id: string;
+          p_lease_id: string;
+          p_error_message: string;
+          p_backoff_ms?: number;
+        };
+        Returns: boolean;
+      };
+      enqueue_outbox_event: {
+        Args: {
+          p_aggregate_type: string;
+          p_aggregate_id: string;
+          p_event_type: string;
+          p_channel: string;
+          p_payload: Json;
+          p_trace_id: string;
+          p_deduplication_key: string;
+          p_headers?: Json;
+          p_created_by_wallet?: string | null;
+          p_max_attempts?: number;
+          p_backoff_ms?: number;
+        };
+        Returns: string;
       };
       append_trip_chore_completion: {
         Args: { p_trip_id: string; p_chore_id: string };
@@ -1187,3 +1388,7 @@ export type SponsorshipInviteInsert = Database["public"]["Tables"]["sponsorship_
 export type TripInviteInsert = Database["public"]["Tables"]["trip_invites"]["Insert"];
 export type ContactInsert = Database["public"]["Tables"]["contacts"]["Insert"];
 export type ContactUpdate = Database["public"]["Tables"]["contacts"]["Update"];
+export type DatabaseQueryTraceInsert = Database["public"]["Tables"]["database_query_traces"]["Insert"];
+export type DatabaseQueryTraceUpdate = Database["public"]["Tables"]["database_query_traces"]["Update"];
+export type TransactionalOutboxInsert = Database["public"]["Tables"]["transactional_outbox"]["Insert"];
+export type TransactionalOutboxUpdate = Database["public"]["Tables"]["transactional_outbox"]["Update"];

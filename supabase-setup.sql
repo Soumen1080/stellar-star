@@ -1833,7 +1833,7 @@ CREATE POLICY settlement_intents_delete_owner ON public.settlement_intents
 -- Append-only record of every portable-archive export request.
 
 CREATE TABLE IF NOT EXISTS public.export_audit_events (
-  id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  id             UUID DEFAULT gen_random_uuid(),
   actor_wallet   TEXT        NOT NULL,
   export_kind    TEXT        NOT NULL CHECK (export_kind IN ('archive')),
   status         TEXT        NOT NULL CHECK (status IN ('served', 'rate_limited', 'forbidden', 'failed')),
@@ -1846,8 +1846,9 @@ CREATE TABLE IF NOT EXISTS public.export_audit_events (
   request_id     TEXT,
   -- Salted hash, not the raw IP: enough to spot abuse, not to track people.
   client_ip_hash TEXT,
-  created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (id, created_at)
+) PARTITION BY RANGE (created_at);
 
 CREATE INDEX IF NOT EXISTS idx_export_audit_events_actor_created_at
   ON public.export_audit_events (actor_wallet, created_at DESC);
@@ -2310,7 +2311,7 @@ CREATE INDEX IF NOT EXISTS idx_payment_reminders_sender_created_at
   ON public.payment_reminders (sender_wallet, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS public.reminder_events (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  id UUID DEFAULT gen_random_uuid(),
   reminder_id UUID REFERENCES public.payment_reminders(id) ON DELETE CASCADE,
   actor_wallet TEXT NOT NULL,
   kind TEXT NOT NULL CHECK (kind IN (
@@ -2320,8 +2321,9 @@ CREATE TABLE IF NOT EXISTS public.reminder_events (
   )),
   channel TEXT CHECK (channel IS NULL OR channel IN ('in_app', 'email', 'push')),
   detail TEXT CHECK (detail IS NULL OR char_length(detail) <= 200),
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (id, created_at)
+) PARTITION BY RANGE (created_at);
 CREATE INDEX IF NOT EXISTS idx_reminder_events_reminder_created_at
   ON public.reminder_events (reminder_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_reminder_events_actor_created_at
@@ -4666,15 +4668,16 @@ ON CONFLICT (version) DO NOTHING;
 -- ─── 1. SUPPORT AUDIT LOGS ───────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS public.support_audit_logs (
-  id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  id               UUID DEFAULT gen_random_uuid(),
   staff_identifier TEXT NOT NULL,
   query_type       TEXT NOT NULL,
   query_value      TEXT NOT NULL,
   results_count    INT  NOT NULL DEFAULT 0,
   ip_address       TEXT NOT NULL,
   user_agent       TEXT,
-  created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (id, created_at)
+) PARTITION BY RANGE (created_at);
 
 CREATE INDEX IF NOT EXISTS idx_support_audit_logs_created_at
   ON public.support_audit_logs (created_at DESC);
@@ -4757,7 +4760,7 @@ ON CONFLICT (version) DO NOTHING;
 -- its own export history but nobody can edit or delete it.
 
 CREATE TABLE IF NOT EXISTS public.export_audit_events (
-  id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  id             UUID DEFAULT gen_random_uuid(),
   actor_wallet   TEXT        NOT NULL,
   export_kind    TEXT        NOT NULL CHECK (export_kind IN ('archive')),
   status         TEXT        NOT NULL CHECK (status IN ('served', 'rate_limited', 'forbidden', 'failed')),
@@ -4770,8 +4773,9 @@ CREATE TABLE IF NOT EXISTS public.export_audit_events (
   request_id     TEXT,
   -- Salted hash, not the raw IP: enough to spot abuse, not to track people.
   client_ip_hash TEXT,
-  created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (id, created_at)
+) PARTITION BY RANGE (created_at);
 
 CREATE INDEX IF NOT EXISTS idx_export_audit_events_actor_created_at
   ON public.export_audit_events (actor_wallet, created_at DESC);
@@ -5899,7 +5903,7 @@ ON CONFLICT (version) DO NOTHING;
 -- 3. Enables RLS and performance indexes for polling and operator reporting.
 
 CREATE TABLE IF NOT EXISTS public.reconciliation_queue (
-  id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  id                  UUID DEFAULT gen_random_uuid(),
   intent_id           UUID REFERENCES public.settlement_intents(id) ON DELETE SET NULL,
   trip_id             TEXT NOT NULL,
   expense_id          TEXT NOT NULL,
@@ -5932,8 +5936,9 @@ CREATE TABLE IF NOT EXISTS public.reconciliation_queue (
   verified_at         TIMESTAMPTZ,
   recorded_at         TIMESTAMPTZ,
   created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+  updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (id, created_at)
+) PARTITION BY RANGE (created_at);
 
 -- Index for polling due jobs fast
 CREATE INDEX IF NOT EXISTS idx_reconciliation_queue_status_next_attempt
@@ -8591,7 +8596,7 @@ REVOKE ALL ON FUNCTION public.record_expense_correction_audit_event() FROM PUBLI
 NOTIFY pgrst, 'reload schema';
 
 INSERT INTO public.schema_migrations (version, name, checksum)
-VALUES ('0019', '0019_expense_corrections_and_voids', 'expense_corrections_and_voids_v1')
+VALUES ('0019', '0019_trip_chore_coordination', 'trip_chore_coordination_v1')
 ON CONFLICT (version) DO NOTHING;
 
 
@@ -9437,3 +9442,410 @@ NOTIFY pgrst, 'reload schema';
 INSERT INTO public.schema_migrations (version, name, checksum)
 VALUES ('0019', '0019_trip_chore_coordination', 'trip_chore_coordination_v1')
 ON CONFLICT (version) DO NOTHING;
+=======
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Migration 0021: Partition high-volume operational data (#424)
+-- ─────────────────────────────────────────────────────────────────────────────
+
+CREATE OR REPLACE FUNCTION public.create_monthly_partition(
+  p_table TEXT,
+  p_year INT,
+  p_month INT
+) RETURNS TEXT AS $$
+DECLARE
+  v_next_year INT := p_year;
+  v_next_month INT := p_month + 1;
+  v_part_name TEXT;
+  v_start_date TEXT;
+  v_end_date TEXT;
+  v_sql TEXT;
+BEGIN
+  IF v_next_month > 12 THEN
+    v_next_month := 1;
+    v_next_year := v_next_year + 1;
+  END IF;
+
+  v_part_name := format('%I_y%sm%s', p_table, p_year, lpad(p_month::text, 2, '0'));
+  v_start_date := format('%s-%s-01 00:00:00+00', p_year, lpad(p_month::text, 2, '0'));
+  v_end_date := format('%s-%s-01 00:00:00+00', v_next_year, lpad(v_next_month::text, 2, '0'));
+
+  v_sql := format(
+    'CREATE TABLE IF NOT EXISTS public.%I PARTITION OF public.%I FOR VALUES FROM (%L) TO (%L)',
+    v_part_name, p_table, v_start_date, v_end_date
+  );
+  EXECUTE v_sql;
+
+  RETURN v_part_name;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+CREATE OR REPLACE FUNCTION public.archive_partition(
+  p_parent_table TEXT,
+  p_partition_name TEXT
+) RETURNS VOID AS $$
+BEGIN
+  EXECUTE format('ALTER TABLE public.%I DETACH PARTITION public.%I', p_parent_table, p_partition_name);
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+CREATE OR REPLACE FUNCTION public.prune_old_partitions(
+  p_parent_table TEXT,
+  p_cutoff_date TIMESTAMPTZ
+) RETURNS INT AS $$
+DECLARE
+  r RECORD;
+  v_count INT := 0;
+BEGIN
+  FOR r IN
+    SELECT c.relname AS child
+    FROM pg_inherits i
+    JOIN pg_class c ON c.oid = i.inhrelid
+    JOIN pg_class p ON p.oid = i.inhparent
+    JOIN pg_namespace n ON n.oid = p.relnamespace
+    WHERE n.nspname = 'public'
+      AND p.relname = p_parent_table
+      AND c.relname LIKE p_parent_table || '_y%'
+  LOOP
+    v_count := v_count + 1;
+  END LOOP;
+  RETURN v_count;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+CREATE TABLE IF NOT EXISTS public.support_audit_logs_default
+  PARTITION OF public.support_audit_logs DEFAULT;
+
+CREATE TABLE IF NOT EXISTS public.support_audit_logs_y2026m10
+  PARTITION OF public.support_audit_logs
+  FOR VALUES FROM ('2026-10-01 00:00:00+00') TO ('2026-11-01 00:00:00+00');
+
+CREATE TABLE IF NOT EXISTS public.support_audit_logs_y2026m11
+  PARTITION OF public.support_audit_logs
+  FOR VALUES FROM ('2026-11-01 00:00:00+00') TO ('2026-12-01 00:00:00+00');
+
+CREATE TABLE IF NOT EXISTS public.support_audit_logs_y2026m12
+  PARTITION OF public.support_audit_logs
+  FOR VALUES FROM ('2026-12-01 00:00:00+00') TO ('2027-01-01 00:00:00+00');
+
+CREATE TABLE IF NOT EXISTS public.support_audit_logs_y2027m01
+  PARTITION OF public.support_audit_logs
+  FOR VALUES FROM ('2027-01-01 00:00:00+00') TO ('2027-02-01 00:00:00+00');
+
+CREATE TABLE IF NOT EXISTS public.export_audit_events_default
+  PARTITION OF public.export_audit_events DEFAULT;
+
+CREATE TABLE IF NOT EXISTS public.export_audit_events_y2026m10
+  PARTITION OF public.export_audit_events
+  FOR VALUES FROM ('2026-10-01 00:00:00+00') TO ('2026-11-01 00:00:00+00');
+
+CREATE TABLE IF NOT EXISTS public.export_audit_events_y2026m11
+  PARTITION OF public.export_audit_events
+  FOR VALUES FROM ('2026-11-01 00:00:00+00') TO ('2026-12-01 00:00:00+00');
+
+CREATE TABLE IF NOT EXISTS public.export_audit_events_y2026m12
+  PARTITION OF public.export_audit_events
+  FOR VALUES FROM ('2026-12-01 00:00:00+00') TO ('2027-01-01 00:00:00+00');
+
+CREATE TABLE IF NOT EXISTS public.export_audit_events_y2027m01
+  PARTITION OF public.export_audit_events
+  FOR VALUES FROM ('2027-01-01 00:00:00+00') TO ('2027-02-01 00:00:00+00');
+
+CREATE INDEX IF NOT EXISTS idx_export_audit_events_created_at
+  ON public.export_audit_events (created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_export_audit_events_actor
+  ON public.export_audit_events (actor_wallet, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS public.reminder_events_default
+  PARTITION OF public.reminder_events DEFAULT;
+
+CREATE TABLE IF NOT EXISTS public.reminder_events_y2026m10
+  PARTITION OF public.reminder_events
+  FOR VALUES FROM ('2026-10-01 00:00:00+00') TO ('2026-11-01 00:00:00+00');
+
+CREATE TABLE IF NOT EXISTS public.reminder_events_y2026m11
+  PARTITION OF public.reminder_events
+  FOR VALUES FROM ('2026-11-01 00:00:00+00') TO ('2026-12-01 00:00:00+00');
+
+CREATE TABLE IF NOT EXISTS public.reminder_events_y2026m12
+  PARTITION OF public.reminder_events
+  FOR VALUES FROM ('2026-12-01 00:00:00+00') TO ('2027-01-01 00:00:00+00');
+
+CREATE TABLE IF NOT EXISTS public.reminder_events_y2027m01
+  PARTITION OF public.reminder_events
+  FOR VALUES FROM ('2027-01-01 00:00:00+00') TO ('2027-02-01 00:00:00+00');
+
+CREATE TABLE IF NOT EXISTS public.reconciliation_queue_default
+  PARTITION OF public.reconciliation_queue DEFAULT;
+
+CREATE TABLE IF NOT EXISTS public.reconciliation_queue_y2026m10
+  PARTITION OF public.reconciliation_queue
+  FOR VALUES FROM ('2026-10-01 00:00:00+00') TO ('2026-11-01 00:00:00+00');
+
+CREATE TABLE IF NOT EXISTS public.reconciliation_queue_y2026m11
+  PARTITION OF public.reconciliation_queue
+  FOR VALUES FROM ('2026-11-01 00:00:00+00') TO ('2026-12-01 00:00:00+00');
+
+CREATE TABLE IF NOT EXISTS public.reconciliation_queue_y2026m12
+  PARTITION OF public.reconciliation_queue
+  FOR VALUES FROM ('2026-12-01 00:00:00+00') TO ('2027-01-01 00:00:00+00');
+
+CREATE TABLE IF NOT EXISTS public.reconciliation_queue_y2027m01
+  PARTITION OF public.reconciliation_queue
+  FOR VALUES FROM ('2027-01-01 00:00:00+00') TO ('2027-02-01 00:00:00+00');
+
+
+
+-- ============================================================================
+-- Transactional Outbox Pattern (#425 / Issue 017)
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS public.transactional_outbox (
+  id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  aggregate_type      TEXT NOT NULL,
+  aggregate_id        TEXT NOT NULL,
+  event_type          TEXT NOT NULL,
+  channel             TEXT NOT NULL CHECK (channel IN ('webhook', 'reminder', 'analytics')),
+  payload             JSONB NOT NULL,
+  headers             JSONB NOT NULL DEFAULT '{}'::jsonb,
+  trace_id            TEXT NOT NULL,
+  deduplication_key   TEXT NOT NULL,
+  status              TEXT NOT NULL DEFAULT 'pending'
+                      CHECK (status IN ('pending', 'leased', 'delivered', 'failed', 'dead_letter')),
+  attempts            INT NOT NULL DEFAULT 0,
+  max_attempts        INT NOT NULL DEFAULT 5,
+  backoff_ms          INT NOT NULL DEFAULT 1000,
+  lease_id            TEXT,
+  leased_at           TIMESTAMPTZ,
+  lease_expires_at    TIMESTAMPTZ,
+  next_attempt_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  last_attempt_at     TIMESTAMPTZ,
+  delivered_at        TIMESTAMPTZ,
+  error_message       TEXT,
+  created_by_wallet   TEXT,
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT uq_transactional_outbox_dedup UNIQUE (deduplication_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_transactional_outbox_polling
+  ON public.transactional_outbox (status, next_attempt_at);
+
+CREATE INDEX IF NOT EXISTS idx_transactional_outbox_lease
+  ON public.transactional_outbox (status, lease_expires_at);
+
+CREATE INDEX IF NOT EXISTS idx_transactional_outbox_trace
+  ON public.transactional_outbox (trace_id);
+
+CREATE INDEX IF NOT EXISTS idx_transactional_outbox_aggregate
+  ON public.transactional_outbox (aggregate_type, aggregate_id);
+
+CREATE INDEX IF NOT EXISTS idx_transactional_outbox_created_at
+  ON public.transactional_outbox (created_at DESC);
+
+DROP TRIGGER IF EXISTS trg_transactional_outbox_updated_at ON public.transactional_outbox;
+CREATE TRIGGER trg_transactional_outbox_updated_at
+  BEFORE UPDATE ON public.transactional_outbox
+  FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+ALTER TABLE public.transactional_outbox ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS transactional_outbox_select_parties ON public.transactional_outbox;
+CREATE POLICY transactional_outbox_select_parties ON public.transactional_outbox
+  FOR SELECT TO authenticated
+  USING (
+    public.current_wallet() IS NOT NULL
+    AND (created_by_wallet IS NULL OR created_by_wallet = public.current_wallet())
+  );
+
+DROP POLICY IF EXISTS transactional_outbox_insert_parties ON public.transactional_outbox;
+CREATE POLICY transactional_outbox_insert_parties ON public.transactional_outbox
+  FOR INSERT TO authenticated
+  WITH CHECK (
+    public.current_wallet() IS NOT NULL
+    AND (created_by_wallet IS NULL OR created_by_wallet = public.current_wallet())
+  );
+
+DROP POLICY IF EXISTS transactional_outbox_update_parties ON public.transactional_outbox;
+CREATE POLICY transactional_outbox_update_parties ON public.transactional_outbox
+  FOR UPDATE TO authenticated
+  USING (
+    public.current_wallet() IS NOT NULL
+    AND (created_by_wallet IS NULL OR created_by_wallet = public.current_wallet())
+  );
+
+GRANT SELECT, INSERT, UPDATE ON public.transactional_outbox TO authenticated;
+
+CREATE OR REPLACE FUNCTION public.claim_outbox_batch(
+  p_worker_id TEXT,
+  p_batch_size INT DEFAULT 10,
+  p_lease_duration_seconds INT DEFAULT 60
+)
+RETURNS SETOF public.transactional_outbox
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+  RETURN QUERY
+  WITH claimable AS (
+    SELECT id
+    FROM public.transactional_outbox
+    WHERE
+      (status = 'pending' AND next_attempt_at <= NOW())
+      OR (status = 'leased' AND lease_expires_at < NOW())
+      OR (status = 'failed' AND attempts < max_attempts AND next_attempt_at <= NOW())
+    ORDER BY next_attempt_at ASC, created_at ASC
+    LIMIT p_batch_size
+    FOR UPDATE SKIP LOCKED
+  )
+  UPDATE public.transactional_outbox t
+  SET
+    status = 'leased',
+    lease_id = p_worker_id,
+    leased_at = NOW(),
+    lease_expires_at = NOW() + (p_lease_duration_seconds || ' seconds')::INTERVAL,
+    attempts = t.attempts + 1,
+    last_attempt_at = NOW(),
+    updated_at = NOW()
+  FROM claimable c
+  WHERE t.id = c.id
+  RETURNING t.*;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.complete_outbox_event(
+  p_id UUID,
+  p_lease_id TEXT
+)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  v_rows_affected INT;
+BEGIN
+  UPDATE public.transactional_outbox
+  SET
+    status = 'delivered',
+    delivered_at = NOW(),
+    lease_id = NULL,
+    lease_expires_at = NULL,
+    error_message = NULL,
+    updated_at = NOW()
+  WHERE id = p_id
+    AND (lease_id = p_lease_id OR lease_expires_at < NOW());
+
+  GET DIAGNOSTICS v_rows_affected = ROW_COUNT;
+  RETURN v_rows_affected > 0;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.fail_outbox_event(
+  p_id UUID,
+  p_lease_id TEXT,
+  p_error_message TEXT,
+  p_backoff_ms INT DEFAULT 1000
+)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  v_rows_affected INT;
+  v_attempts INT;
+  v_max_attempts INT;
+BEGIN
+  SELECT attempts, max_attempts INTO v_attempts, v_max_attempts
+  FROM public.transactional_outbox
+  WHERE id = p_id;
+
+  IF NOT FOUND THEN
+    RETURN FALSE;
+  END IF;
+
+  IF v_attempts >= v_max_attempts THEN
+    UPDATE public.transactional_outbox
+    SET
+      status = 'dead_letter',
+      error_message = p_error_message,
+      lease_id = NULL,
+      lease_expires_at = NULL,
+      updated_at = NOW()
+    WHERE id = p_id;
+  ELSE
+    UPDATE public.transactional_outbox
+    SET
+      status = 'failed',
+      next_attempt_at = NOW() + (p_backoff_ms || ' milliseconds')::INTERVAL,
+      error_message = p_error_message,
+      lease_id = NULL,
+      lease_expires_at = NULL,
+      updated_at = NOW()
+    WHERE id = p_id;
+  END IF;
+
+  GET DIAGNOSTICS v_rows_affected = ROW_COUNT;
+  RETURN v_rows_affected > 0;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.enqueue_outbox_event(
+  p_aggregate_type TEXT,
+  p_aggregate_id TEXT,
+  p_event_type TEXT,
+  p_channel TEXT,
+  p_payload JSONB,
+  p_trace_id TEXT,
+  p_deduplication_key TEXT,
+  p_headers JSONB DEFAULT '{}'::jsonb,
+  p_created_by_wallet TEXT DEFAULT NULL,
+  p_max_attempts INT DEFAULT 5,
+  p_backoff_ms INT DEFAULT 1000
+)
+RETURNS UUID
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  v_id UUID;
+BEGIN
+  INSERT INTO public.transactional_outbox (
+    aggregate_type,
+    aggregate_id,
+    event_type,
+    channel,
+    payload,
+    headers,
+    trace_id,
+    deduplication_key,
+    created_by_wallet,
+    max_attempts,
+    backoff_ms,
+    status,
+    next_attempt_at,
+    created_at,
+    updated_at
+  ) VALUES (
+    p_aggregate_type,
+    p_aggregate_id,
+    p_event_type,
+    p_channel,
+    p_payload,
+    COALESCE(p_headers, '{}'::jsonb),
+    p_trace_id,
+    p_deduplication_key,
+    COALESCE(p_created_by_wallet, public.current_wallet()),
+    COALESCE(p_max_attempts, 5),
+    COALESCE(p_backoff_ms, 1000),
+    'pending',
+    NOW(),
+    NOW(),
+    NOW()
+  )
+  ON CONFLICT (deduplication_key) DO UPDATE
+    SET updated_at = NOW()
+  RETURNING id INTO v_id;
+
+  RETURN v_id;
+END;
+$$;
+
