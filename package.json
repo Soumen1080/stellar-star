@@ -26,6 +26,7 @@
     "db:check": "node scripts/check-supabase.mjs",
     "db:migrate": "node scripts/migrate.mjs",
     "db:status": "node scripts/migrate.mjs --status",
+    "db:partitions:benchmark": "node scripts/benchmark-partition-scale.mjs",
     "db:backup": "node scripts/backup-supabase.mjs",
     "db:staging:rebuild": "node scripts/rebuild-staging.mjs",
     "db:drill": "node scripts/recovery-drill.mjs",
