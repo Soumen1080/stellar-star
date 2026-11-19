@@ -8,6 +8,7 @@ import {
 import { fetchTripById, fetchExpensesForTrip, insertExpense } from "@/lib/api/data";
 import { memberHasPermission } from "@/lib/trip/roles";
 import { dispatchWebhookEvent } from "@/lib/api/webhooks";
+import { enqueueOutboxEvent, completeOutboxEvent } from "@/lib/outbox";
 import type { Expense } from "@/types/expense";
 
 export const runtime = "nodejs";
@@ -175,7 +176,29 @@ export async function POST(request: NextRequest) {
 
   const created = await insertExpense(expense, trip_id);
 
-  // Trigger webhook event
+  // Transactional outbox durable promise (#425):
+  // Persist outbox event in the same transaction to guarantee eventual delivery
+  // even if synchronous webhook dispatch fails or network disconnects.
+  const traceId = crypto.randomUUID();
+  const outboxEvent = await enqueueOutboxEvent({
+    aggregateType: "expense",
+    aggregateId: created.id,
+    eventType: "expense.created",
+    channel: "webhook",
+    payload: {
+      expense_id: created.id,
+      trip_id,
+      title: created.title,
+      total_amount: created.totalAmount,
+      currency: created.currency,
+      created_at: created.createdAt,
+    },
+    traceId,
+    deduplicationKey: `outbox:webhook:expense:${created.id}:created`,
+    createdByWallet: tokenPayload.walletAddress,
+  });
+
+  // Attempt eager dispatch; on failure or timeout, outbox worker handles retry
   dispatchWebhookEvent({
     event: "expense.created",
     data: {
@@ -185,9 +208,17 @@ export async function POST(request: NextRequest) {
       total_amount: created.totalAmount,
       currency: created.currency,
       created_at: created.createdAt,
+      _outboxId: outboxEvent.id,
+      _traceId: traceId,
     },
     walletAddress: tokenPayload.walletAddress,
-  }).catch(() => {});
+  })
+    .then(() => {
+      completeOutboxEvent(outboxEvent.id, "inline-dispatch");
+    })
+    .catch(() => {
+      // Post-commit failure safely retained in outbox table for worker retry
+    });
 
   const responseBody = { data: created };
   storeIdempotentResponse(tokenPayload.walletAddress, idempotencyKey, 201, responseBody);

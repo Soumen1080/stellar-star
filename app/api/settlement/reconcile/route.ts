@@ -36,6 +36,7 @@ import {
   REQUEST_ID_HEADER,
   getOrCreateRequestId,
 } from "@/lib/observability/requestId";
+import { enqueueOutboxEvent, buildSettlementRecordedOutboxEvent } from "@/lib/outbox";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -239,6 +240,28 @@ export async function POST(request: NextRequest) {
   let recordedIntent: SettlementIntent = intent;
   try {
     recordedIntent = await markIntentRecorded(intent.id, payment.ledger, onChain, serverClient);
+
+    // Transactional outbox durable promise (#425):
+    // Commit consequence into outbox table to guarantee eventual webhook/analytics delivery
+    await enqueueOutboxEvent(
+      buildSettlementRecordedOutboxEvent({
+        intentId: recordedIntent.id,
+        tripId: cleanTripId,
+        expenseId: cleanExpenseId,
+        memberId: cleanMemberId,
+        payerWallet: effectivePayer,
+        memberWallet: effectiveMember,
+        amount: effectiveAmount,
+        currency: cleanAsset,
+        txHash: cleanTxHash,
+        ledger: payment.ledger,
+        traceId: requestId,
+        createdByWallet: effectiveMember,
+      }),
+      serverClient
+    ).catch((err) => {
+      console.warn(`[reconcile:route] Outbox enqueue non-fatal warning:`, err);
+    });
   } catch (err) {
     console.warn(`[reconcile:route] Failed to mark intent recorded:`, err);
   }

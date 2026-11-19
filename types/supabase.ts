@@ -337,6 +337,32 @@ export type ReconciliationJobRow = {
   updated_at: string;
 };
 
+export type TransactionalOutboxRow = {
+  id: string;
+  aggregate_type: string;
+  aggregate_id: string;
+  event_type: string;
+  channel: "webhook" | "reminder" | "analytics";
+  payload: Json;
+  headers: Json;
+  trace_id: string;
+  deduplication_key: string;
+  status: "pending" | "leased" | "delivered" | "failed" | "dead_letter";
+  attempts: number;
+  max_attempts: number;
+  backoff_ms: number;
+  lease_id: string | null;
+  leased_at: string | null;
+  lease_expires_at: string | null;
+  next_attempt_at: string;
+  last_attempt_at: string | null;
+  delivered_at: string | null;
+  error_message: string | null;
+  created_by_wallet: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export type DeletedAccountRow = {
   wallet_address: string;
   deleted_at: string;
@@ -843,6 +869,36 @@ export type Database = {
         Update: Partial<Omit<DatabaseQueryTraceRow, "id" | "created_at">>;
         Relationships: [];
       };
+      transactional_outbox: {
+        Row: TransactionalOutboxRow;
+        Insert: {
+          id?: string;
+          aggregate_type: string;
+          aggregate_id: string;
+          event_type: string;
+          channel: "webhook" | "reminder" | "analytics";
+          payload: Json;
+          headers?: Json;
+          trace_id: string;
+          deduplication_key: string;
+          status?: "pending" | "leased" | "delivered" | "failed" | "dead_letter";
+          attempts?: number;
+          max_attempts?: number;
+          backoff_ms?: number;
+          lease_id?: string | null;
+          leased_at?: string | null;
+          lease_expires_at?: string | null;
+          next_attempt_at?: string;
+          last_attempt_at?: string | null;
+          delivered_at?: string | null;
+          error_message?: string | null;
+          created_by_wallet?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: Partial<Omit<TransactionalOutboxRow, "id" | "created_at">>;
+        Relationships: [];
+      };
       settlement_intents: {
         Row: SettlementIntentRow;
         // Only the identifying/settlement fields are required. Everything the
@@ -1262,6 +1318,46 @@ export type Database = {
         Args: { p_parent_table: string; p_cutoff_date: string };
         Returns: number;
       };
+      claim_outbox_batch: {
+        Args: {
+          p_worker_id: string;
+          p_batch_size?: number;
+          p_lease_duration_seconds?: number;
+        };
+        Returns: TransactionalOutboxRow[];
+      };
+      complete_outbox_event: {
+        Args: {
+          p_id: string;
+          p_lease_id: string;
+        };
+        Returns: boolean;
+      };
+      fail_outbox_event: {
+        Args: {
+          p_id: string;
+          p_lease_id: string;
+          p_error_message: string;
+          p_backoff_ms?: number;
+        };
+        Returns: boolean;
+      };
+      enqueue_outbox_event: {
+        Args: {
+          p_aggregate_type: string;
+          p_aggregate_id: string;
+          p_event_type: string;
+          p_channel: string;
+          p_payload: Json;
+          p_trace_id: string;
+          p_deduplication_key: string;
+          p_headers?: Json;
+          p_created_by_wallet?: string | null;
+          p_max_attempts?: number;
+          p_backoff_ms?: number;
+        };
+        Returns: string;
+      };
     };
     Enums: { [_ in never]: never };
     CompositeTypes: { [_ in never]: never };
@@ -1290,3 +1386,5 @@ export type ContactInsert = Database["public"]["Tables"]["contacts"]["Insert"];
 export type ContactUpdate = Database["public"]["Tables"]["contacts"]["Update"];
 export type DatabaseQueryTraceInsert = Database["public"]["Tables"]["database_query_traces"]["Insert"];
 export type DatabaseQueryTraceUpdate = Database["public"]["Tables"]["database_query_traces"]["Update"];
+export type TransactionalOutboxInsert = Database["public"]["Tables"]["transactional_outbox"]["Insert"];
+export type TransactionalOutboxUpdate = Database["public"]["Tables"]["transactional_outbox"]["Update"];
