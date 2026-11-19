@@ -64,6 +64,25 @@ export function categorizeError(err: unknown): CategorizedError {
     };
   }
 
+  // 3b. Database Timeout / Query Budget Exceeded (57014, 55P03, 25P03)
+  if (
+    lowerMessage.includes("database_deadline_exceeded") ||
+    lowerMessage.includes("database_query_timeout") ||
+    lowerMessage.includes("query_count_budget_exceeded") ||
+    lowerMessage.includes("query_duration_budget_exceeded") ||
+    lowerMessage.includes("statement timeout") ||
+    lowerMessage.includes("lock timeout") ||
+    (err instanceof DatabaseError && (err.code === "57014" || err.code === "55P03" || err.code === "25P03"))
+  ) {
+    return {
+      category: "network_temporary",
+      title: "Database Operation Timed Out",
+      copy: "The database query took too long to complete and was terminated safely. Please retry with a narrower search or filter.",
+      safeToRetry: true,
+      originalError: err,
+    };
+  }
+
   // 4. Ambiguous Money-Path Outcome
   // Thrown during submission to Stellar network, but without a clear rejection or success (network timeout, 504 Gateway Timeout, fetch failed)
   const isStellarSubmission =

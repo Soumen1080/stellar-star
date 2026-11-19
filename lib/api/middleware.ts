@@ -2,12 +2,17 @@ import { NextRequest, NextResponse } from "next/server";
 import { type ApiScope, type AuditLogEntry, type ScopedTokenPayload } from "./types";
 import { verifyScopedToken } from "./tokens";
 import { checkRateLimit, getClientIp } from "@/lib/auth/rateLimiter";
+import {
+  createDatabaseRequestContext,
+  type DatabaseRequestContext,
+} from "@/lib/supabase/queryBudget";
 
 export interface AuthenticatedContext {
   tokenPayload: ScopedTokenPayload;
   ip: string;
   userAgent: string;
   idempotencyKey: string | null;
+  databaseContext: DatabaseRequestContext;
 }
 
 interface IdempotentCachedResponse {
@@ -172,6 +177,11 @@ export async function authenticateApiRequest(
     };
   }
 
+  const databaseContext = createDatabaseRequestContext({
+    route: request.nextUrl.pathname,
+    headers: request.headers,
+  });
+
   return {
     success: true,
     context: {
@@ -179,8 +189,32 @@ export async function authenticateApiRequest(
       ip,
       userAgent,
       idempotencyKey,
+      databaseContext,
     },
   };
+}
+
+/** Attaches database performance, deadlines, and budget headers to an API response. */
+export function attachDatabaseDeadlineHeaders(
+  response: NextResponse,
+  context: DatabaseRequestContext
+): NextResponse {
+  response.headers.set("X-Database-Queries", String(context.queriesExecuted));
+  response.headers.set("X-Database-Duration-Ms", String(context.cumulativeDurationMs));
+  response.headers.set("X-Database-Deadline-Remaining-Ms", String(context.remainingMs()));
+  const isSlow = context.cumulativeDurationMs > context.budget.maxDurationMs;
+  const isChatty = context.queriesExecuted > context.budget.maxQueries;
+  const status = context.isExpired()
+    ? "deadline_exceeded"
+    : isSlow && isChatty
+    ? "slow_and_chatty"
+    : isSlow
+    ? "slow"
+    : isChatty
+    ? "chatty"
+    : "ok";
+  response.headers.set("X-Database-Status", status);
+  return response;
 }
 
 /** Checks if an idempotent replay is available. */
