@@ -68,8 +68,8 @@ and settlement tables.
 Check migration status and database schema agreement:
 
 ```bash
-# Verify migration manifest integrity and checksums
-npm run db:manifest:verify
+# Verify database schema & TypeScript type synchronization
+npm run db:types:verify
 
 # View migration status (applied vs pending)
 npm run db:status
@@ -81,9 +81,9 @@ npm run db:migrate
 npm run db:check
 ```
 
-See [IMMUTABLE_MIGRATION_IDENTITY.md](./IMMUTABLE_MIGRATION_IDENTITY.md) for full details on migration sequence determinism, duplicate numeric prefix disambiguation, and manifest ledger synchronization.
+See [DATABASE_TYPE_GENERATION.md](./DATABASE_TYPE_GENERATION.md) for details on disposable schema type verification, CI release gates, and strongly typed RPC boundaries.
 
-In CI/CD, `npm run db:check` and `npm run db:manifest:verify` fail the build if the database schema or manifest is missing any migrations or has checksum discrepancies.
+In CI/CD, `npm run db:check` and `npm run db:types:verify` fail the build if the database schema is missing any migrations or TypeScript types diverge from SQL definitions.
 
 ---
 
