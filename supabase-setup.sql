@@ -5997,3 +5997,73 @@ GRANT SELECT, INSERT, UPDATE ON public.reconciliation_queue TO authenticated;
 INSERT INTO public.schema_migrations (version, name, checksum)
 VALUES ('0020', '0020_onchain_reconciliation_worker', 'onchain_reconciliation_worker_313_v1')
 ON CONFLICT (version) DO NOTHING;
+
+
+-- Cumulative Addition from 0021_immutable_migration_identity.sql
+-- Stellar-star Migration 0021: Make Migration Identity Immutable (#422)
+
+-- 1. Extend schema_migrations with immutable identity and sequence fields
+ALTER TABLE public.schema_migrations
+  ADD COLUMN IF NOT EXISTS migration_id TEXT,
+  ADD COLUMN IF NOT EXISTS sequence INT,
+  ADD COLUMN IF NOT EXISTS manifest_checksum TEXT;
+
+-- 2. Performance indexes for immutable identity and sequence tracking
+CREATE INDEX IF NOT EXISTS idx_schema_migrations_name
+  ON public.schema_migrations (name);
+
+CREATE INDEX IF NOT EXISTS idx_schema_migrations_sequence
+  ON public.schema_migrations (sequence);
+
+CREATE INDEX IF NOT EXISTS idx_schema_migrations_migration_id
+  ON public.schema_migrations (migration_id);
+
+-- 3. Stored Procedure: Record migration by immutable identity
+CREATE OR REPLACE FUNCTION public.record_migration_v2(
+  p_migration_id TEXT,
+  p_version TEXT,
+  p_name TEXT,
+  p_checksum TEXT,
+  p_sequence INT
+)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+  UPDATE public.schema_migrations
+  SET migration_id = p_migration_id,
+      sequence = p_sequence,
+      manifest_checksum = p_checksum
+  WHERE name = p_name OR version = p_version;
+
+  IF NOT FOUND THEN
+    INSERT INTO public.schema_migrations (
+      version,
+      name,
+      checksum,
+      migration_id,
+      sequence,
+      manifest_checksum,
+      applied_at
+    ) VALUES (
+      p_version,
+      p_name,
+      p_checksum,
+      p_migration_id,
+      p_sequence,
+      p_checksum,
+      NOW()
+    )
+    ON CONFLICT (version) DO UPDATE
+      SET migration_id = EXCLUDED.migration_id,
+          sequence = EXCLUDED.sequence,
+          manifest_checksum = EXCLUDED.manifest_checksum;
+  END IF;
+END;
+$$;
+
+-- 4. Record this migration in schema_migrations
+INSERT INTO public.schema_migrations (version, name, checksum, migration_id, sequence, manifest_checksum)
+VALUES ('0021', '0021_immutable_migration_identity', 'immutable_migration_identity_v1', '0021_immutable_migration_identity', 33, 'immutable_migration_identity_v1')
+ON CONFLICT (version) DO NOTHING;
