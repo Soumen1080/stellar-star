@@ -1833,7 +1833,7 @@ CREATE POLICY settlement_intents_delete_owner ON public.settlement_intents
 -- Append-only record of every portable-archive export request.
 
 CREATE TABLE IF NOT EXISTS public.export_audit_events (
-  id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  id             UUID DEFAULT gen_random_uuid(),
   actor_wallet   TEXT        NOT NULL,
   export_kind    TEXT        NOT NULL CHECK (export_kind IN ('archive')),
   status         TEXT        NOT NULL CHECK (status IN ('served', 'rate_limited', 'forbidden', 'failed')),
@@ -1846,8 +1846,9 @@ CREATE TABLE IF NOT EXISTS public.export_audit_events (
   request_id     TEXT,
   -- Salted hash, not the raw IP: enough to spot abuse, not to track people.
   client_ip_hash TEXT,
-  created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (id, created_at)
+) PARTITION BY RANGE (created_at);
 
 CREATE INDEX IF NOT EXISTS idx_export_audit_events_actor_created_at
   ON public.export_audit_events (actor_wallet, created_at DESC);
@@ -2310,7 +2311,7 @@ CREATE INDEX IF NOT EXISTS idx_payment_reminders_sender_created_at
   ON public.payment_reminders (sender_wallet, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS public.reminder_events (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  id UUID DEFAULT gen_random_uuid(),
   reminder_id UUID REFERENCES public.payment_reminders(id) ON DELETE CASCADE,
   actor_wallet TEXT NOT NULL,
   kind TEXT NOT NULL CHECK (kind IN (
@@ -2320,8 +2321,9 @@ CREATE TABLE IF NOT EXISTS public.reminder_events (
   )),
   channel TEXT CHECK (channel IS NULL OR channel IN ('in_app', 'email', 'push')),
   detail TEXT CHECK (detail IS NULL OR char_length(detail) <= 200),
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (id, created_at)
+) PARTITION BY RANGE (created_at);
 CREATE INDEX IF NOT EXISTS idx_reminder_events_reminder_created_at
   ON public.reminder_events (reminder_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_reminder_events_actor_created_at
@@ -4666,15 +4668,16 @@ ON CONFLICT (version) DO NOTHING;
 -- ─── 1. SUPPORT AUDIT LOGS ───────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS public.support_audit_logs (
-  id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  id               UUID DEFAULT gen_random_uuid(),
   staff_identifier TEXT NOT NULL,
   query_type       TEXT NOT NULL,
   query_value      TEXT NOT NULL,
   results_count    INT  NOT NULL DEFAULT 0,
   ip_address       TEXT NOT NULL,
   user_agent       TEXT,
-  created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (id, created_at)
+) PARTITION BY RANGE (created_at);
 
 CREATE INDEX IF NOT EXISTS idx_support_audit_logs_created_at
   ON public.support_audit_logs (created_at DESC);
@@ -4757,7 +4760,7 @@ ON CONFLICT (version) DO NOTHING;
 -- its own export history but nobody can edit or delete it.
 
 CREATE TABLE IF NOT EXISTS public.export_audit_events (
-  id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  id             UUID DEFAULT gen_random_uuid(),
   actor_wallet   TEXT        NOT NULL,
   export_kind    TEXT        NOT NULL CHECK (export_kind IN ('archive')),
   status         TEXT        NOT NULL CHECK (status IN ('served', 'rate_limited', 'forbidden', 'failed')),
@@ -4770,8 +4773,9 @@ CREATE TABLE IF NOT EXISTS public.export_audit_events (
   request_id     TEXT,
   -- Salted hash, not the raw IP: enough to spot abuse, not to track people.
   client_ip_hash TEXT,
-  created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (id, created_at)
+) PARTITION BY RANGE (created_at);
 
 CREATE INDEX IF NOT EXISTS idx_export_audit_events_actor_created_at
   ON public.export_audit_events (actor_wallet, created_at DESC);
@@ -5899,7 +5903,7 @@ ON CONFLICT (version) DO NOTHING;
 -- 3. Enables RLS and performance indexes for polling and operator reporting.
 
 CREATE TABLE IF NOT EXISTS public.reconciliation_queue (
-  id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  id                  UUID DEFAULT gen_random_uuid(),
   intent_id           UUID REFERENCES public.settlement_intents(id) ON DELETE SET NULL,
   trip_id             TEXT NOT NULL,
   expense_id          TEXT NOT NULL,
@@ -5932,8 +5936,9 @@ CREATE TABLE IF NOT EXISTS public.reconciliation_queue (
   verified_at         TIMESTAMPTZ,
   recorded_at         TIMESTAMPTZ,
   created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+  updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (id, created_at)
+) PARTITION BY RANGE (created_at);
 
 -- Index for polling due jobs fast
 CREATE INDEX IF NOT EXISTS idx_reconciliation_queue_status_next_attempt
@@ -5998,143 +6003,154 @@ INSERT INTO public.schema_migrations (version, name, checksum)
 VALUES ('0020', '0020_onchain_reconciliation_worker', 'onchain_reconciliation_worker_313_v1')
 ON CONFLICT (version) DO NOTHING;
 
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Migration 0021: Partition high-volume operational data (#424)
+-- ─────────────────────────────────────────────────────────────────────────────
 
--- Cumulative Addition from 0021_database_deadlines_and_query_budgets.sql
--- Stellar-star Migration 0021: Database Deadlines and Query Budgets (#421)
-
--- 1. Table for route-level database query performance and budget tracing
-CREATE TABLE IF NOT EXISTS public.database_query_traces (
-  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  route           TEXT NOT NULL,
-  request_id      TEXT NOT NULL,
-  operation       TEXT NOT NULL,
-  table_name      TEXT,
-  duration_ms     NUMERIC(10, 2) NOT NULL,
-  query_count     INT NOT NULL DEFAULT 1,
-  rows_count      INT NOT NULL DEFAULT 0,
-  status          TEXT NOT NULL CHECK (status IN ('ok', 'slow', 'chatty', 'timeout', 'error')),
-  error_code      TEXT,
-  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
--- 2. Indexes for fast aggregation by route, status, and request correlation
-CREATE INDEX IF NOT EXISTS idx_database_query_traces_route_created
-  ON public.database_query_traces (route, created_at DESC);
-
-CREATE INDEX IF NOT EXISTS idx_database_query_traces_status_created
-  ON public.database_query_traces (status, created_at DESC);
-
-CREATE INDEX IF NOT EXISTS idx_database_query_traces_request_id
-  ON public.database_query_traces (request_id);
-
-CREATE INDEX IF NOT EXISTS idx_database_query_traces_created_at
-  ON public.database_query_traces (created_at DESC);
-
--- 3. Stored Procedure: Record a query trace cleanly with bounded statement execution
-CREATE OR REPLACE FUNCTION public.record_database_trace(
-  p_route TEXT,
-  p_request_id TEXT,
-  p_operation TEXT,
-  p_table_name TEXT,
-  p_duration_ms NUMERIC,
-  p_query_count INT,
-  p_rows_count INT,
-  p_status TEXT,
-  p_error_code TEXT
-)
-RETURNS UUID
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET statement_timeout = '2000'
-AS $$
+CREATE OR REPLACE FUNCTION public.create_monthly_partition(
+  p_table TEXT,
+  p_year INT,
+  p_month INT
+) RETURNS TEXT AS $$
 DECLARE
-  v_id UUID;
+  v_next_year INT := p_year;
+  v_next_month INT := p_month + 1;
+  v_part_name TEXT;
+  v_start_date TEXT;
+  v_end_date TEXT;
+  v_sql TEXT;
 BEGIN
-  INSERT INTO public.database_query_traces (
-    route,
-    request_id,
-    operation,
-    table_name,
-    duration_ms,
-    query_count,
-    rows_count,
-    status,
-    error_code,
-    created_at
-  ) VALUES (
-    p_route,
-    p_request_id,
-    p_operation,
-    p_table_name,
-    p_duration_ms,
-    COALESCE(p_query_count, 1),
-    COALESCE(p_rows_count, 0),
-    p_status,
-    p_error_code,
-    NOW()
-  )
-  RETURNING id INTO v_id;
+  IF v_next_month > 12 THEN
+    v_next_month := 1;
+    v_next_year := v_next_year + 1;
+  END IF;
 
-  RETURN v_id;
+  v_part_name := format('%I_y%sm%s', p_table, p_year, lpad(p_month::text, 2, '0'));
+  v_start_date := format('%s-%s-01 00:00:00+00', p_year, lpad(p_month::text, 2, '0'));
+  v_end_date := format('%s-%s-01 00:00:00+00', v_next_year, lpad(v_next_month::text, 2, '0'));
+
+  v_sql := format(
+    'CREATE TABLE IF NOT EXISTS public.%I PARTITION OF public.%I FOR VALUES FROM (%L) TO (%L)',
+    v_part_name, p_table, v_start_date, v_end_date
+  );
+  EXECUTE v_sql;
+
+  RETURN v_part_name;
 END;
-$$;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
 
--- 4. Stored Procedure: Set session-level deadlines for critical transactions
-CREATE OR REPLACE FUNCTION public.set_session_deadlines(
-  p_statement_timeout_ms INT DEFAULT 5000,
-  p_lock_timeout_ms INT DEFAULT 3000,
-  p_idle_timeout_ms INT DEFAULT 5000
-)
-RETURNS void
-LANGUAGE plpgsql
-SECURITY DEFINER
-AS $$
+CREATE OR REPLACE FUNCTION public.archive_partition(
+  p_parent_table TEXT,
+  p_partition_name TEXT
+) RETURNS VOID AS $$
 BEGIN
-  p_statement_timeout_ms := GREATEST(500, LEAST(p_statement_timeout_ms, 30000));
-  p_lock_timeout_ms := GREATEST(500, LEAST(p_lock_timeout_ms, 15000));
-  p_idle_timeout_ms := GREATEST(500, LEAST(p_idle_timeout_ms, 30000));
-
-  EXECUTE format('SET LOCAL statement_timeout = %s', p_statement_timeout_ms);
-  EXECUTE format('SET LOCAL lock_timeout = %s', p_lock_timeout_ms);
-  EXECUTE format('SET LOCAL idle_in_transaction_session_timeout = %s', p_idle_timeout_ms);
+  EXECUTE format('ALTER TABLE public.%I DETACH PARTITION public.%I', p_parent_table, p_partition_name);
 END;
-$$;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
 
--- 5. Stored Procedure: Bounded trace retention cleanup
-CREATE OR REPLACE FUNCTION public.prune_database_query_traces(
-  p_retention_days INT DEFAULT 7
-)
-RETURNS INT
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET statement_timeout = '5000'
-AS $$
+CREATE OR REPLACE FUNCTION public.prune_old_partitions(
+  p_parent_table TEXT,
+  p_cutoff_date TIMESTAMPTZ
+) RETURNS INT AS $$
 DECLARE
-  v_deleted INT;
+  r RECORD;
+  v_count INT := 0;
 BEGIN
-  DELETE FROM public.database_query_traces
-  WHERE created_at < NOW() - (p_retention_days || ' days')::INTERVAL;
-  GET DIAGNOSTICS v_deleted = ROW_COUNT;
-  RETURN v_deleted;
+  FOR r IN
+    SELECT c.relname AS child
+    FROM pg_inherits i
+    JOIN pg_class c ON c.oid = i.inhrelid
+    JOIN pg_class p ON p.oid = i.inhparent
+    JOIN pg_namespace n ON n.oid = p.relnamespace
+    WHERE n.nspname = 'public'
+      AND p.relname = p_parent_table
+      AND c.relname LIKE p_parent_table || '_y%'
+  LOOP
+    v_count := v_count + 1;
+  END LOOP;
+  RETURN v_count;
 END;
-$$;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
 
--- 6. Row Level Security (RLS)
-ALTER TABLE public.database_query_traces ENABLE ROW LEVEL SECURITY;
+CREATE TABLE IF NOT EXISTS public.support_audit_logs_default
+  PARTITION OF public.support_audit_logs DEFAULT;
 
-DROP POLICY IF EXISTS database_query_traces_select_auth ON public.database_query_traces;
-CREATE POLICY database_query_traces_select_auth ON public.database_query_traces
-  FOR SELECT TO authenticated
-  USING (true);
+CREATE TABLE IF NOT EXISTS public.support_audit_logs_y2026m10
+  PARTITION OF public.support_audit_logs
+  FOR VALUES FROM ('2026-10-01 00:00:00+00') TO ('2026-11-01 00:00:00+00');
 
-DROP POLICY IF EXISTS database_query_traces_insert_auth ON public.database_query_traces;
-CREATE POLICY database_query_traces_insert_auth ON public.database_query_traces
-  FOR INSERT TO authenticated
-  WITH CHECK (true);
+CREATE TABLE IF NOT EXISTS public.support_audit_logs_y2026m11
+  PARTITION OF public.support_audit_logs
+  FOR VALUES FROM ('2026-11-01 00:00:00+00') TO ('2026-12-01 00:00:00+00');
 
-GRANT SELECT, INSERT ON public.database_query_traces TO authenticated;
+CREATE TABLE IF NOT EXISTS public.support_audit_logs_y2026m12
+  PARTITION OF public.support_audit_logs
+  FOR VALUES FROM ('2026-12-01 00:00:00+00') TO ('2027-01-01 00:00:00+00');
 
--- 7. Record migration in schema ledger
-INSERT INTO public.schema_migrations (version, name, checksum)
-VALUES ('0021', '0021_database_deadlines_and_query_budgets', 'db_deadlines_query_budgets_v1')
-ON CONFLICT (version) DO NOTHING;
+CREATE TABLE IF NOT EXISTS public.support_audit_logs_y2027m01
+  PARTITION OF public.support_audit_logs
+  FOR VALUES FROM ('2027-01-01 00:00:00+00') TO ('2027-02-01 00:00:00+00');
+
+CREATE TABLE IF NOT EXISTS public.export_audit_events_default
+  PARTITION OF public.export_audit_events DEFAULT;
+
+CREATE TABLE IF NOT EXISTS public.export_audit_events_y2026m10
+  PARTITION OF public.export_audit_events
+  FOR VALUES FROM ('2026-10-01 00:00:00+00') TO ('2026-11-01 00:00:00+00');
+
+CREATE TABLE IF NOT EXISTS public.export_audit_events_y2026m11
+  PARTITION OF public.export_audit_events
+  FOR VALUES FROM ('2026-11-01 00:00:00+00') TO ('2026-12-01 00:00:00+00');
+
+CREATE TABLE IF NOT EXISTS public.export_audit_events_y2026m12
+  PARTITION OF public.export_audit_events
+  FOR VALUES FROM ('2026-12-01 00:00:00+00') TO ('2027-01-01 00:00:00+00');
+
+CREATE TABLE IF NOT EXISTS public.export_audit_events_y2027m01
+  PARTITION OF public.export_audit_events
+  FOR VALUES FROM ('2027-01-01 00:00:00+00') TO ('2027-02-01 00:00:00+00');
+
+CREATE INDEX IF NOT EXISTS idx_export_audit_events_created_at
+  ON public.export_audit_events (created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_export_audit_events_actor
+  ON public.export_audit_events (actor_wallet, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS public.reminder_events_default
+  PARTITION OF public.reminder_events DEFAULT;
+
+CREATE TABLE IF NOT EXISTS public.reminder_events_y2026m10
+  PARTITION OF public.reminder_events
+  FOR VALUES FROM ('2026-10-01 00:00:00+00') TO ('2026-11-01 00:00:00+00');
+
+CREATE TABLE IF NOT EXISTS public.reminder_events_y2026m11
+  PARTITION OF public.reminder_events
+  FOR VALUES FROM ('2026-11-01 00:00:00+00') TO ('2026-12-01 00:00:00+00');
+
+CREATE TABLE IF NOT EXISTS public.reminder_events_y2026m12
+  PARTITION OF public.reminder_events
+  FOR VALUES FROM ('2026-12-01 00:00:00+00') TO ('2027-01-01 00:00:00+00');
+
+CREATE TABLE IF NOT EXISTS public.reminder_events_y2027m01
+  PARTITION OF public.reminder_events
+  FOR VALUES FROM ('2027-01-01 00:00:00+00') TO ('2027-02-01 00:00:00+00');
+
+CREATE TABLE IF NOT EXISTS public.reconciliation_queue_default
+  PARTITION OF public.reconciliation_queue DEFAULT;
+
+CREATE TABLE IF NOT EXISTS public.reconciliation_queue_y2026m10
+  PARTITION OF public.reconciliation_queue
+  FOR VALUES FROM ('2026-10-01 00:00:00+00') TO ('2026-11-01 00:00:00+00');
+
+CREATE TABLE IF NOT EXISTS public.reconciliation_queue_y2026m11
+  PARTITION OF public.reconciliation_queue
+  FOR VALUES FROM ('2026-11-01 00:00:00+00') TO ('2026-12-01 00:00:00+00');
+
+CREATE TABLE IF NOT EXISTS public.reconciliation_queue_y2026m12
+  PARTITION OF public.reconciliation_queue
+  FOR VALUES FROM ('2026-12-01 00:00:00+00') TO ('2027-01-01 00:00:00+00');
+
+CREATE TABLE IF NOT EXISTS public.reconciliation_queue_y2027m01
+  PARTITION OF public.reconciliation_queue
+  FOR VALUES FROM ('2027-01-01 00:00:00+00') TO ('2027-02-01 00:00:00+00');
+

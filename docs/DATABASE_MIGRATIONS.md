@@ -79,11 +79,14 @@ npm run db:migrate
 
 # Comprehensive end-to-end database & schema check
 npm run db:check
+
+# Benchmark operational data partitioning and pruning
+npm run db:partitions:benchmark
 ```
 
-See [DATABASE_TYPE_GENERATION.md](./DATABASE_TYPE_GENERATION.md) for details on disposable schema type verification, CI release gates, and strongly typed RPC boundaries.
+See [DATABASE_PARTITIONING.md](./DATABASE_PARTITIONING.md) for details on declarative monthly range partitioning, partition-local indexes, query-plan pruning, and retention lifecycle procedures.
 
-In CI/CD, `npm run db:check` and `npm run db:types:verify` fail the build if the database schema is missing any migrations or TypeScript types diverge from SQL definitions.
+In CI/CD, `npm run db:check` fails the build if the database schema is missing any migrations that exist in the codebase.
 
 ---
 

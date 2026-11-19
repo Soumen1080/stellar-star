@@ -1250,6 +1250,18 @@ export type Database = {
         };
         Returns: undefined;
       };
+      create_monthly_partition: {
+        Args: { p_table: string; p_year: number; p_month: number };
+        Returns: string;
+      };
+      archive_partition: {
+        Args: { p_parent_table: string; p_partition_name: string };
+        Returns: undefined;
+      };
+      prune_old_partitions: {
+        Args: { p_parent_table: string; p_cutoff_date: string };
+        Returns: number;
+      };
     };
     Enums: { [_ in never]: never };
     CompositeTypes: { [_ in never]: never };
