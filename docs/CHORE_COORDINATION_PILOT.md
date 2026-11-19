@@ -58,3 +58,9 @@ preferences, and the enabled flag are stored in the existing off-chain trip
 workspace. The only finance reference is an optional existing expense ID.
 Amounts, shares, payment state, and settlement fields are not copied into chore
 records. Workspace export and deletion include chore data.
+
+The next assignment advances from the last completed assignee through members
+who have not opted out. Only the currently assigned member can complete a
+chore. The database checks assignment and duplicate-period completion in one
+locked update; owner-only chore configuration is enforced both in the UI and
+at the database boundary.

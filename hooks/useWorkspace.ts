@@ -11,18 +11,18 @@ import {
   type RecurringChore,
   type ItineraryItem,
   type TravelWorkspace,
-  chorePeriodKey,
   choreCompletedThisPeriod,
   currentChoreAssignee,
 } from "@/types/workspace";
 import { useTrip } from "@/hooks/useTrip";
 import { useToast } from "@/components/ui/Toast";
 import { useWalletContext } from "@/context/WalletContext";
+import { memberRole } from "@/lib/trip/roles";
 
 const getCacheKey = (tripId: string, wallet: string) => `stellar_star_workspace:${wallet}:${tripId}`;
 
 export function useWorkspace(trip: Trip) {
-  const { updateTrip } = useTrip();
+  const { updateTrip, appendChoreCompletion } = useTrip();
   const { success: toastSuccess, error: toastError } = useToast();
   const { publicKey } = useWalletContext();
 
@@ -47,13 +47,6 @@ export function useWorkspace(trip: Trip) {
     if (trip.workspace) {
       const normalized = normalizeWorkspace(trip.workspace);
       setWorkspace(normalized);
-      if (typeof window !== "undefined") {
-        try {
-          localStorage.setItem(getCacheKey(trip.id), JSON.stringify(normalized));
-        } catch {
-          // ignore cache write error
-        }
-      }
     } else {
       let cachedWorkspace: TravelWorkspace | null = null;
       if (publicKey) {
@@ -72,23 +65,27 @@ export function useWorkspace(trip: Trip) {
         ...next,
         updatedAt: new Date().toISOString(),
       };
-      setWorkspace(withTimestamp);
-
-      if (typeof window !== "undefined") {
-        try {
-          if (publicKey) localStorage.setItem(getCacheKey(trip.id, publicKey), JSON.stringify(withTimestamp));
-        } catch {
-          // ignore
-        }
-      }
-
       try {
         await updateTrip(trip.id, { workspace: withTimestamp });
-      } catch (err) {
-        console.warn("Failed to persist workspace to remote server, saved locally:", err);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : "Please try again.";
+        toastError("Could not save travel workspace", reason);
+        const persistenceError = error instanceof Error ? error : new Error(reason);
+        persistenceError.name = "WorkspacePersistenceError";
+        throw persistenceError;
+      }
+
+      setWorkspace(withTimestamp);
+      if (typeof window !== "undefined" && publicKey) {
+        try {
+          localStorage.setItem(getCacheKey(trip.id, publicKey), JSON.stringify(withTimestamp));
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : "Local storage is unavailable.";
+          toastError("Workspace saved, but local cache could not be updated", reason);
+        }
       }
     },
-    [trip.id, updateTrip, publicKey]
+    [trip.id, updateTrip, publicKey, toastError]
   );
 
   // ─── Itinerary actions ────────────────────────────────────────────────────────
@@ -208,6 +205,12 @@ export function useWorkspace(trip: Trip) {
       linkedExpenseId?: string | null;
     }) => {
       if (!publicKey) throw new Error("Sign in with your wallet to add a chore.");
+      const creator = trip.members.find(
+        (member) => member.walletAddress?.trim().toUpperCase() === publicKey.trim().toUpperCase(),
+      );
+      if (!creator || memberRole(creator, trip) !== "owner") {
+        throw new Error("Only the trip owner can add chores.");
+      }
       const chore: RecurringChore = {
         ...input,
         id: crypto.randomUUID ? crypto.randomUUID() : `chore-${Date.now()}`,
@@ -222,7 +225,7 @@ export function useWorkspace(trip: Trip) {
       toastSuccess("Recurring chore added", chore.title);
       return chore;
     },
-    [trip.id, workspace, saveWorkspace, publicKey, toastSuccess]
+    [trip, workspace, saveWorkspace, publicKey, toastSuccess]
   );
 
   const completeChore = useCallback(
@@ -233,7 +236,6 @@ export function useWorkspace(trip: Trip) {
       }
       const chore = workspace.chores.find((item) => item.id === choreId);
       if (!chore) throw new Error("This chore no longer exists.");
-      const periodKey = chorePeriodKey(chore.cadence);
       if (choreCompletedThisPeriod(chore)) {
         throw new Error("This chore is already marked complete for this period.");
       }
@@ -245,29 +247,34 @@ export function useWorkspace(trip: Trip) {
         .map((member) => member.id);
       const assignedMemberId = currentChoreAssignee(chore, optedOutMemberIds);
       if (!assignedMemberId) throw new Error("Assign at least one member to this chore.");
+      const completingMember = trip.members.find(
+        (member) => member.walletAddress?.trim().toUpperCase() === publicKey.trim().toUpperCase(),
+      );
+      if (!completingMember || completingMember.id !== assignedMemberId) {
+        throw new Error("Only the currently assigned member can complete this chore.");
+      }
 
-      const completion = {
-        completedAt: new Date().toISOString(),
-        completedByWallet: publicKey,
-        assignedMemberId,
-        periodKey,
-      };
-      await saveWorkspace({
-        ...workspace,
-        chores: workspace.chores.map((item) =>
-          item.id === choreId
-            ? { ...item, completionHistory: [...item.completionHistory, completion] }
-            : item
-        ),
-      });
+      const savedTrip = await appendChoreCompletion(trip.id, choreId);
+      setWorkspace(normalizeWorkspace(savedTrip.workspace));
+      if (typeof window !== "undefined") {
+        try {
+          localStorage.setItem(
+            getCacheKey(trip.id, publicKey),
+            JSON.stringify(normalizeWorkspace(savedTrip.workspace)),
+          );
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : "Local storage is unavailable.";
+          toastError("Chore completed, but local cache could not be updated", reason);
+        }
+      }
       toastSuccess("Chore completed", "This does not record or change a payment.");
     },
-    [workspace, saveWorkspace, publicKey, toastSuccess, trip.members]
+    [workspace, appendChoreCompletion, publicKey, toastSuccess, toastError, trip.id, trip.members]
   );
 
   const toggleChoreOptOut = useCallback(async () => {
     if (!publicKey) throw new Error("Sign in with your wallet to change this preference.");
-    const wallet = publicKey.toUpperCase();
+    const wallet = publicKey.trim().toUpperCase();
     const optedOut = workspace.choreOptOutWallets.includes(wallet);
     await saveWorkspace({
       ...workspace,
@@ -279,9 +286,16 @@ export function useWorkspace(trip: Trip) {
 
   const setChoresEnabled = useCallback(
     async (enabled: boolean) => {
+      if (!publicKey) throw new Error("Sign in with your wallet to change chore coordination.");
+      const currentMember = trip.members.find(
+        (member) => member.walletAddress?.trim().toUpperCase() === publicKey.trim().toUpperCase(),
+      );
+      if (!currentMember || memberRole(currentMember, trip) !== "owner") {
+        throw new Error("Only the trip owner can change chore coordination.");
+      }
       await saveWorkspace({ ...workspace, choresEnabled: enabled });
     },
-    [workspace, saveWorkspace]
+    [workspace, saveWorkspace, publicKey, trip]
   );
 
   // ─── Booking reference actions ────────────────────────────────────────────────

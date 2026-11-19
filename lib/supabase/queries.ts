@@ -1373,6 +1373,20 @@ export async function updateTripRow(
   return rowToTrip(unwrap(result, "update this trip") as TripRow);
 }
 
+export async function appendTripChoreCompletionRow(
+  tripId: string,
+  choreId: string,
+  client: StellarStarClient = requireAuthenticatedClient(),
+): Promise<Trip> {
+  const { data, error } = await client.rpc("append_trip_chore_completion", {
+    p_trip_id: tripId,
+    p_chore_id: choreId,
+  });
+  if (error) throw toDatabaseError(error, "complete this chore");
+  if (!data?.[0]) throw new DatabaseError("The trip was not returned after completing this chore.");
+  return rowToTrip(data[0] as TripRow);
+}
+
 export async function setTripMemberRole(
   tripId: string,
   memberId: string,

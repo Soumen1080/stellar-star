@@ -9,9 +9,11 @@ import type { Trip } from "@/types/trip";
 import type { Expense } from "@/types/expense";
 
 const mockUpdateTrip = jest.fn().mockResolvedValue(undefined);
+const mockAppendChoreCompletion = jest.fn();
 jest.mock("@/hooks/useTrip", () => ({
   useTrip: () => ({
     updateTrip: mockUpdateTrip,
+    appendChoreCompletion: mockAppendChoreCompletion,
   }),
 }));
 
@@ -123,6 +125,29 @@ describe("TravelWorkspacePanel", () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockAppendChoreCompletion.mockImplementation(async (tripId: string, choreId: string) => {
+      const workspace = mockTrip.workspace!;
+      return {
+        ...mockTrip,
+        id: tripId,
+        workspace: {
+          ...workspace,
+          chores: workspace.chores.map((chore) =>
+            chore.id === choreId
+              ? {
+                  ...chore,
+                  completionHistory: [{
+                    completedAt: "2026-11-19T10:00:00.000Z",
+                    completedByWallet: "GALICE111",
+                    assignedMemberId: "mem-1",
+                    periodKey: "2026-11-16",
+                  }],
+                }
+              : chore
+          ),
+        },
+      };
+    });
   });
 
   it("renders workspace summary statistics and sub-navigation", () => {
@@ -198,7 +223,7 @@ describe("TravelWorkspacePanel", () => {
     expect(screen.queryByText("SECRET-PNR-999")).toBeNull();
   });
 
-  it("records chore completion as workspace history without updating financial fields", async () => {
+  it("records chore completion atomically without updating financial fields", async () => {
     render(
       <TravelWorkspacePanel
         trip={mockTrip}
@@ -210,15 +235,28 @@ describe("TravelWorkspacePanel", () => {
     expect(screen.getByText("Supply expense: Shinkansen Tickets")).toBeTruthy();
     expect(screen.queryByText(/280\.0000000/)).toBeNull();
 
-    mockUpdateTrip.mockClear();
     fireEvent.click(screen.getByRole("button", { name: "Mark complete" }));
     await waitFor(() => expect(screen.getByText("Done this period")).toBeTruthy());
 
-    const [tripId, patch] = mockUpdateTrip.mock.calls[0];
-    expect(tripId).toBe("trip-kyoto-1");
-    expect(Object.keys(patch)).toEqual(["workspace"]);
-    expect(patch.workspace.chores[0].completionHistory).toHaveLength(1);
-    expect(patch.workspace.chores[0].completionHistory[0].assignedMemberId).toBe("mem-1");
+    expect(mockAppendChoreCompletion).toHaveBeenCalledWith("trip-kyoto-1", "chore-bins");
+    expect(mockUpdateTrip).not.toHaveBeenCalled();
+    expect(mockToastSuccess).toHaveBeenCalledWith(
+      "Chore completed",
+      "This does not record or change a payment.",
+    );
+  });
+
+  it("disables completion for a member who is not currently assigned", () => {
+    render(
+      <TravelWorkspacePanel
+        trip={mockTrip}
+        expenses={mockExpenses}
+        currentUserPublicKey="GBOB222"
+      />
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Chores/i }));
+
+    expect(screen.getByRole("button", { name: "Mark complete" })).toHaveProperty("disabled", true);
   });
 
   it("opens the Calendar Export modal when export button is clicked", () => {

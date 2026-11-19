@@ -186,7 +186,12 @@ export function normalizeWorkspace(raw: unknown): TravelWorkspace {
     ? obj.chores.filter(isRecurringChore)
     : [];
   const choreOptOutWallets = Array.isArray(obj.choreOptOutWallets)
-    ? obj.choreOptOutWallets.filter((wallet): wallet is string => typeof wallet === "string")
+    ? [...new Set(
+        obj.choreOptOutWallets
+          .filter((wallet): wallet is string => typeof wallet === "string")
+          .map((wallet) => wallet.trim().toUpperCase())
+          .filter(Boolean),
+      )]
     : [];
 
   return {
@@ -214,14 +219,13 @@ export function currentChoreAssignee(
   chore: RecurringChore,
   excludedMemberIds: string[] = [],
 ): string | null {
-  if (chore.rotationMemberIds.length === 0) return null;
   const excluded = new Set(excludedMemberIds);
-  for (let offset = 0; offset < chore.rotationMemberIds.length; offset += 1) {
-    const index = (chore.completionHistory.length + offset) % chore.rotationMemberIds.length;
-    const memberId = chore.rotationMemberIds[index];
-    if (!excluded.has(memberId)) return memberId;
-  }
-  return null;
+  const eligibleMemberIds = chore.rotationMemberIds.filter((memberId) => !excluded.has(memberId));
+  if (eligibleMemberIds.length === 0) return null;
+
+  const lastAssignee = chore.completionHistory.at(-1)?.assignedMemberId;
+  const lastIndex = eligibleMemberIds.indexOf(lastAssignee ?? "");
+  return eligibleMemberIds[(lastIndex + 1) % eligibleMemberIds.length];
 }
 
 export function choreCompletedThisPeriod(chore: RecurringChore, date = new Date()): boolean {

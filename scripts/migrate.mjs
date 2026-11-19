@@ -157,7 +157,8 @@ async function main() {
         remote.checksum === "trigger_pipeline_checksum" ||
         remote.checksum === "reconcile_drifted_schema_v1" ||
         remote.checksum === "settlement_intents_v1" ||
-        remote.checksum === "verify_trip_invite_v1";
+        remote.checksum === "verify_trip_invite_v1" ||
+        remote.checksum === "trip_chore_coordination_v1";
 
       if (checksumOk) {
         console.log(`  ${GREEN}[APPLIED]${RESET}   ${local.file} ${DIM}(at ${remote.applied_at})${RESET}`);

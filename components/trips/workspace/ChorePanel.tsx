@@ -56,9 +56,13 @@ export function ChorePanel({
   const [rotationMemberIds, setRotationMemberIds] = useState<string[]>([]);
   const [linkedExpenseId, setLinkedExpenseId] = useState("");
   const [saving, setSaving] = useState(false);
+  const [completingChoreId, setCompletingChoreId] = useState<string | null>(null);
   const { error: toastError } = useToast();
 
   const normalizedWallet = currentUserWallet?.trim().toUpperCase();
+  const currentMemberId = members.find(
+    (member) => member.walletAddress?.trim().toUpperCase() === normalizedWallet,
+  )?.id;
   const rotationMembers = members.filter(
     (member) => member.walletAddress && !optedOutMemberIds.includes(member.id),
   );
@@ -78,7 +82,9 @@ export function ChorePanel({
       setTitle("");
       setLinkedExpenseId("");
     } catch (error) {
-      toastError("Could not add chore", error instanceof Error ? error.message : "Try again.");
+      if (!(error instanceof Error && error.name === "WorkspacePersistenceError")) {
+        toastError("Could not add chore", error instanceof Error ? error.message : "Try again.");
+      }
     } finally {
       setSaving(false);
     }
@@ -88,7 +94,20 @@ export function ChorePanel({
     try {
       await action();
     } catch (error) {
-      toastError(success, error instanceof Error ? error.message : "Try again.");
+      if (!(error instanceof Error && error.name === "WorkspacePersistenceError")) {
+        toastError(success, error instanceof Error ? error.message : "Try again.");
+      }
+    }
+  };
+
+  const handleComplete = async (choreId: string) => {
+    setCompletingChoreId(choreId);
+    try {
+      await onComplete(choreId);
+    } catch (error) {
+      toastError("Could not complete chore", error instanceof Error ? error.message : "Try again.");
+    } finally {
+      setCompletingChoreId(null);
     }
   };
 
@@ -240,12 +259,23 @@ export function ChorePanel({
                   </div>
                   <button
                     type="button"
-                    disabled={!normalizedWallet || optedOut || completed || !assignedMemberId}
-                    onClick={() => void handlePreference(() => onComplete(chore.id), "Could not complete chore")}
+                    disabled={
+                      !normalizedWallet ||
+                      !currentMemberId ||
+                      optedOut ||
+                      completed ||
+                      assignedMemberId !== currentMemberId ||
+                      completingChoreId !== null
+                    }
+                    onClick={() => void handleComplete(chore.id)}
                     className="inline-flex items-center gap-1.5 rounded-xl border border-[#DDD] px-3 py-2 text-xs font-semibold text-[#555] disabled:opacity-50"
                   >
                     <CheckCircle2 size={14} />
-                    {completed ? "Done this period" : "Mark complete"}
+                    {completed
+                      ? "Done this period"
+                      : completingChoreId === chore.id
+                        ? "Saving…"
+                        : "Mark complete"}
                   </button>
                 </div>
                 <details className="mt-3 border-t border-[#F0F0F0] pt-3 text-xs text-[#777]">
@@ -258,7 +288,12 @@ export function ChorePanel({
                     <ol className="mt-2 space-y-1">
                       {[...chore.completionHistory].reverse().map((completion, index) => (
                         <li key={`${completion.periodKey}-${index}`}>
-                          {new Date(completion.completedAt).toLocaleDateString()} · {getMember(completion.assignedMemberId)} completed
+                          {new Date(completion.completedAt).toLocaleDateString()} · completed by{" "}
+                          {members.find(
+                            (member) =>
+                              member.walletAddress?.trim().toUpperCase() ===
+                              completion.completedByWallet.trim().toUpperCase(),
+                          )?.name ?? "Former member"} · assigned to {getMember(completion.assignedMemberId)}
                         </li>
                       ))}
                     </ol>
