@@ -3,16 +3,22 @@
  */
 
 import React from "react";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { TravelWorkspacePanel } from "@/components/trips/workspace/TravelWorkspacePanel";
 import type { Trip } from "@/types/trip";
 import type { Expense } from "@/types/expense";
 
 const mockUpdateTrip = jest.fn().mockResolvedValue(undefined);
+const mockAppendChoreCompletion = jest.fn();
 jest.mock("@/hooks/useTrip", () => ({
   useTrip: () => ({
     updateTrip: mockUpdateTrip,
+    appendChoreCompletion: mockAppendChoreCompletion,
   }),
+}));
+
+jest.mock("@/context/WalletContext", () => ({
+  useWalletContext: () => ({ publicKey: "GALICE111" }),
 }));
 
 const mockToastSuccess = jest.fn();
@@ -37,6 +43,21 @@ describe("TravelWorkspacePanel", () => {
     settled: false,
     createdByWallet: "GALICE111",
     workspace: {
+      chores: [
+        {
+          id: "chore-bins",
+          tripId: "trip-kyoto-1",
+          title: "Take out the bins",
+          cadence: "weekly",
+          rotationMemberIds: ["mem-1", "mem-2"],
+          completionHistory: [],
+          linkedExpenseId: "exp-shinkansen-1",
+          createdByWallet: "GALICE111",
+          createdAt: "2026-10-20T10:00:00Z",
+        },
+      ],
+      choreOptOutWallets: [],
+      choresEnabled: true,
       itinerary: [
         {
           id: "itin-1",
@@ -104,6 +125,29 @@ describe("TravelWorkspacePanel", () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockAppendChoreCompletion.mockImplementation(async (tripId: string, choreId: string) => {
+      const workspace = mockTrip.workspace!;
+      return {
+        ...mockTrip,
+        id: tripId,
+        workspace: {
+          ...workspace,
+          chores: workspace.chores.map((chore) =>
+            chore.id === choreId
+              ? {
+                  ...chore,
+                  completionHistory: [{
+                    completedAt: "2026-11-19T10:00:00.000Z",
+                    completedByWallet: "GALICE111",
+                    assignedMemberId: "mem-1",
+                    periodKey: "2026-11-16",
+                  }],
+                }
+              : chore
+          ),
+        },
+      };
+    });
   });
 
   it("renders workspace summary statistics and sub-navigation", () => {
@@ -116,7 +160,8 @@ describe("TravelWorkspacePanel", () => {
     );
 
     expect(screen.getByText("Shared Travel Workspace")).toBeTruthy();
-    expect(screen.getByText("1")).toBeTruthy(); // 1 Itinerary event
+    const itineraryStat = screen.getByText("Itinerary Events").closest("div");
+    expect(itineraryStat?.textContent).toContain("1");
     expect(screen.getByText("Itinerary Events")).toBeTruthy();
     expect(screen.getByText("Bookings & Passes")).toBeTruthy();
   });
@@ -176,6 +221,42 @@ describe("TravelWorkspacePanel", () => {
     expect(screen.getByText("Alice Private Flight Ticket")).toBeTruthy();
     expect(screen.getByText(/Restricted Access:\s*Confirmation details are only visible to authorized members/i)).toBeTruthy();
     expect(screen.queryByText("SECRET-PNR-999")).toBeNull();
+  });
+
+  it("records chore completion atomically without updating financial fields", async () => {
+    render(
+      <TravelWorkspacePanel
+        trip={mockTrip}
+        expenses={mockExpenses}
+        currentUserPublicKey="GALICE111"
+      />
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Chores/i }));
+    expect(screen.getByText("Supply expense: Shinkansen Tickets")).toBeTruthy();
+    expect(screen.queryByText(/280\.0000000/)).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Mark complete" }));
+    await waitFor(() => expect(screen.getByText("Done this period")).toBeTruthy());
+
+    expect(mockAppendChoreCompletion).toHaveBeenCalledWith("trip-kyoto-1", "chore-bins");
+    expect(mockUpdateTrip).not.toHaveBeenCalled();
+    expect(mockToastSuccess).toHaveBeenCalledWith(
+      "Chore completed",
+      "This does not record or change a payment.",
+    );
+  });
+
+  it("disables completion for a member who is not currently assigned", () => {
+    render(
+      <TravelWorkspacePanel
+        trip={mockTrip}
+        expenses={mockExpenses}
+        currentUserPublicKey="GBOB222"
+      />
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Chores/i }));
+
+    expect(screen.getByRole("button", { name: "Mark complete" })).toHaveProperty("disabled", true);
   });
 
   it("opens the Calendar Export modal when export button is clicked", () => {
