@@ -11,14 +11,16 @@ import {
   Lock,
   RefreshCw,
   Sliders,
+  Server,
 } from "lucide-react";
 import { useAnalytics } from "@/context/AnalyticsContext";
 import { EVENT_TAXONOMY } from "@/lib/analytics/taxonomy";
 import { ANALYTICS_SCHEMA_VERSION } from "@/lib/analytics/types";
+import { DatabaseBudgetsPanel } from "./DatabaseBudgetsPanel";
 
 export function AnalyticsDashboard() {
   const { metrics, consent, openConsentModal, refreshMetrics } = useAnalytics();
-  const [activeTab, setActiveTab] = useState<"metrics" | "taxonomy">("metrics");
+  const [activeTab, setActiveTab] = useState<"metrics" | "taxonomy" | "database">("metrics");
 
   return (
     <div className="space-y-6">
@@ -99,9 +101,22 @@ export function AnalyticsDashboard() {
           <Layers size={14} />
           Public Event Taxonomy
         </button>
+        <button
+          onClick={() => setActiveTab("database")}
+          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all ${
+            activeTab === "database"
+              ? "bg-[#0F0F14] text-white shadow-sm"
+              : "text-[#666] hover:text-[#0F0F14] hover:bg-black/5"
+          }`}
+        >
+          <Server size={14} />
+          Database Deadlines & Budgets
+        </button>
       </div>
 
-      {activeTab === "metrics" ? (
+      {activeTab === "database" ? (
+        <DatabaseBudgetsPanel />
+      ) : activeTab === "metrics" ? (
         <>
           {/* Key Metric KPI Cards */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">

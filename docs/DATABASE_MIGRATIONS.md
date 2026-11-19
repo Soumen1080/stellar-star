@@ -68,6 +68,9 @@ and settlement tables.
 Check migration status and database schema agreement:
 
 ```bash
+# Verify database schema & TypeScript type synchronization
+npm run db:types:verify
+
 # View migration status (applied vs pending)
 npm run db:status
 

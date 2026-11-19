@@ -343,6 +343,20 @@ export type DeletedAccountRow = {
   reason: string;
 };
 
+export type DatabaseQueryTraceRow = {
+  id: string;
+  route: string;
+  request_id: string;
+  operation: string;
+  table_name: string | null;
+  duration_ms: number;
+  query_count: number;
+  rows_count: number;
+  status: "ok" | "slow" | "chatty" | "timeout" | "error";
+  error_code: string | null;
+  created_at: string;
+};
+
 export type SponsoredAccountRow = {
   account: string;
   /** `numeric(30)` — carried as a string so large values keep full precision. */
@@ -472,6 +486,9 @@ export type SchemaMigrationRow = {
   name: string;
   applied_at: string;
   checksum: string;
+  migration_id?: string | null;
+  sequence?: number | null;
+  manifest_checksum?: string | null;
 };
 
 export type SupportAuditLogRow = {
@@ -808,6 +825,24 @@ export type Database = {
         Update: Partial<Omit<ReconciliationJobRow, "id" | "created_at">>;
         Relationships: [];
       };
+      database_query_traces: {
+        Row: DatabaseQueryTraceRow;
+        Insert: {
+          id?: string;
+          route: string;
+          request_id: string;
+          operation: string;
+          table_name?: string | null;
+          duration_ms: number;
+          query_count?: number;
+          rows_count?: number;
+          status: "ok" | "slow" | "chatty" | "timeout" | "error";
+          error_code?: string | null;
+          created_at?: string;
+        };
+        Update: Partial<Omit<DatabaseQueryTraceRow, "id" | "created_at">>;
+        Relationships: [];
+      };
       settlement_intents: {
         Row: SettlementIntentRow;
         // Only the identifying/settlement fields are required. Everything the
@@ -1077,7 +1112,26 @@ export type Database = {
           p_window_ms: number;
           p_now: number;
         };
-        Returns: Json;
+        Returns: {
+          allowed: boolean;
+          remaining: number;
+          resetMs: number;
+          count: number;
+        };
+      };
+      check_rate_limit: {
+        Args: {
+          p_key: string;
+          p_limit: number;
+          p_window_ms: number;
+          p_now: number;
+        };
+        Returns: {
+          allowed: boolean;
+          remaining: number;
+          resetMs: number;
+          count: number;
+        };
       };
       claim_trip_invite: {
         Args: {
@@ -1086,13 +1140,29 @@ export type Database = {
           p_selected_member_id?: string;
           p_expected_trip_id?: string;
         };
-        Returns: Json;
+        Returns: {
+          success: boolean;
+          trip_id: string;
+          trip_name: string;
+          member_id: string;
+          member_name: string;
+        };
       };
       verify_trip_invite: {
         Args: {
           p_token_hash: string;
         };
-        Returns: Json;
+        Returns: {
+          invite_id: string;
+          trip_id: string;
+          trip_name: string;
+          trip_description: string | null;
+          member_id: string | null;
+          member_name: string | null;
+          inviter_wallet: string;
+          expires_at: string;
+          unclaimed_members: Array<{ id: string; name: string }> | null;
+        };
       };
       update_expense_versioned: {
         Args: {
@@ -1155,7 +1225,30 @@ export type Database = {
       };
       claim_contact_profile: {
         Args: { p_token_hash: string };
-        Returns: Json;
+        Returns: {
+          status: "verified" | "pending_notice";
+          contact_name: string;
+          owner_wallet: string;
+          notice_until?: string | null;
+        };
+      };
+      delete_user_account: {
+        Args: { p_wallet_address: string };
+        Returns: {
+          success: boolean;
+          wallet_address: string;
+          deleted_at: string;
+        };
+      };
+      record_migration_v2: {
+        Args: {
+          p_version: string;
+          p_name: string;
+          p_migration_id: string;
+          p_sequence: number;
+          p_manifest_checksum: string;
+        };
+        Returns: undefined;
       };
       create_monthly_partition: {
         Args: { p_table: string; p_year: number; p_month: number };
@@ -1195,3 +1288,5 @@ export type SponsorshipInviteInsert = Database["public"]["Tables"]["sponsorship_
 export type TripInviteInsert = Database["public"]["Tables"]["trip_invites"]["Insert"];
 export type ContactInsert = Database["public"]["Tables"]["contacts"]["Insert"];
 export type ContactUpdate = Database["public"]["Tables"]["contacts"]["Update"];
+export type DatabaseQueryTraceInsert = Database["public"]["Tables"]["database_query_traces"]["Insert"];
+export type DatabaseQueryTraceUpdate = Database["public"]["Tables"]["database_query_traces"]["Update"];
