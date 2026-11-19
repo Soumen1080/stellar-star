@@ -159,34 +159,30 @@ export function mergeExpenseUpdates(
   serverExpense: Expense,
   proposedUpdates: Partial<Expense>,
 ): MergeResult {
-  // Invariant 4: Settled expenses cannot be edited in place (Issue #315)
-  if (serverExpense.settled || baseExpense.settled) {
+  if (serverExpense.voided || baseExpense.voided) {
     return {
       success: false,
       conflict: {
-        fields: ["settled"],
-        reason: "This expense is settled and cannot be edited in place. See the corrective adjustment flow.",
+        fields: ["voided"],
+        reason: "Voided expenses are immutable and cannot be edited.",
         serverExpense,
         proposedUpdates,
       },
     };
   }
 
-  // Validate total amount is positive and non-zero
-  const targetTotal = proposedUpdates.totalAmount ?? serverExpense.totalAmount;
-  const parsedTotal = Money.tryParse(targetTotal);
-  if (!parsedTotal || parsedTotal.isZero() || parsedTotal.isNegative()) {
+  const isSettled = serverExpense.settled || baseExpense.settled;
+  if (isSettled && proposedUpdates.totalAmount !== undefined && proposedUpdates.totalAmount !== baseExpense.totalAmount) {
     return {
       success: false,
       conflict: {
         fields: ["totalAmount"],
-        reason: "Total amount must be a positive number greater than zero.",
+        reason: "Settled expenses cannot be modified in place. Use a linked correction record instead.",
         serverExpense,
         proposedUpdates,
       },
     };
   }
-
   // If server expense has not changed from base, proposed updates apply directly
   if (
     serverExpense.version !== undefined &&
@@ -224,6 +220,7 @@ export function mergeExpenseUpdates(
         };
       }
 
+      const parsedTotal = Money.parse(updatedTotal);
       if (parsedTotal.lessThan(settledTotal)) {
         return {
           success: false,

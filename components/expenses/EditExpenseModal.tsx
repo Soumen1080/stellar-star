@@ -130,7 +130,7 @@ export function EditExpenseModal({
 
     const proposedUpdates: Partial<Expense> = updatesToApply ?? {
       title: title.trim(),
-      description: description.trim() || null,
+      description: description.trim() || undefined,
       totalAmount: totalAmount.trim(),
       currency,
       paidByMemberId,
@@ -198,7 +198,7 @@ export function EditExpenseModal({
             <h3 className="font-bold text-base text-[#0F0F14]">Settled Expense Locked</h3>
           </div>
           <p className="text-xs text-[#666] leading-relaxed">
-            "{baseExpense.title}" is already fully settled on-chain. Settled expenses cannot be edited in place.
+            &quot;{baseExpense.title}&quot; is already fully settled on-chain. Settled expenses cannot be edited in place.
             To correct an overpayment or adjustment, see the settlement corrective flow.
           </p>
           <div className="flex justify-end pt-2">

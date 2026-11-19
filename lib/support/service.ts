@@ -305,20 +305,20 @@ export async function lookupIncident(
     try {
       const { data } = await client.from("expenses").select("*").eq("id", targetExpenseId).maybeSingle();
       if (data) {
-        expense = data as Expense;
+        expense = data as unknown as Expense;
       }
     } catch {}
   }
 
   // 3. Fetch associated Trip
-  const effectiveTripId = targetTripId || expense?.trip_id;
+  const effectiveTripId = targetTripId || (expense as any)?.trip_id || (expense as any)?.tripId;
   if (effectiveTripId && client) {
     try {
-      const { data } = await client.from("trips").select("id, title, created_by_wallet, created_at").eq("id", effectiveTripId).maybeSingle();
+      const { data } = await client.from("trips").select("id, name, created_by_wallet, created_at").eq("id", effectiveTripId).maybeSingle();
       if (data) {
         tripData = {
           id: data.id,
-          title: data.title,
+          title: (data as any).name || "Untitled Trip",
           ownerWallet: data.created_by_wallet,
           createdAt: data.created_at,
         };

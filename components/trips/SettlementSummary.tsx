@@ -48,29 +48,40 @@ type RowState =
 function deriveRawDebts(expenses: Expense[], disputedShares: ReadonlySet<string> = new Set()): RawDebt[] {
   const debts: RawDebt[] = [];
   for (const expense of expenses) {
+    if (expense.voided) continue;
+    const payer = expense.members.find((m) => m.id === expense.paidByMemberId);
+    if (!payer) continue;
     for (const share of expense.shares) {
-      const payer = expense.members.find((m) => m.id === expense.paidByMemberId);
-      if (!payer || share.memberId === expense.paidByMemberId || disputedShares.has(disputeKey(expense.id, share.memberId))) continue;
+      if (share.memberId === expense.paidByMemberId || disputedShares.has(disputeKey(expense.id, share.memberId))) continue;
       // A partly paid share (#325) still owes its remaining balance, and only
       // that: never the original amount, and never "settled" until it is zero.
       const balance = shareBalance(share);
       if (balance.fullySettled) continue;
-      debts.push({
-        expenseId:  expense.id,
-        fromId:     share.memberId,
-        toId:       payer.id,
-        from:       share.name,
-        to:         payer.name,
-        amount:     balance.remaining,
-        // The SETTLEMENT asset, never `expense.currency` — that is the fiat
-        // the user typed, and `share.amount` was already converted out of it.
-        // Tagging a EUR-entered debt as asset "EUR" put it in its own netting
-        // graph (so offsetting XLM debts never cancelled) and handed "EUR" to
-        // the payment builder as if it were a Stellar asset.
-        asset:      settlementAssetOf(expense),
-        fromWallet: share.walletAddress,
-        toWallet:   payer.walletAddress,
-      });
+      if (expense.correctionType === "reversal") {
+        debts.push({
+          expenseId:  expense.id,
+          fromId:     payer.id,
+          toId:       share.memberId,
+          from:       payer.name,
+          to:         share.name,
+          amount:     balance.remaining,
+          asset:      settlementAssetOf(expense),
+          fromWallet: payer.walletAddress,
+          toWallet:   share.walletAddress,
+        });
+      } else {
+        debts.push({
+          expenseId:  expense.id,
+          fromId:     share.memberId,
+          toId:       payer.id,
+          from:       share.name,
+          to:         payer.name,
+          amount:     balance.remaining,
+          asset:      settlementAssetOf(expense),
+          fromWallet: share.walletAddress,
+          toWallet:   payer.walletAddress,
+        });
+      }
     }
   }
   return debts;

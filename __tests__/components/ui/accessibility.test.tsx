@@ -5,7 +5,11 @@ import { Input } from "@/components/ui/Input";
 import { Modal } from "@/components/ui/Modal";
 
 jest.mock("framer-motion", () => ({
-  motion: { div: React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(({ children, ...props }, ref) => <div ref={ref} {...props}>{children}</div>) },
+  motion: {
+    div: React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(({ children, ...props }, ref) => (
+      <div ref={ref} {...props}>{children}</div>
+    )),
+  },
 }));
 
 describe("accessible shared controls", () => {
@@ -24,7 +28,7 @@ describe("accessible shared controls", () => {
   it("exposes a named modal and lets Escape close it", () => {
     const onClose = jest.fn();
     render(<Modal open onClose={onClose} title="Confirm payment" description="Review before signing">Details</Modal>);
-    expect(screen.getByRole("dialog", { name: "Confirm payment" })).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Confirm payment" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Close modal" })).toBeTruthy();
     fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
     expect(onClose).toHaveBeenCalled();

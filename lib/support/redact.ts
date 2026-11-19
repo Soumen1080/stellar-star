@@ -1,4 +1,4 @@
-/**
+﻿/**
  * lib/support/redact.ts
  *
  * Safe data redaction engine for the Incident-Response and Support Console (Issue #314).
@@ -43,10 +43,16 @@ const SENSITIVE_KEY_NAMES = new Set([
 export function redactSensitiveString(input: string): string {
   if (!input || typeof input !== "string") return input;
 
+  const bearerPattern = /\bAuthorization\s*:\s*Bearer\s+[^\s;]+/gi;
+  const bareBearerPattern = /\bBearer\s+[^\s;]+/gi;
+
   return input
     .replace(STELLAR_SECRET_KEY_REGEX, "[REDACTED_STELLAR_SECRET_KEY]")
     .replace(JWT_REGEX, "[REDACTED_JWT_TOKEN]")
-    .replace(/Bearer\s+[A-Za-z0-9._~+/-]+=*/gi, "Bearer [REDACTED_BEARER_TOKEN]");
+    .replace(bearerPattern, "Authorization: [REDACTED_BEARER_TOKEN]")
+    .replace(bareBearerPattern, "[REDACTED_BEARER_TOKEN]")
+    .replace(/\bAuthorization\s*:\s*\*{3,}/gi, "Authorization: [REDACTED_BEARER_TOKEN]")
+    .replace(/\bBearer\s+\*{3,}/gi, "[REDACTED_BEARER_TOKEN]");
 }
 
 /**
@@ -69,7 +75,7 @@ export function redactObject<T>(obj: T): T {
     for (const [key, val] of Object.entries(obj)) {
       const lowerKey = key.toLowerCase();
 
-      if (SENSITIVE_KEY_NAMES.has(lowerKey)) {
+      if (SENSITIVE_KEY_NAMES.has(lowerKey) || lowerKey.includes("secret") || lowerKey.includes("token") || lowerKey.includes("jwt") || lowerKey.includes("password")) {
         redacted[key] = "[REDACTED_SECRET]";
       } else if (typeof val === "string") {
         redacted[key] = redactSensitiveString(val);
@@ -107,7 +113,7 @@ export function maskQueryForAudit(query: string): string {
 
   // If 64-char transaction hash, keep prefix and suffix
   if (/^[0-9a-fA-F]{64}$/.test(trimmed)) {
-    return `${trimmed.slice(0, 8)}...${trimmed.slice(-6)}`;
+    return `${trimmed.slice(0, 8)}...${trimmed.slice(-5)}`;
   }
 
   // If longer than 40 chars, truncate for clean audit log

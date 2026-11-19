@@ -21,6 +21,7 @@
     "test:coverage": "jest --coverage",
     "test:error-reporting": "node scripts/smoke-error-reporting.js",
     "proof:links": "node scripts/proof-link-check.js",
+    "gate:check": "node scripts/verify-mainnet-gate.js",
     "config:validate": "node scripts/validate-config.js",
     "db:check": "node scripts/check-supabase.mjs",
     "db:migrate": "node scripts/migrate.mjs",

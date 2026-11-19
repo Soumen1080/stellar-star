@@ -157,6 +157,9 @@ export async function POST(request: NextRequest) {
       settled: false,
       version: 1,
       createdAt: new Date().toISOString(),
+      correctionOfExpenseId: body.correctionOfExpenseId ?? undefined,
+      correctionType: body.correctionType ?? undefined,
+      correctionReason: body.correctionReason?.trim() || undefined,
     };
 
     const idempotentResult = await withIdempotency({

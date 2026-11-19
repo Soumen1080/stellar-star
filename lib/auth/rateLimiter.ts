@@ -15,6 +15,7 @@ export interface RateLimitResult {
   allowed: boolean;
   remaining: number;
   resetMs: number;
+  count?: number;
 }
 
 interface MemoryRateLimitRecord {
@@ -73,6 +74,7 @@ export async function checkRateLimit(
             allowed: Boolean(parsed.allowed),
             remaining: Number(parsed.remaining),
             resetMs: Number(parsed.reset_ms),
+            count: Math.max(0, limit - Number(parsed.remaining)),
           };
         }
       }

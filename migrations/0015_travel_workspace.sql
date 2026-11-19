@@ -18,3 +18,7 @@ BEGIN
     ALTER TABLE public.trips ADD COLUMN workspace JSONB NOT NULL DEFAULT '{"itinerary":[],"checklists":[],"bookings":[]}'::jsonb;
   END IF;
 END $migrate$;
+
+INSERT INTO public.schema_migrations (version, name, checksum)
+VALUES ('0015', '0015_travel_workspace', 'travel_workspace_v1')
+ON CONFLICT (version) DO NOTHING;

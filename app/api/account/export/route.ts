@@ -55,7 +55,7 @@ export async function GET(request: NextRequest) {
       .contains("member_wallets", [wallet]);
 
     // Fetch contacts
-    let contacts = [];
+    let contacts: unknown[] = [];
     try {
       const { data } = await client.from("contacts").select("*").eq("owner_wallet", wallet);
       contacts = data ?? [];

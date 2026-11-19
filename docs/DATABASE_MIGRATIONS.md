@@ -56,6 +56,11 @@ When adding columns, tables, or altering RLS policies:
    ```
 4. **Update `supabase-setup.sql`** so that the single-file developer setup remains in sync with all cumulative migrations.
 
+Migration `0019_shared_household_coordination.sql` adds the opt-in shared
+household chore prototype, its append-only completion record, member opt-out
+preferences, and RLS policies. Chore completion is isolated from the expense
+and settlement tables.
+
 ---
 
 ## 3. Verification & CLI Commands

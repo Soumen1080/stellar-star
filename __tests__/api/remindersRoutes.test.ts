@@ -8,6 +8,9 @@ import { signWalletSession, verifyWalletSession } from "@/lib/supabase/serverAut
 import { __resetRateLimitsForTests } from "@/lib/auth/rateLimiter";
 import type { Expense } from "@/types/expense";
 import { memoryDb, memoryRepository, type MemoryDb } from "../reminders/memoryRepository";
+import * as remindersRoute from "@/app/api/reminders/route";
+import * as requestRoute from "@/app/api/reminders/[id]/route";
+
 
 const ALICE = "GDQAXCC66ZI3RLPA72TTWGI2MN6K4LH3JEM6NKXKR7LPJ3R7OYIJF5LV";
 const BOB = "GBXGQJWVLWOYHFLVTKWV5FGHA3LNYY2JQKM7OAJAUEQFU6LPCSEFVXON";
@@ -30,10 +33,7 @@ jest.mock("@/lib/reminders/repository", () => {
   };
 });
 
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const remindersRoute = require("@/app/api/reminders/route") as typeof import("@/app/api/reminders/route");
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const requestRoute = require("@/app/api/reminders/[id]/route") as typeof import("@/app/api/reminders/[id]/route");
+
 
 function req(url: string, init: { method?: string; wallet?: string | null; body?: unknown } = {}) {
   const token = init.wallet ? signWalletSession(init.wallet) : null;

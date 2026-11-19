@@ -277,6 +277,8 @@ export function expenseSearchDocument(expense: Expense): string {
     expense.title,
     expense.description ?? "",
     expense.category ?? "",
+    expense.voidReason ?? "",
+    expense.correctionReason ?? "",
     ...(expense.tags ?? []),
     ...(expense.members ?? []).flatMap((member) => [member.name, member.walletAddress ?? ""]),
     ...(expense.shares ?? []).map((share) => share.txHash ?? ""),

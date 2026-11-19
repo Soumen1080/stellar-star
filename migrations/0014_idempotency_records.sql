@@ -26,16 +26,20 @@ CREATE INDEX IF NOT EXISTS idx_idempotency_records_created_at
 
 ALTER TABLE public.idempotency_records ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "idempotency_records_select_self" ON public.idempotency_records;
 CREATE POLICY "idempotency_records_select_self" ON public.idempotency_records
   FOR SELECT USING (wallet_address = public.current_wallet());
 
+DROP POLICY IF EXISTS "idempotency_records_insert_self" ON public.idempotency_records;
 CREATE POLICY "idempotency_records_insert_self" ON public.idempotency_records
   FOR INSERT WITH CHECK (wallet_address = public.current_wallet());
 
+DROP POLICY IF EXISTS "idempotency_records_update_self" ON public.idempotency_records;
 CREATE POLICY "idempotency_records_update_self" ON public.idempotency_records
   FOR UPDATE USING (wallet_address = public.current_wallet())
              WITH CHECK (wallet_address = public.current_wallet());
 
+DROP POLICY IF EXISTS "idempotency_records_delete_self" ON public.idempotency_records;
 CREATE POLICY "idempotency_records_delete_self" ON public.idempotency_records
   FOR DELETE USING (wallet_address = public.current_wallet());
 

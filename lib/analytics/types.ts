@@ -62,7 +62,9 @@ export interface EventPropertiesMap {
   trip_create_started: Record<string, never>;
   trip_created: {
     member_count: number;
-    has_destination: boolean;
+    has_destination?: boolean;
+    has_dates?: boolean;
+    has_recurring_rules?: boolean;
   };
   trip_viewed: {
     has_workspace: boolean;
@@ -75,21 +77,30 @@ export interface EventPropertiesMap {
     split_mode: "equal" | "exact" | "percentage" | "shares" | string;
     currency: string;
     member_count: number;
+    has_receipt?: boolean;
   };
   payment_started: {
-    asset: string;
-    is_partial: boolean;
+    asset?: string;
+    is_partial?: boolean;
+    currency?: string;
+    on_chain?: boolean;
   };
   payment_submitted: {
-    asset: string;
+    asset?: string;
+    currency?: string;
+    on_chain?: boolean;
   };
   payment_completed: {
-    asset: string;
+    asset?: string;
     duration_ms?: number;
+    currency?: string;
+    on_chain?: boolean;
   };
   payment_failed: {
-    asset: string;
+    asset?: string;
     error_code: string;
+    currency?: string;
+    on_chain?: boolean;
   };
 }
 

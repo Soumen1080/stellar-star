@@ -8,6 +8,7 @@ import React, {
   useRef,
   useState,
 } from "react";
+import { clearWalletReadOnlyCache } from "@/lib/supabase/cacheInvalidation";
 import { isSupabaseConfigured, resetSupabaseClient } from "@/lib/supabase/client";
 import { fetchUserByWallet, updateUserDisplayName, DatabaseError } from "@/lib/supabase/queries";
 import {
