@@ -183,17 +183,21 @@ function classifyExplorer(url: string): StellarNetwork | null {
  *  - Catches server secrets accidentally published via client-prefixed env vars.
  */
 export function getNetworkConfigErrors(): string[] {
-  const expected = STELLAR_NETWORK;
+  const rawNetwork = process.env.NEXT_PUBLIC_STELLAR_NETWORK?.trim();
+  const expected: StellarNetwork = rawNetwork === "PUBLIC" ? "PUBLIC" : "TESTNET";
+  const horizonUrl = process.env.NEXT_PUBLIC_HORIZON_URL?.trim() || (expected === "PUBLIC" ? "https://horizon.stellar.org" : "https://horizon-testnet.stellar.org");
+  const sorobanRpcUrl = process.env.NEXT_PUBLIC_SOROBAN_RPC_URL?.trim() || (expected === "PUBLIC" ? "https://soroban-rpc.mainnet.stellar.org" : "https://soroban-testnet.stellar.org");
+  const stellarExplorer = process.env.NEXT_PUBLIC_STELLAR_EXPLORER?.trim() || (expected === "PUBLIC" ? "https://stellar.expert/explorer/public" : "https://stellar.expert/explorer/testnet");
+
   const checks: Array<[string, string, StellarNetwork | null]> = [
-    ["HORIZON_URL", HORIZON_URL, classifyHorizon(HORIZON_URL)],
-    ["SOROBAN_RPC_URL", SOROBAN_RPC_URL, classifySoroban(SOROBAN_RPC_URL)],
-    ["STELLAR_EXPLORER", STELLAR_EXPLORER, classifyExplorer(STELLAR_EXPLORER)],
+    ["HORIZON_URL", horizonUrl, classifyHorizon(horizonUrl)],
+    ["SOROBAN_RPC_URL", sorobanRpcUrl, classifySoroban(sorobanRpcUrl)],
+    ["STELLAR_EXPLORER", stellarExplorer, classifyExplorer(stellarExplorer)],
   ];
 
   const errors: string[] = [];
 
   // Check valid network string
-  const rawNetwork = process.env.NEXT_PUBLIC_STELLAR_NETWORK?.trim();
   if (rawNetwork && rawNetwork !== "TESTNET" && rawNetwork !== "PUBLIC") {
     errors.push(
       `NEXT_PUBLIC_STELLAR_NETWORK must be "TESTNET" or "PUBLIC" (found "${rawNetwork}").`

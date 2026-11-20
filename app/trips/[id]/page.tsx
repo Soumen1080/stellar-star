@@ -40,7 +40,14 @@ export function generateTripMetadata({ tripName, walletAddress, tripId }: { trip
   else if (safeName) title = `${safeName} | Stellar Star`;
   else if (safeId) title = `Trip ${safeId} | Stellar Star`;
   const description = safeName ? `View and settle expenses for ${safeName} on Stellar Star.` : safeId ? `View details and expenses for trip ${safeId} on Stellar Star.` : "Group expense splitting on the Stellar blockchain.";
-  return { title, description, openGraph: { title, description } };
+  return {
+    title,
+    description,
+    openGraph: { title, description },
+    other: {
+      "content-security-policy": "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline'; style-src 'self' 'unsafe-inline';",
+    },
+  };
 }
 
 export default function TripDetailPage() {

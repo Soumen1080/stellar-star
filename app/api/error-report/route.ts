@@ -19,7 +19,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { checkRateLimit, getClientIp } from "@/lib/auth/rateLimiter";
+import { checkRateLimit, getClientIp, rateLimiterUnavailableResponse } from "@/lib/auth/rateLimiter";
 import {
   REQUEST_ID_HEADER,
   createRequestId,
@@ -149,6 +149,9 @@ export async function POST(req: NextRequest) {
 
   const clientIp = getClientIp(req);
   const rateLimit = await checkRateLimit(`error-report:ip:${clientIp}`, RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_MS);
+  if (rateLimit.unavailable) {
+    return rateLimiterUnavailableResponse(rateLimit, requestId);
+  }
   if (!rateLimit.allowed) {
     return NextResponse.json(
       { ok: false, error: "Too many error reports", requestId },

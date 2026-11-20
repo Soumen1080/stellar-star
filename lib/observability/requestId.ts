@@ -1,11 +1,11 @@
 export const REQUEST_ID_HEADER = "x-request-id";
 
-const UUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const REQUEST_ID_PATTERN =
+  /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}|req-[a-z0-9-]+|[a-zA-Z0-9_-]{8,64})$/i;
 
 export function parseRequestId(value: string | null | undefined): string | null {
   const candidate = value?.trim();
-  return candidate && UUID_PATTERN.test(candidate) ? candidate.toLowerCase() : null;
+  return candidate && REQUEST_ID_PATTERN.test(candidate) ? candidate.toLowerCase() : null;
 }
 
 /** Creates a UUID for one user-visible settlement or recovery interaction. */

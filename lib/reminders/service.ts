@@ -38,7 +38,7 @@ export interface ReminderDeps {
   repo: ReminderRepository;
   canManageReminders?: (tripId: string, wallet: string) => Promise<boolean>;
   transport: ReminderTransport;
-  rateLimit: (key: string, limit: number, windowMs: number) => Promise<{ allowed: boolean; resetMs: number }>;
+  rateLimit: (key: string, limit: number, windowMs: number) => Promise<{ allowed: boolean; resetMs: number; unavailable?: boolean }>;
   /** Absolute origin used to build links in external messages. */
   origin: string;
   /** Builds the one-click unsubscribe link for an external channel. */
@@ -80,6 +80,14 @@ export async function sendReminder(deps: ReminderDeps, input: SendReminderInput)
 
   const keys = rateLimitKeys(input.senderWallet, target.recipientWallet, input.expenseId);
   const perShare = await deps.rateLimit(keys.perShare, REMINDER_LIMITS.perShare.limit, REMINDER_LIMITS.perShare.windowMs);
+  if (perShare.unavailable) {
+    return {
+      ok: false,
+      status: 503,
+      message: "Rate limiting service is temporarily unavailable. Please retry shortly.",
+      retryAfterMs: perShare.resetMs,
+    };
+  }
   if (!perShare.allowed) {
     return {
       ok: false,
@@ -89,6 +97,14 @@ export async function sendReminder(deps: ReminderDeps, input: SendReminderInput)
     };
   }
   const perSender = await deps.rateLimit(keys.perSender, REMINDER_LIMITS.perSender.limit, REMINDER_LIMITS.perSender.windowMs);
+  if (perSender.unavailable) {
+    return {
+      ok: false,
+      status: 503,
+      message: "Rate limiting service is temporarily unavailable. Please retry shortly.",
+      retryAfterMs: perSender.resetMs,
+    };
+  }
   if (!perSender.allowed) {
     return {
       ok: false,

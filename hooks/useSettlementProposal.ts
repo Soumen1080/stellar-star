@@ -28,12 +28,11 @@ export function useSettlementProposal(trip: Trip, expenses: Expense[]) {
   const [proposal, setProposal] = useState<SettlementProposal | null>(null);
   const [responses, setResponses] = useState<ProposalResponse[]>([]);
   const [disputes, setDisputes] = useState<ExpenseDisputeRow[]>([]);
-  const [disputesReady, setDisputesReady] = useState(false);
+  const [disputesReady, setDisputesReady] = useState(true);
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const reload = useCallback(async () => {
-    setDisputesReady(false);
     try {
       const [latest, currentDisputes] = await Promise.all([fetchLatestProposal(trip.id), listTripDisputes(trip.id)]);
       setProposal(latest?.proposal ?? null);
@@ -45,7 +44,7 @@ export function useSettlementProposal(trip: Trip, expenses: Expense[]) {
       setProposal(null);
       setResponses([]);
       setDisputes([]);
-      setDisputesReady(false);
+      setDisputesReady(true);
     } finally {
       setLoaded(true);
     }

@@ -69,7 +69,7 @@ export async function getNetworkBaseReserve(
     return cachedBaseReserveStroops;
   }
 
-  return getCachedBaseReserve(
+  const result = await getCachedBaseReserve(
     async () => {
       try {
         const res = await fetchImpl(`${horizonUrl}/ledgers?order=desc&limit=1`, {
@@ -92,7 +92,18 @@ export async function getNetworkBaseReserve(
       return cachedBaseReserveStroops;
     },
     horizonUrl,
+    { forceRefresh: !baseReserveFromLedger },
   );
+
+  if (!baseReserveFromLedger) {
+    chainMetadataCache.invalidateByFilter({
+      network: horizonUrl,
+      entityType: "ledger_params",
+      entityId: "base_reserve",
+    });
+  }
+
+  return result;
 }
 
 /** Every account carries two base reserves before any subentries. */
