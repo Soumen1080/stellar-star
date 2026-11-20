@@ -1,6 +1,6 @@
 import crypto from "crypto";
 import { NextRequest, NextResponse } from "next/server";
-import { checkRateLimit, getClientIp, type RateLimitResult } from "@/lib/auth/rateLimiter";
+import { checkRateLimit, getClientIp, rateLimiterUnavailableResponse, type RateLimitResult } from "@/lib/auth/rateLimiter";
 import { getOrCreateRequestId, REQUEST_ID_HEADER } from "@/lib/observability/requestId";
 import { recordSecurityEvent, redactSecurityIdentifier } from "./securityEvents";
 import type { AbuseScope, PublicRateLimitPolicy, RateLimitPolicy } from "@/types/security";
@@ -81,6 +81,12 @@ export async function enforceAbuseProtection(request: NextRequest, scope: AbuseS
 
   for (const [key, limit] of dimensions) {
     const result = await checkRateLimit(key, limit.limit, limit.windowMs);
+    if (result.unavailable) {
+      return {
+        ok: false,
+        response: rateLimiterUnavailableResponse(result, requestId),
+      };
+    }
     if (result.allowed) continue;
     const blocks = await checkRateLimit(`abuse:block:${scope}:${ipHash}`, 3, 5 * 60_000);
     const validChallenge = hasValidChallenge(request, scope, ipHash);

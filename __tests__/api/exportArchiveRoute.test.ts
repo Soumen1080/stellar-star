@@ -35,6 +35,13 @@ jest.mock("@/lib/supabase/queries", () => ({
 jest.mock("@/lib/auth/rateLimiter", () => ({
   checkRateLimit: (...args: unknown[]) => mockRateLimit(...args),
   getClientIp: () => "203.0.113.7",
+  rateLimiterUnavailableResponse: (res?: any, reqId?: string) => {
+    const { NextResponse } = require("next/server");
+    return NextResponse.json(
+      { error: "Rate limiting service is temporarily unavailable. Please retry shortly.", code: "RATE_LIMITER_UNAVAILABLE", retryAfterSeconds: 30 },
+      { status: 503, headers: { "Retry-After": "30" } }
+    );
+  },
 }));
 
 // Imported after the mocks so the route binds to them.

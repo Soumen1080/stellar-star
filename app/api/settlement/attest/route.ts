@@ -103,25 +103,6 @@ function oracleThreshold(): number { return Math.max(1, Number(process.env.SETTL
 export async function POST(request: NextRequest) {
   const requestId = getOrCreateRequestId(request.headers.get(REQUEST_ID_HEADER));
 
-  // ── Deployment prerequisites ───────────────────────────────────────────────
-  // 503 rather than 500: invariant 5 says the client must be able to tell
-  // "the oracle cannot answer right now" (degrade to off-chain, retry later)
-  // from "the oracle says no" (the claim is false, retrying is pointless).
-  if (!CONTRACT_ID || !SETTLEMENT_ASSET_ID) {
-    return jsonError(
-      "Settlement contract or asset is not configured on this deployment.",
-      503,
-      requestId,
-    );
-  }
-  if (!isOracleConfigured()) {
-    return jsonError(
-      "The settlement oracle has no signing key configured. On-chain settlement is unavailable.",
-      503,
-      requestId,
-    );
-  }
-
   let body: AttestRequestBody;
   try {
     body = (await request.json()) as AttestRequestBody;
@@ -172,6 +153,25 @@ export async function POST(request: NextRequest) {
     return jsonError(
       "You may only request attestations for your own settlements.",
       403,
+      requestId,
+    );
+  }
+
+  // ── Deployment prerequisites ───────────────────────────────────────────────
+  // 503 rather than 500: invariant 5 says the client must be able to tell
+  // "the oracle cannot answer right now" (degrade to off-chain, retry later)
+  // from "the oracle says no" (the claim is false, retrying is pointless).
+  if (!CONTRACT_ID || !SETTLEMENT_ASSET_ID) {
+    return jsonError(
+      "Settlement contract or asset is not configured on this deployment.",
+      503,
+      requestId,
+    );
+  }
+  if (!isOracleConfigured()) {
+    return jsonError(
+      "The settlement oracle has no signing key configured. On-chain settlement is unavailable.",
+      503,
       requestId,
     );
   }

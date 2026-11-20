@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { type ApiScope, type AuditLogEntry, type ScopedTokenPayload } from "./types";
 import { verifyScopedToken } from "./tokens";
-import { checkRateLimit, getClientIp } from "@/lib/auth/rateLimiter";
+import { checkRateLimit, getClientIp, rateLimiterUnavailableResponse } from "@/lib/auth/rateLimiter";
 import {
   createDatabaseRequestContext,
   type DatabaseRequestContext,
@@ -151,6 +151,13 @@ export async function authenticateApiRequest(
   const rateLimitKey = `api:rate:${payload.tokenId}:${ip}`;
 
   const rateResult = await checkRateLimit(rateLimitKey, rateLimitMax, rateLimitWindowMs);
+
+  if (rateResult.unavailable) {
+    return {
+      success: false,
+      response: rateLimiterUnavailableResponse(rateResult, payload.tokenId),
+    };
+  }
 
   if (!rateResult.allowed) {
     const retryAfter = Math.ceil(rateResult.resetMs / 1000);

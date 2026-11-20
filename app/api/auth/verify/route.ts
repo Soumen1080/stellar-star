@@ -14,7 +14,7 @@ import {
   type ServerClient,
 } from "@/lib/supabase/server";
 import { consumeChallenge, AuthStoreError } from "@/lib/auth/challengeStore";
-import { checkRateLimit, getClientIp } from "@/lib/auth/rateLimiter";
+import { checkRateLimit, getClientIp, rateLimiterUnavailableResponse } from "@/lib/auth/rateLimiter";
 import type { UserUpdate } from "@/types/supabase";
 
 export const runtime = "nodejs";
@@ -106,6 +106,9 @@ export async function POST(request: NextRequest) {
   try {
     const clientIp = getClientIp(request);
     const ipLimit = await checkRateLimit(`verify:ip:${clientIp}`, 20, 60_000);
+    if (ipLimit.unavailable) {
+      return rateLimiterUnavailableResponse(ipLimit);
+    }
     if (!ipLimit.allowed) {
       return NextResponse.json(
         { error: "Too many verification attempts. Please try again later." },
@@ -137,6 +140,9 @@ export async function POST(request: NextRequest) {
     }
 
     const addrLimit = await checkRateLimit(`verify:addr:${address}`, 10, 60_000);
+    if (addrLimit.unavailable) {
+      return rateLimiterUnavailableResponse(addrLimit);
+    }
     if (!addrLimit.allowed) {
       return NextResponse.json(
         { error: "Too many verification attempts for this wallet. Please wait a minute." },
