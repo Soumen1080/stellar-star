@@ -363,6 +363,16 @@
       "checksum": "c7c779d75c77d6bc",
       "sha256": "c7c779d75c77d6bc0bf30311372e1f06df782591aa87be50adbab9cb1105fd26",
       "description": "Transactional outbox for reliable event publishing and background delivery"
+    },
+    {
+      "sequence": 37,
+      "id": "0023_atomic_idempotency_claims",
+      "version": "0023",
+      "filename": "0023_atomic_idempotency_claims.sql",
+      "name": "0023_atomic_idempotency_claims",
+      "checksum": "0a283c68ac09bfcf",
+      "sha256": "0a283c68ac09bfcf633dc1408ccc2dacf2865986fb49457fedb2fadbf54815df",
+      "description": "Atomic claim, deliberate outcome evaluation, and lease recovery for idempotency records"
     }
   ]
 }

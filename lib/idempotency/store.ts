@@ -1,13 +1,18 @@
 /**
  * lib/idempotency/store.ts
  *
- * Idempotency management for money-adjacent mutations (Issue #312).
+ * Atomic Idempotency Management for Money-Adjacent Mutations (Issue #312 & Issue #411).
  *
  * Guarantees:
- *  1. Tied to the authenticated wallet and request fingerprint.
- *  2. Duplicate requests return the original response without creating duplicates.
- *  3. Conflicting reuse of a key with a different request fingerprint is rejected with 409 Conflict.
- *  4. Database-level uniqueness constraint guarantees serialization under concurrency.
+ *  1. Atomic claim in database/memory as one single transaction (no read-then-insert race).
+ *  2. Deliberate four-outcome evaluation:
+ *     - 'new_claim': Fresh lock acquired or recovered from expired lease.
+ *     - 'completed_replay': Mutation already finished; cached result replayed without re-executing.
+ *     - 'incompatible_key_conflict': Same key reused with different request payload (409 Conflict).
+ *     - 'temporarily_locked': Mutation currently in progress by another worker (retryable 409/429).
+ *  3. Leased locks for crash recovery: Storing completion occurs only after business execution,
+ *     and expired locks can be safely recovered by retries.
+ *  4. Tied to the authenticated wallet and request fingerprint.
  */
 
 import crypto from "crypto";
@@ -16,6 +21,7 @@ import { ServerClient } from "@/lib/supabase/server";
 
 export class IdempotencyConflictError extends Error {
   code = "IDEMPOTENCY_CONFLICT";
+  status = 409;
   constructor(message = "Conflicting reuse of idempotency key with different request payload.") {
     super(message);
     this.name = "IdempotencyConflictError";
@@ -24,10 +30,27 @@ export class IdempotencyConflictError extends Error {
 
 export class IdempotencyLockedError extends Error {
   code = "IDEMPOTENCY_IN_PROGRESS";
+  status = 409;
   constructor(message = "A mutation with this idempotency key is currently in progress. Please retry shortly.") {
     super(message);
     this.name = "IdempotencyLockedError";
   }
+}
+
+export type IdempotencyClaimOutcome =
+  | "new_claim"
+  | "completed_replay"
+  | "incompatible_key_conflict"
+  | "temporarily_locked";
+
+export interface IdempotencyClaimResult {
+  outcome: IdempotencyClaimOutcome;
+  responseStatus?: number;
+  responseBody?: any;
+  lockedUntil?: string;
+  recovered?: boolean;
+  retryAfterSeconds?: number;
+  error?: string;
 }
 
 export interface IdempotencyRecord {
@@ -100,6 +123,294 @@ export function computeRequestFingerprint(
   return crypto.createHash("sha256").update(normalized).digest("hex");
 }
 
+/**
+ * In-memory atomic claim logic for local development, unit tests, and non-database environments.
+ * Deliberately evaluates the 4 outcomes and recovers expired leases.
+ */
+export function atomicClaimInMemory(
+  walletAddress: string,
+  key: string,
+  endpoint: string,
+  fingerprint: string,
+  leaseSeconds = 60,
+  now = Date.now(),
+): IdempotencyClaimResult {
+  const memKey = `${walletAddress}:${key}`;
+  const existing = memoryLedger.get(memKey);
+
+  if (!existing) {
+    const lockedUntil = new Date(now + leaseSeconds * 1000).toISOString();
+    const newRecord: IdempotencyRecord = {
+      key,
+      wallet_address: walletAddress,
+      endpoint,
+      request_fingerprint: fingerprint,
+      status: "pending",
+      response_status: null,
+      response_body: null,
+      created_at: new Date(now).toISOString(),
+      locked_until: lockedUntil,
+    };
+    memoryLedger.set(memKey, newRecord);
+    return { outcome: "new_claim", lockedUntil };
+  }
+
+  // 1. Incompatible-key conflict
+  if (existing.request_fingerprint !== fingerprint) {
+    return {
+      outcome: "incompatible_key_conflict",
+      error: "Conflicting reuse of idempotency key with different request payload.",
+    };
+  }
+
+  // 2. Completed replay
+  if (existing.status === "completed") {
+    return {
+      outcome: "completed_replay",
+      responseStatus: existing.response_status ?? 200,
+      responseBody: existing.response_body,
+    };
+  }
+
+  // 3 & 4. Pending: evaluate lease expiration for crashed worker recovery
+  if (existing.status === "pending") {
+    const lockExpiry = new Date(existing.locked_until).getTime();
+    if (lockExpiry > now) {
+      const retryAfterSeconds = Math.max(1, Math.ceil((lockExpiry - now) / 1000));
+      return {
+        outcome: "temporarily_locked",
+        lockedUntil: existing.locked_until,
+        retryAfterSeconds,
+      };
+    }
+
+    // Lease expired: recover the lease!
+    const lockedUntil = new Date(now + leaseSeconds * 1000).toISOString();
+    existing.locked_until = lockedUntil;
+    existing.endpoint = endpoint;
+    existing.request_fingerprint = fingerprint;
+    existing.created_at = new Date(now).toISOString();
+    return { outcome: "new_claim", recovered: true, lockedUntil };
+  }
+
+  // Failed records can be re-claimed
+  const lockedUntil = new Date(now + leaseSeconds * 1000).toISOString();
+  existing.status = "pending";
+  existing.locked_until = lockedUntil;
+  existing.endpoint = endpoint;
+  existing.request_fingerprint = fingerprint;
+  return { outcome: "new_claim", recovered: true, lockedUntil };
+}
+
+export interface ClaimIdempotencyOptions {
+  client?: ServerClient | null;
+  walletAddress: string;
+  key: string;
+  endpoint: string;
+  fingerprint: string;
+  leaseSeconds?: number;
+  now?: number;
+}
+
+/**
+ * Performs an atomic idempotency claim as a single transaction (Issue #411).
+ * Uses PostgreSQL RPC `claim_idempotency_key` when client is available,
+ * and falls back to atomic in-memory claims in local development and test fixtures.
+ */
+export async function claimIdempotencyKey({
+  client,
+  walletAddress,
+  key,
+  endpoint,
+  fingerprint,
+  leaseSeconds = 60,
+  now = Date.now(),
+}: ClaimIdempotencyOptions): Promise<IdempotencyClaimResult> {
+  const memKey = `${walletAddress}:${key}`;
+
+  // 1. Try atomic claim in database via stored procedure
+  if (client) {
+    try {
+      const { data, error } = await client.rpc("claim_idempotency_key", {
+        p_wallet_address: walletAddress,
+        p_key: key,
+        p_endpoint: endpoint,
+        p_request_fingerprint: fingerprint,
+        p_lease_seconds: leaseSeconds,
+        p_now: new Date(now).toISOString(),
+      });
+
+      if (!error && data && typeof data === "object") {
+        const parsed = data as Record<string, any>;
+        const rawOutcome = parsed.outcome;
+        let outcome: IdempotencyClaimOutcome;
+
+        if (rawOutcome === "completed_replay" || rawOutcome === "replay") {
+          outcome = "completed_replay";
+        } else if (rawOutcome === "incompatible_key_conflict" || rawOutcome === "conflict") {
+          outcome = "incompatible_key_conflict";
+        } else if (rawOutcome === "temporarily_locked" || rawOutcome === "locked") {
+          outcome = "temporarily_locked";
+        } else {
+          outcome = "new_claim";
+        }
+
+        const result: IdempotencyClaimResult = {
+          outcome,
+          responseStatus: parsed.response_status ? Number(parsed.response_status) : undefined,
+          responseBody: parsed.response_body,
+          lockedUntil: parsed.locked_until ? String(parsed.locked_until) : undefined,
+          recovered: Boolean(parsed.recovered),
+          retryAfterSeconds: parsed.retry_after_seconds ? Number(parsed.retry_after_seconds) : undefined,
+          error: parsed.error ? String(parsed.error) : undefined,
+        };
+
+        // Sync to memory ledger
+        if (outcome === "new_claim") {
+          memoryLedger.set(memKey, {
+            key,
+            wallet_address: walletAddress,
+            endpoint,
+            request_fingerprint: fingerprint,
+            status: "pending",
+            response_status: null,
+            response_body: null,
+            created_at: new Date(now).toISOString(),
+            locked_until: result.lockedUntil || new Date(now + leaseSeconds * 1000).toISOString(),
+          });
+        } else if (outcome === "completed_replay") {
+          memoryLedger.set(memKey, {
+            key,
+            wallet_address: walletAddress,
+            endpoint,
+            request_fingerprint: fingerprint,
+            status: "completed",
+            response_status: result.responseStatus ?? 200,
+            response_body: result.responseBody,
+            created_at: new Date(now).toISOString(),
+            locked_until: "",
+          });
+        }
+
+        return result;
+      }
+    } catch {
+      // Fall through to in-memory atomic claim if DB RPC is unconfigured or unavailable
+    }
+  }
+
+  // 2. In-memory atomic claim
+  return atomicClaimInMemory(walletAddress, key, endpoint, fingerprint, leaseSeconds, now);
+}
+
+export interface CompleteIdempotencyOptions {
+  client?: ServerClient | null;
+  walletAddress: string;
+  key: string;
+  fingerprint: string;
+  responseStatus: number;
+  responseBody: any;
+}
+
+/**
+ * Stores completed idempotency result.
+ * Called only AFTER business mutation finishes successfully.
+ */
+export async function completeIdempotencyClaim({
+  client,
+  walletAddress,
+  key,
+  fingerprint,
+  responseStatus,
+  responseBody,
+}: CompleteIdempotencyOptions): Promise<void> {
+  const memKey = `${walletAddress}:${key}`;
+
+  // Update memory
+  const existing = memoryLedger.get(memKey);
+  const completedRecord: IdempotencyRecord = {
+    key,
+    wallet_address: walletAddress,
+    endpoint: existing?.endpoint || "",
+    request_fingerprint: fingerprint,
+    status: "completed",
+    response_status: responseStatus,
+    response_body: responseBody,
+    created_at: existing?.created_at || new Date().toISOString(),
+    locked_until: "",
+  };
+  memoryLedger.set(memKey, completedRecord);
+
+  // Update database
+  if (client) {
+    try {
+      const { error } = await client.rpc("complete_idempotency_key", {
+        p_wallet_address: walletAddress,
+        p_key: key,
+        p_request_fingerprint: fingerprint,
+        p_response_status: responseStatus,
+        p_response_body: responseBody as any,
+      });
+
+      if (error) {
+        // Fallback update directly if RPC not available
+        await client
+          .from("idempotency_records")
+          .update({
+            status: "completed",
+            response_status: responseStatus,
+            response_body: responseBody as any,
+            locked_until: null,
+          })
+          .eq("wallet_address", walletAddress)
+          .eq("key", key)
+          .eq("request_fingerprint", fingerprint);
+      }
+    } catch {
+      // Non-fatal
+    }
+  }
+}
+
+export interface ReleaseIdempotencyOptions {
+  client?: ServerClient | null;
+  walletAddress: string;
+  key: string;
+}
+
+/**
+ * Releases a pending idempotency lock on business mutation failure
+ * so that subsequent retries can re-claim immediately.
+ */
+export async function releaseIdempotencyClaim({
+  client,
+  walletAddress,
+  key,
+}: ReleaseIdempotencyOptions): Promise<void> {
+  const memKey = `${walletAddress}:${key}`;
+  memoryLedger.delete(memKey);
+
+  if (client) {
+    try {
+      const { error } = await client.rpc("release_idempotency_key", {
+        p_wallet_address: walletAddress,
+        p_key: key,
+      });
+
+      if (error) {
+        await client
+          .from("idempotency_records")
+          .delete()
+          .eq("wallet_address", walletAddress)
+          .eq("key", key)
+          .eq("status", "pending");
+      }
+    } catch {
+      // Non-fatal
+    }
+  }
+}
+
 export interface WithIdempotencyOptions<T> {
   client?: ServerClient | null;
   key: string | null;
@@ -107,6 +418,7 @@ export interface WithIdempotencyOptions<T> {
   endpoint: string;
   payload: any;
   execute: () => Promise<{ data: T; status: number }>;
+  leaseSeconds?: number;
 }
 
 export interface IdempotentResult<T> {
@@ -116,7 +428,14 @@ export interface IdempotentResult<T> {
 }
 
 /**
- * Wraps a mutating action with idempotency enforcement.
+ * Wraps a mutating action with atomic idempotency enforcement.
+ *
+ * Prevents race conditions by claiming the idempotency key in one atomic transaction.
+ * Deliberately handles:
+ * - 'new_claim': Executes the business mutation once, then stores the completed result.
+ * - 'completed_replay': Replays the cached response without re-executing.
+ * - 'incompatible_key_conflict': Throws IdempotencyConflictError (409).
+ * - 'temporarily_locked': Throws IdempotencyLockedError (409/429 retryable).
  */
 export async function withIdempotency<T>({
   client,
@@ -125,6 +444,7 @@ export async function withIdempotency<T>({
   endpoint,
   payload,
   execute,
+  leaseSeconds = 60,
 }: WithIdempotencyOptions<T>): Promise<IdempotentResult<T>> {
   // If no idempotency key provided, execute normally
   if (!key) {
@@ -134,144 +454,56 @@ export async function withIdempotency<T>({
 
   const cleanKey = key.trim();
   const fingerprint = computeRequestFingerprint(walletAddress, endpoint, payload);
-  const memKey = `${walletAddress}:${cleanKey}`;
-  const now = new Date();
-  const lockedUntil = new Date(now.getTime() + 60_000).toISOString();
 
-  // 1. Check in-memory store
-  const existingMem = memoryLedger.get(memKey);
-  if (existingMem) {
-    if (existingMem.request_fingerprint !== fingerprint) {
-      throw new IdempotencyConflictError();
-    }
-    if (existingMem.status === "completed") {
-      return {
-        data: existingMem.response_body as T,
-        status: existingMem.response_status ?? 200,
-        replayed: true,
-      };
-    }
-    if (existingMem.status === "pending" && new Date(existingMem.locked_until) > now) {
-      throw new IdempotencyLockedError();
-    }
-  }
-
-  // 2. Check Database if client is provided
-  if (client) {
-    try {
-      const { data: dbRecord } = await client
-        .from("idempotency_records")
-        .select("*")
-        .eq("wallet_address", walletAddress)
-        .eq("key", cleanKey)
-        .maybeSingle();
-
-      if (dbRecord) {
-        if (dbRecord.request_fingerprint !== fingerprint) {
-          throw new IdempotencyConflictError();
-        }
-        if (dbRecord.status === "completed") {
-          // Sync to memory
-          memoryLedger.set(memKey, dbRecord);
-          return {
-            data: dbRecord.response_body as T,
-            status: dbRecord.response_status ?? 200,
-            replayed: true,
-          };
-        }
-        if (dbRecord.status === "pending" && new Date(dbRecord.locked_until) > now) {
-          throw new IdempotencyLockedError();
-        }
-      }
-    } catch (err: any) {
-      if (err instanceof IdempotencyConflictError || err instanceof IdempotencyLockedError) {
-        throw err;
-      }
-      // Table may not exist yet in tests or unmigrated DB; fall back to memory
-    }
-  }
-
-  // 3. Mark as pending in memory
-  const pendingRecord: IdempotencyRecord = {
+  // 1. Atomically claim idempotency key (1 transaction)
+  const claim = await claimIdempotencyKey({
+    client,
+    walletAddress,
     key: cleanKey,
-    wallet_address: walletAddress,
     endpoint,
-    request_fingerprint: fingerprint,
-    status: "pending",
-    response_status: 200,
-    response_body: null,
-    created_at: now.toISOString(),
-    locked_until: lockedUntil,
-  };
-  memoryLedger.set(memKey, pendingRecord);
+    fingerprint,
+    leaseSeconds,
+  });
 
-  // Mark as pending in database
-  if (client) {
-    try {
-      await client.from("idempotency_records").upsert(
-        {
-          key: cleanKey,
-          wallet_address: walletAddress,
-          endpoint,
-          request_fingerprint: fingerprint,
-          status: "pending",
-          locked_until: lockedUntil,
-        },
-        { onConflict: "wallet_address,key" }
-      );
-    } catch {
-      // Non-fatal fallback
-    }
+  // Handle outcome: Incompatible-key conflict
+  if (claim.outcome === "incompatible_key_conflict") {
+    throw new IdempotencyConflictError(claim.error);
   }
 
-  // 4. Execute the mutation
+  // Handle outcome: Temporarily locked (in-flight parallel request)
+  if (claim.outcome === "temporarily_locked") {
+    throw new IdempotencyLockedError();
+  }
+
+  // Handle outcome: Completed replay (exact result without re-executing)
+  if (claim.outcome === "completed_replay") {
+    return {
+      data: claim.responseBody as T,
+      status: claim.responseStatus ?? 200,
+      replayed: true,
+    };
+  }
+
+  // Handle outcome: New claim (or recovered expired lease)
+  // Execute the business mutation
   let mutationResult: { data: T; status: number };
   try {
     mutationResult = await execute();
   } catch (err) {
-    // If mutation fails, remove pending lock so it can be safely retried
-    memoryLedger.delete(memKey);
-    if (client) {
-      try {
-        await client
-          .from("idempotency_records")
-          .delete()
-          .eq("wallet_address", walletAddress)
-          .eq("key", cleanKey);
-      } catch {
-        // Non-fatal
-      }
-    }
+    // Release pending lock so retry can claim immediately
+    await releaseIdempotencyClaim({ client, walletAddress, key: cleanKey });
     throw err;
   }
 
-  // 5. Store completed response
-  const completedRecord: IdempotencyRecord = {
-    ...pendingRecord,
-    status: "completed",
-    response_status: mutationResult.status,
-    response_body: mutationResult.data,
-  };
-  memoryLedger.set(memKey, completedRecord);
-
-  if (client) {
-    try {
-      await client.from("idempotency_records").upsert(
-        {
-          key: cleanKey,
-          wallet_address: walletAddress,
-          endpoint,
-          request_fingerprint: fingerprint,
-          status: "completed",
-          response_status: mutationResult.status,
-          response_body: mutationResult.data as any,
-        },
-        { onConflict: "wallet_address,key" }
-      );
-    } catch {
-      // Non-fatal
-    }
-  }
+  // Store completion only after business operation completes successfully
+  await completeIdempotencyClaim({
+    client,
+    walletAddress,
+    key: cleanKey,
+    fingerprint,
+    responseStatus: mutationResult.status,
+    responseBody: mutationResult.data,
+  });
 
   return {
     data: mutationResult.data,
@@ -294,4 +526,9 @@ export function idempotentJsonResponse<T>(result: IdempotentResult<T>): NextResp
     status: result.status,
     headers,
   });
+}
+
+/** Helper to reset in-memory idempotency ledger for tests */
+export function __resetIdempotencyForTests(): void {
+  memoryLedger.clear();
 }
