@@ -54,7 +54,7 @@ describe("Rate Limiter (Issue #409 & Issue #158)", () => {
 
   describe("Local Development Behavior (Non-Production In-Memory Limiter)", () => {
     beforeEach(() => {
-      process.env.NODE_ENV = "development";
+      (process.env as any).NODE_ENV = "development";
       jest.mocked(isServerSupabaseConfigured).mockReturnValue(false);
     });
 
@@ -105,7 +105,7 @@ describe("Rate Limiter (Issue #409 & Issue #158)", () => {
 
   describe("Production Requirement & Enforcement", () => {
     it("fails closed when unconfigured in production environment (NODE_ENV=production)", async () => {
-      process.env.NODE_ENV = "production";
+      (process.env as any).NODE_ENV = "production";
       jest.mocked(isServerSupabaseConfigured).mockReturnValue(false);
 
       const result = await checkRateLimit("api:rate:key", 10, 60_000);
@@ -124,7 +124,7 @@ describe("Rate Limiter (Issue #409 & Issue #158)", () => {
     });
 
     it("fails closed when VALIDATE_PRODUCTION=1 even if NODE_ENV is test", async () => {
-      process.env.NODE_ENV = "test";
+      (process.env as any).NODE_ENV = "test";
       process.env.VALIDATE_PRODUCTION = "1";
       jest.mocked(isServerSupabaseConfigured).mockReturnValue(false);
 
@@ -274,7 +274,7 @@ describe("Rate Limiter (Issue #409 & Issue #158)", () => {
     it("accurately reports and resets metrics counters", async () => {
       // 1 in-memory check
       jest.mocked(isServerSupabaseConfigured).mockReturnValue(false);
-      process.env.NODE_ENV = "test";
+      (process.env as any).NODE_ENV = "test";
       await checkRateLimit("key1", 5, 10_000);
 
       // 1 outage check
