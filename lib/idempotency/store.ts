@@ -231,7 +231,7 @@ export async function claimIdempotencyKey({
   // 1. Try atomic claim in database via stored procedure
   if (client) {
     try {
-      const { data, error } = await client.rpc("claim_idempotency_key", {
+      const { data, error } = await (client as any).rpc("claim_idempotency_key", {
         p_wallet_address: walletAddress,
         p_key: key,
         p_endpoint: endpoint,
@@ -344,7 +344,7 @@ export async function completeIdempotencyClaim({
   // Update database
   if (client) {
     try {
-      const { error } = await client.rpc("complete_idempotency_key", {
+      const { error } = await (client as any).rpc("complete_idempotency_key", {
         p_wallet_address: walletAddress,
         p_key: key,
         p_request_fingerprint: fingerprint,
@@ -360,7 +360,6 @@ export async function completeIdempotencyClaim({
             status: "completed",
             response_status: responseStatus,
             response_body: responseBody as any,
-            locked_until: null,
           })
           .eq("wallet_address", walletAddress)
           .eq("key", key)
@@ -392,7 +391,7 @@ export async function releaseIdempotencyClaim({
 
   if (client) {
     try {
-      const { error } = await client.rpc("release_idempotency_key", {
+      const { error } = await (client as any).rpc("release_idempotency_key", {
         p_wallet_address: walletAddress,
         p_key: key,
       });
