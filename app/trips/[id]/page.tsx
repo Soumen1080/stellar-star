@@ -16,6 +16,8 @@ import { TripTabs, type TripTab } from "@/components/trips/TripTabs"; import { R
 import { TravelWorkspacePanel } from "@/components/trips/workspace/TravelWorkspacePanel"; import { InviteMemberModal } from "@/components/trips/InviteMemberModal";
 import { SaveTripTemplateForm } from "@/components/trips/SaveTripTemplateForm"; import { DuplicateTripFlow } from "@/components/trips/TripCopyFlow";
 import { TripExportMenu } from "@/components/export/TripExportMenu"; import { ReminderSchedulePanel } from "@/components/reminders/ReminderSchedulePanel";
+import { GuidedOnboardingBanner } from "@/components/onboarding/GuidedOnboardingBanner";
+import type { OnboardingMode } from "@/components/onboarding/GuidedOnboardingModal";
 import { HouseholdCoordinationPanel } from "@/components/household/HouseholdCoordinationPanel"; import { useAuth } from "@/context/AuthContext";
 import { useContractEvents } from "@/hooks/useContractEvents"; import { useExpense } from "@/hooks/useExpense";
 import { useTrip } from "@/hooks/useTrip"; import { useTripAutoSettlement } from "@/hooks/useTripAutoSettlement";
@@ -135,12 +137,19 @@ export default function TripDetailPage() {
     setShowExpenseForm(true);
   };
 
+  const onboardingMode: OnboardingMode = isOwner
+    ? "create"
+    : callerMember
+    ? "join"
+    : "view";
+
   return (
     <AuthGuard>
       <div className="min-h-screen bg-[#F6F6F6]">
         <TripDetailNav tripName={sanitizeText(trip.name)} />
 
         <main className="max-w-2xl mx-auto px-4 sm:px-6 py-8">
+          <GuidedOnboardingBanner mode={onboardingMode} tripId={trip.id} />
           <TripDetailHeader
             trip={trip}
             expenses={tripExpenses}

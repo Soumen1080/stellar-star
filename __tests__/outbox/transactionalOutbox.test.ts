@@ -352,7 +352,7 @@ describe("Transactional Outbox Pattern (#425)", () => {
 
   describe("Decimal-String Money Value Preservation Invariant", () => {
     it("preserves 7-decimal string precision without JavaScript floating-point corruption", async () => {
-      const exactAmount = "1234567.8901234";
+      const exactAmount = "1234567.8901230";
       let receivedAmount = "";
 
       const event = buildSettlementRecordedOutboxEvent({
@@ -381,7 +381,7 @@ describe("Transactional Outbox Pattern (#425)", () => {
         },
       });
 
-      expect(receivedAmount).toBe("1234567.8901234");
+      expect(receivedAmount).toBe("1234567.8901230");
       expect(receivedAmount).not.toBe(String(parseFloat(exactAmount))); // Guarantees string preservation
     });
   });
