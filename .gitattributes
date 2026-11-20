@@ -1,0 +1,3 @@
+# Ensure migrations and SQL files preserve LF line endings across all platforms
+*.sql text eol=lf
+migrations/manifest.json text eol=lf

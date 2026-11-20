@@ -15,11 +15,45 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { validateDatabaseTypes } from "@/scripts/generate-database-types.mjs";
+import { execFileSync } from "node:child_process";
 
 const ROOT = path.resolve(__dirname, "../..");
 const SETUP_SQL = path.join(ROOT, "supabase-setup.sql");
 const TYPES_FILE = path.join(ROOT, "types", "supabase.ts");
+
+function runDatabaseTypesValidator(): {
+  valid: boolean;
+  errors: string[];
+  warnings: string[];
+  tableCount: number;
+  functionCount: number;
+  engine: string;
+} {
+  const scriptPath = path.join(ROOT, "scripts", "generate-database-types.mjs");
+  try {
+    const stdout = execFileSync("node", [scriptPath, "--check", "--json"], {
+      encoding: "utf8",
+      cwd: ROOT,
+    });
+    return JSON.parse(stdout);
+  } catch (err: any) {
+    if (err.stdout) {
+      try {
+        return JSON.parse(err.stdout);
+      } catch {
+        // ignore
+      }
+    }
+    return {
+      valid: false,
+      errors: [err.message || String(err)],
+      warnings: [],
+      tableCount: 0,
+      functionCount: 0,
+      engine: "unknown",
+    };
+  }
+}
 
 const CRITICAL_RPCS = [
   "check_auth_rate_limit",
@@ -40,8 +74,8 @@ describe("Database schema & TypeScript type synchronization (#423)", () => {
   const setupSql = fs.readFileSync(SETUP_SQL, "utf8");
   const typesContent = fs.readFileSync(TYPES_FILE, "utf8");
 
-  it("validateDatabaseTypes() reports full synchronization with zero errors", async () => {
-    const result = await validateDatabaseTypes();
+  it("validateDatabaseTypes() reports full synchronization with zero errors", () => {
+    const result = runDatabaseTypesValidator();
     expect(result.valid).toBe(true);
     expect(result.errors).toEqual([]);
     expect(result.tableCount).toBeGreaterThanOrEqual(40);
@@ -49,7 +83,7 @@ describe("Database schema & TypeScript type synchronization (#423)", () => {
   });
 
   it("every table in supabase-setup.sql is represented in Database['public']['Tables']", () => {
-    const tableRegex = /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?public\.([a-zA-Z0-9_]+)/gi;
+    const tableRegex = /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?public\.([a-zA-Z0-9_]+)\s*\(/gi;
     const sqlTables = [...new Set([...setupSql.matchAll(tableRegex)].map((m) => m[1]))];
 
     const tablesBlockMatch = typesContent.match(/Tables:\s*\{([\s\S]*?)\n\s{4}Views:/);

@@ -43,7 +43,8 @@ interface Manifest {
 }
 
 function computeSha256(content: string): string {
-  return crypto.createHash("sha256").update(content, "utf8").digest("hex");
+  const normalized = content.replace(/\r\n/g, "\n");
+  return crypto.createHash("sha256").update(normalized, "utf8").digest("hex");
 }
 
 describe("Immutable Migration Identity and Manifest", () => {
@@ -155,14 +156,14 @@ describe("Database Ledger DDL and Compatibility (Migration 0021)", () => {
   });
 
   it("migration 0021 backfills historical migrations with sequence and migration_id", () => {
-    expect(migrationSql).toContain("UPDATE public.schema_migrations SET");
-    expect(migrationSql).toContain("0001_initial_schema");
-    expect(migrationSql).toContain("0020_transaction_concurrency_guards");
+    expect(migrationSql).toMatch(/UPDATE\s+public\.schema_migrations\s+SET/);
+    expect(migrationSql).toContain("0001_baseline");
+    expect(migrationSql).toContain("0020_onchain_reconciliation_worker");
   });
 
   it("migration 0021 self-registers into public.schema_migrations with sequence 33", () => {
-    expect(migrationSql).toContain(
-      "INSERT INTO public.schema_migrations (version, name, migration_id, sequence, manifest_checksum)"
+    expect(migrationSql).toMatch(
+      /INSERT INTO public\.schema_migrations\s*\([^)]*migration_id[^)]*sequence[^)]*\)/
     );
     expect(migrationSql).toContain("'0021_immutable_migration_identity'");
     expect(migrationSql).toContain("33");

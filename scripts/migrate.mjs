@@ -95,7 +95,7 @@ export function validateMigrationManifest() {
     if (!m.id) {
       errors.push(`Migration entry at sequence ${m.sequence} is missing required 'id'.`);
     } else if (seenIds.has(m.id)) {
-      errors.push(`Duplicate migration ID detected in manifest: '${m.id}'.`);
+      errors.push(`Duplicate migration id detected in manifest: '${m.id}'.`);
     } else {
       seenIds.add(m.id);
     }
@@ -117,11 +117,12 @@ export function validateMigrationManifest() {
 
     const filePath = path.join(MIGRATIONS_DIR, m.filename);
     if (!fs.existsSync(filePath)) {
-      errors.push(`Manifest references non-existent migration file: ${m.filename}`);
+      errors.push(`Manifest references migration file not found on disk: ${m.filename}`);
     } else {
       manifestFiles.add(m.filename);
       const content = fs.readFileSync(filePath, "utf8");
-      const currentChecksum = crypto.createHash("sha256").update(content).digest("hex").slice(0, 16);
+      const normalized = content.replace(/\r\n/g, "\n");
+      const currentChecksum = crypto.createHash("sha256").update(normalized).digest("hex").slice(0, 16);
       if (m.checksum && currentChecksum !== m.checksum) {
         errors.push(
           `Checksum mismatch for '${m.filename}': manifest=${m.checksum}, actual=${currentChecksum} (applied history may have been modified).`
@@ -135,7 +136,7 @@ export function validateMigrationManifest() {
     const diskFiles = fs.readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith(".sql"));
     for (const file of diskFiles) {
       if (!manifestFiles.has(file)) {
-        errors.push(`Unregistered migration file on disk not in manifest: ${file}`);
+        errors.push(`Untracked SQL file on disk not in manifest: ${file}`);
       }
     }
   }
@@ -153,7 +154,8 @@ export function getLocalMigrations() {
       return entries.map((entry) => {
         const filePath = path.join(MIGRATIONS_DIR, entry.filename);
         const content = fs.existsSync(filePath) ? fs.readFileSync(filePath, "utf8") : "";
-        const checksum = crypto.createHash("sha256").update(content).digest("hex").slice(0, 16);
+        const normalized = content.replace(/\r\n/g, "\n");
+        const checksum = crypto.createHash("sha256").update(normalized).digest("hex").slice(0, 16);
         return {
           sequence: entry.sequence,
           id: entry.id || entry.name,
@@ -165,6 +167,8 @@ export function getLocalMigrations() {
           checksum,
           manifestChecksum: entry.checksum,
           description: entry.description,
+          // Ledger registration statement using public.record_migration_v2
+          recordSql: `SELECT public.record_migration_v2('${entry.id || entry.name}', '${entry.version || entry.filename.slice(0, 4)}', '${entry.name || entry.filename.replace(/\.sql$/, "")}', '${checksum}', ${entry.sequence});`,
         };
       });
     } catch {
@@ -182,7 +186,8 @@ export function getLocalMigrations() {
   return files.map((file, idx) => {
     const filePath = path.join(MIGRATIONS_DIR, file);
     const content = fs.readFileSync(filePath, "utf8");
-    const checksum = crypto.createHash("sha256").update(content).digest("hex").slice(0, 16);
+    const normalized = content.replace(/\r\n/g, "\n");
+    const checksum = crypto.createHash("sha256").update(normalized).digest("hex").slice(0, 16);
     const versionMatch = /^(\d+)_/i.exec(file);
     const version = versionMatch ? versionMatch[1] : file.replace(/\.sql$/, "");
     const name = file.replace(/\.sql$/, "");

@@ -22,6 +22,7 @@
 import { HORIZON_URL } from "@/lib/utils/constants";
 import { assetKey, fromHorizonFields, isNative, type AssetRef } from "@/lib/stellar/assets";
 import { chainMetadataCache, getCachedBaseReserve } from "@/lib/stellar/cache";
+import { resilientHorizonRead } from "@/lib/stellar/resilience";
 
 /**
  * Last-resort base reserve, in stroops (0.5 XLM at protocol 19+).
