@@ -15,7 +15,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-const ROOT = path.resolve(import.meta.dirname, "..");
+const ROOT = process.cwd();
 const SETUP_SQL = path.join(ROOT, "supabase-setup.sql");
 const MIGRATIONS_DIR = path.join(ROOT, "migrations");
 const TYPES_FILE = path.join(ROOT, "types", "supabase.ts");
@@ -138,7 +138,7 @@ async function inspectDisposableSchema() {
   const setupSql = fs.readFileSync(SETUP_SQL, "utf8");
   const parsedTables = new Map();
 
-  const tableRegex = /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?public\.([a-zA-Z0-9_]+)\s*\(([\s\S]*?)\n\);/gi;
+  const tableRegex = /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?public\.([a-zA-Z0-9_]+)\s*\(([\s\S]*?)\n\)(?:\s*PARTITION\s+BY[^\n;]+)?;/gi;
   for (const match of setupSql.matchAll(tableRegex)) {
     const tableName = match[1];
     const body = match[2];
@@ -326,7 +326,7 @@ async function main() {
   console.log(`${GREEN}      All ${CRITICAL_RPCS.length} critical RPC boundaries are strongly typed.${RESET}`);
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(import.meta.filename ?? "")) {
+if (process.argv[1] && process.argv[1].includes("generate-database-types.mjs")) {
   main().catch((err) => {
     console.error(`Fatal type check failure: ${err.message}`);
     process.exit(1);

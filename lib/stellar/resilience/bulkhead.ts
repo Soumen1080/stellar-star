@@ -59,6 +59,14 @@ export class BulkheadPool {
     return this.queue.length;
   }
 
+  get rejectedCount(): number {
+    return this.totalRejected;
+  }
+
+  get completedCount(): number {
+    return this.totalCompleted;
+  }
+
   get metrics(): BulkheadMetrics {
     return {
       name: this.name,

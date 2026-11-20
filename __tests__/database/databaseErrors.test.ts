@@ -19,12 +19,12 @@ import type { PostgrestError } from "@supabase/supabase-js";
 
 describe("Database Error Translation & Taxonomy", () => {
   it("translates statement_timeout (57014) to safe user-friendly message", () => {
-    const pgError: PostgrestError = {
+    const pgError = {
       message: "canceling statement due to statement timeout",
       details: "",
       hint: "",
       code: PG_STATEMENT_TIMEOUT,
-    };
+    } as unknown as PostgrestError;
 
     const err = toDatabaseError(pgError, "fetch trip history");
     expect(err).toBeInstanceOf(DatabaseError);
@@ -33,12 +33,12 @@ describe("Database Error Translation & Taxonomy", () => {
   });
 
   it("translates lock_timeout (55P03) to safe retry message", () => {
-    const pgError: PostgrestError = {
+    const pgError = {
       message: "canceling statement due to lock timeout",
       details: "could not obtain lock on relation trips",
       hint: "",
       code: PG_LOCK_NOT_AVAILABLE,
-    };
+    } as unknown as PostgrestError;
 
     const err = toDatabaseError(pgError, "update expense");
     expect(err).toBeInstanceOf(DatabaseError);
@@ -47,12 +47,12 @@ describe("Database Error Translation & Taxonomy", () => {
   });
 
   it("translates idle_in_transaction_session_timeout (25P03) to timeout message", () => {
-    const pgError: PostgrestError = {
+    const pgError = {
       message: "terminating connection due to idle-in-transaction timeout",
       details: "",
       hint: "",
       code: PG_IDLE_IN_TRANSACTION_TIMEOUT,
-    };
+    } as unknown as PostgrestError;
 
     const err = toDatabaseError(pgError, "complete settlement");
     expect(err).toBeInstanceOf(DatabaseError);

@@ -2,7 +2,7 @@
   "$schema": "./manifest.schema.json",
   "formatVersion": "1.0.0",
   "description": "Canonical append-only migration manifest guaranteeing deterministic execution ordering and immutable identities",
-  "totalMigrations": 33,
+  "totalMigrations": 36,
   "migrations": [
     {
       "sequence": 1,
@@ -330,9 +330,39 @@
       "version": "0021",
       "filename": "0021_immutable_migration_identity.sql",
       "name": "0021_immutable_migration_identity",
-      "checksum": "206025f196f949ef",
-      "sha256": "206025f196f949effdfe715bcaaee5c0331661f4c307904a4dd233033aeeb36b",
+      "checksum": "2b886561ec2e5901",
+      "sha256": "2b886561ec2e59017e726fbcce1228ed97d44c3a7d8dfa640e7a1be9e368ed07",
       "description": "Immutable migration identities, explicit manifest sequence, and ledger hardening"
+    },
+    {
+      "sequence": 34,
+      "id": "0021_database_deadlines_and_query_budgets",
+      "version": "0021",
+      "filename": "0021_database_deadlines_and_query_budgets.sql",
+      "name": "0021_database_deadlines_and_query_budgets",
+      "checksum": "84095a92dc2e1ffb",
+      "sha256": "84095a92dc2e1ffb6ab3fb3feb19ac7d8472ab642921f6e591d1ef19ffab700f",
+      "description": "Database query deadlines, connection timeouts, and telemetry traces"
+    },
+    {
+      "sequence": 35,
+      "id": "0021_partition_high_volume_operational_data",
+      "version": "0021",
+      "filename": "0021_partition_high_volume_operational_data.sql",
+      "name": "0021_partition_high_volume_operational_data",
+      "checksum": "4eb5cefbd6d7c20d",
+      "sha256": "4eb5cefbd6d7c20dc6657ad3a04df8594db0736261dd877f6e3bc0659e8c42f8",
+      "description": "Range partitioning for high-volume operational tables and retention cleanup"
+    },
+    {
+      "sequence": 36,
+      "id": "0022_transactional_outbox",
+      "version": "0022",
+      "filename": "0022_transactional_outbox.sql",
+      "name": "0022_transactional_outbox",
+      "checksum": "d6c12f7d2756acac",
+      "sha256": "d6c12f7d2756acac0682e7274943bd1bfbeeefa02b9ad9a25eb2957a009bbd1b",
+      "description": "Transactional outbox for reliable event publishing and background delivery"
     }
   ]
 }
