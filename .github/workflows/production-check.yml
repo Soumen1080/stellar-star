@@ -61,9 +61,10 @@ jobs:
     timeout-minutes: 20
 
     env:
-      SUPABASE_JWT_SECRET: ${{ secrets.SUPABASE_JWT_SECRET }}
-      NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
-      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+      SUPABASE_JWT_SECRET: ${{ secrets.SUPABASE_JWT_SECRET || 'dev-local-jwt-secret-not-for-production-use' }}
+      NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL || 'https://example.supabase.co' }}
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'ci-placeholder-key' }}
+      NEXT_PUBLIC_CONTRACT_ID: ${{ secrets.NEXT_PUBLIC_CONTRACT_ID || 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' }}
 
     steps:
       - name: Checkout

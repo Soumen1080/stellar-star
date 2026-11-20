@@ -1907,6 +1907,11 @@ CREATE POLICY idempotency_records_delete_self ON public.idempotency_records
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.idempotency_records TO authenticated;
 
+INSERT INTO public.schema_migrations (version, name, checksum)
+VALUES ('0014', '0014_idempotency_records', 'idempotency_records_312_v1')
+ON CONFLICT (version) DO UPDATE
+  SET name = EXCLUDED.name, checksum = EXCLUDED.checksum;
+
 -- ─── RECORD APPLIED MIGRATIONS ───────────────────────────────────────────────
 
 -- ============================================================================

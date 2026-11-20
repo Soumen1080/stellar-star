@@ -27,6 +27,7 @@ const config = {
     "**/__tests__/**/*.test.tsx",
   ],
   setupFiles: ["<rootDir>/jest.setup.ts"],
+  setupFilesAfterEnv: ["<rootDir>/jest.setupAfterEnv.ts"],
   collectCoverageFrom: [
     "lib/**/*.ts",
     "app/**/*.{ts,tsx}",

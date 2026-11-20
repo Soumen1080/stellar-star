@@ -35,7 +35,7 @@ export class BoundedMetadataCache {
   private invalidations = 0;
 
   constructor(maxCapacity = 1000) {
-    this.maxCapacity = Math.max(10, maxCapacity);
+    this.maxCapacity = Math.max(1, maxCapacity);
   }
 
   /**

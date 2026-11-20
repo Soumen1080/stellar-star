@@ -20,7 +20,7 @@
 
 import crypto from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
-import { checkRateLimit, getClientIp } from "@/lib/auth/rateLimiter";
+import { checkRateLimit, getClientIp, rateLimiterUnavailableResponse } from "@/lib/auth/rateLimiter";
 import { buildArchive, exportFileStem } from "@/lib/export/tripExport";
 import { getOrCreateRequestId, REQUEST_ID_HEADER } from "@/lib/observability/requestId";
 import { verifyWalletSession } from "@/lib/supabase/serverAuth";
@@ -117,6 +117,10 @@ export async function POST(request: NextRequest) {
     checkRateLimit(`export-archive:wallet:${wallet}`, ARCHIVE_LIMIT_PER_WALLET, ARCHIVE_WINDOW_MS),
     checkRateLimit(`export-archive:ip:${ip}`, ARCHIVE_LIMIT_PER_IP, ARCHIVE_WINDOW_MS),
   ]);
+  if (walletLimit.unavailable || ipLimit.unavailable) {
+    const unav = walletLimit.unavailable ? walletLimit : ipLimit;
+    return rateLimiterUnavailableResponse(unav, requestId);
+  }
   if (!walletLimit.allowed || !ipLimit.allowed) {
     await audit(client, wallet, requestId, ip, { status: "rate_limited", trip_ids: requested ?? [] });
     const resetMs = Math.max(walletLimit.allowed ? 0 : walletLimit.resetMs, ipLimit.allowed ? 0 : ipLimit.resetMs);

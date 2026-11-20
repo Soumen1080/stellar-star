@@ -18,7 +18,7 @@ export function validateAmount(
 
   const parsed = parseLocaleAmount(trimmed, locale);
   if (!parsed.success || !parsed.canonicalAmount || parsed.value === undefined) {
-    return parsed.error ?? `Enter a valid ${currency} amount.`;
+    return parsed.error ? `Enter a valid ${currency} amount: ${parsed.error}` : `Enter a valid ${currency} amount.`;
   }
 
   if (Number.isNaN(parsed.value) || !Number.isFinite(parsed.value) || parsed.value <= 0) {
