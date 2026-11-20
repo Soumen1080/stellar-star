@@ -51,62 +51,14 @@ declare global {
 const memoryLimits = globalThis.stellarStarRateLimits ?? new Map<string, MemoryRateLimitRecord>();
 globalThis.stellarStarRateLimits = memoryLimits;
 
-const initialMetrics: RateLimiterMetrics = {
-  totalChecks: 0,
-  allowedCount: 0,
-  blockedCount: 0,
-  unavailableCount: 0,
-  durableChecks: 0,
-  inMemoryChecks: 0,
-  lastUnavailableAt: null,
-  lastError: null,
-};
-
-let metrics: RateLimiterMetrics = globalThis.stellarStarRateLimiterMetrics ?? { ...initialMetrics };
-globalThis.stellarStarRateLimiterMetrics = metrics;
-
-/** Returns a snapshot of current rate limiter metrics */
-export function getRateLimiterMetrics(): RateLimiterMetrics {
-  return { ...metrics };
-}
-
-/** Resets rate limiter metrics */
-export function resetRateLimiterMetrics(): void {
-  metrics = { ...initialMetrics };
-  globalThis.stellarStarRateLimiterMetrics = metrics;
-}
-
-function handleRateLimiterUnavailable(errorMessage: string, windowMs: number): RateLimitResult {
-  metrics.totalChecks += 1;
-  metrics.unavailableCount += 1;
-  metrics.lastUnavailableAt = Date.now();
-  metrics.lastError = errorMessage;
-
-  return {
-    allowed: false,
-    remaining: 0,
-    resetMs: Math.max(windowMs, 1000),
-    unavailable: true,
-    error: errorMessage,
-  };
-}
-
-/** Extracts client IP address safely from request headers. */
-export function getClientIp(request: NextRequest): string {
-  const forwardedFor = request.headers?.get?.("x-forwarded-for");
-  if (forwardedFor) {
-    const firstIp = forwardedFor.split(",")[0]?.trim();
-    if (firstIp) return firstIp;
-  }
-
-  const realIp = request.headers?.get?.("x-real-ip");
-  if (realIp) return realIp.trim();
-
-  const cfIp = request.headers?.get?.("cf-connecting-ip");
-  if (cfIp) return cfIp.trim();
-
-  return "127.0.0.1";
-}
+// Re-export ingress-aware client IP resolver (Issue #410)
+export {
+  getClientIp,
+  resolveClientIp,
+  normalizeIp,
+  isApprovedIngress,
+  type IpResolverOptions,
+} from "@/lib/security/ipResolver";
 
 /**
  * Checks and increments rate limit for a key using sliding window.
