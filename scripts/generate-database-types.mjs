@@ -299,10 +299,16 @@ export async function validateDatabaseTypes() {
 
 async function main() {
   const isCheck = process.argv.includes("--check") || process.argv.includes("--verify");
-
-  console.log(`${BOLD}Stellar-star Database Type Verification & Release Gate (#423)${RESET}\n`);
+  const isJson = process.argv.includes("--json");
 
   const result = await validateDatabaseTypes();
+
+  if (isJson) {
+    process.stdout.write(JSON.stringify(result) + "\n");
+    process.exit(result.valid ? 0 : 1);
+  }
+
+  console.log(`${BOLD}Stellar-star Database Type Verification & Release Gate (#423)${RESET}\n`);
   console.log(`${CYAN}Introspection engine:${RESET} ${result.engine}`);
   console.log(`${CYAN}Verified tables:${RESET}      ${result.tableCount ?? 0}`);
   console.log(`${CYAN}Verified RPCs:${RESET}        ${result.functionCount ?? 0}\n`);

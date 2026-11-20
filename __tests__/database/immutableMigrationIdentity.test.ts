@@ -43,7 +43,8 @@ interface Manifest {
 }
 
 function computeSha256(content: string): string {
-  return crypto.createHash("sha256").update(content, "utf8").digest("hex");
+  const normalized = content.replace(/\r\n/g, "\n");
+  return crypto.createHash("sha256").update(normalized, "utf8").digest("hex");
 }
 
 describe("Immutable Migration Identity and Manifest", () => {

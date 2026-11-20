@@ -17,6 +17,7 @@ import {
   RotateCcw,
   Sparkles,
   ShieldAlert,
+  type LucideIcon,
 } from "lucide-react";
 import Link from "next/link";
 import { useWallet } from "@/hooks/useWallet";
@@ -50,7 +51,7 @@ interface ChecklistStepState {
   helpTopic: string;
   helpTitle: string;
   status: "complete" | "action_required" | "pending" | "ready";
-  icon: React.ComponentType<{ className?: string; size?: number }>;
+  icon: LucideIcon;
   detail: string;
 }
 

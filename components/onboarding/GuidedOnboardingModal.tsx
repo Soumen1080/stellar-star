@@ -15,6 +15,7 @@ import {
   Users,
   Eye,
   Check,
+  type LucideIcon,
 } from "lucide-react";
 import Link from "next/link";
 import { trackAnalyticsEvent } from "@/lib/analytics/sink";
@@ -27,7 +28,7 @@ export interface OnboardingStep {
   description: string;
   helpTopic: string;
   helpLabel: string;
-  icon: React.ComponentType<{ className?: string; size?: number }>;
+  icon: LucideIcon;
   actions?: Array<{
     label: string;
     onClick?: () => void;
