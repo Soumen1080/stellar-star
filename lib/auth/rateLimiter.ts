@@ -30,22 +30,14 @@ declare global {
 const memoryLimits = globalThis.stellarStarRateLimits ?? new Map<string, MemoryRateLimitRecord>();
 globalThis.stellarStarRateLimits = memoryLimits;
 
-/** Extracts client IP address safely from request headers. */
-export function getClientIp(request: NextRequest): string {
-  const forwardedFor = request.headers?.get?.("x-forwarded-for");
-  if (forwardedFor) {
-    const firstIp = forwardedFor.split(",")[0]?.trim();
-    if (firstIp) return firstIp;
-  }
-
-  const realIp = request.headers?.get?.("x-real-ip");
-  if (realIp) return realIp.trim();
-
-  const cfIp = request.headers?.get?.("cf-connecting-ip");
-  if (cfIp) return cfIp.trim();
-
-  return "127.0.0.1";
-}
+// Re-export ingress-aware client IP resolver (Issue #410)
+export {
+  getClientIp,
+  resolveClientIp,
+  normalizeIp,
+  isApprovedIngress,
+  type IpResolverOptions,
+} from "@/lib/security/ipResolver";
 
 /**
  * Checks and increments rate limit for a key using sliding window.
