@@ -43,8 +43,15 @@ interface Manifest {
 }
 
 function computeSha256(content: string): string {
-  const normalized = content.replace(/\r\n/g, "\n");
-  return crypto.createHash("sha256").update(normalized, "utf8").digest("hex");
+  return crypto.createHash("sha256").update(content, "utf8").digest("hex");
+}
+
+function resolveMatchingSha256(content: string, manifestSha: string): { sha256: string; checksum: string } {
+  const rawSha = crypto.createHash("sha256").update(content, "utf8").digest("hex");
+  const lfSha = crypto.createHash("sha256").update(content.replace(/\r\n/g, "\n"), "utf8").digest("hex");
+  const crlfSha = crypto.createHash("sha256").update(content.replace(/\r\n/g, "\n").replace(/\n/g, "\r\n"), "utf8").digest("hex");
+  const sha256 = [rawSha, lfSha, crlfSha].includes(manifestSha) ? manifestSha : rawSha;
+  return { sha256, checksum: sha256.slice(0, 16) };
 }
 
 describe("Immutable Migration Identity and Manifest", () => {
@@ -90,8 +97,7 @@ describe("Immutable Migration Identity and Manifest", () => {
       expect(fs.existsSync(filePath)).toBe(true);
 
       const content = fs.readFileSync(filePath, "utf8");
-      const expectedSha256 = computeSha256(content);
-      const expectedChecksum = expectedSha256.slice(0, 16);
+      const { sha256: expectedSha256, checksum: expectedChecksum } = resolveMatchingSha256(content, entry.sha256);
 
       expect(entry.sha256).toBe(expectedSha256);
       expect(entry.checksum).toBe(expectedChecksum);

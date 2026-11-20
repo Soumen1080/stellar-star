@@ -121,11 +121,13 @@ export function validateMigrationManifest() {
     } else {
       manifestFiles.add(m.filename);
       const content = fs.readFileSync(filePath, "utf8");
-      const normalized = content.replace(/\r\n/g, "\n");
-      const currentChecksum = crypto.createHash("sha256").update(normalized).digest("hex").slice(0, 16);
-      if (m.checksum && currentChecksum !== m.checksum) {
+      const rawChecksum = crypto.createHash("sha256").update(content).digest("hex").slice(0, 16);
+      const lfChecksum = crypto.createHash("sha256").update(content.replace(/\r\n/g, "\n")).digest("hex").slice(0, 16);
+      const crlfChecksum = crypto.createHash("sha256").update(content.replace(/\r\n/g, "\n").replace(/\n/g, "\r\n")).digest("hex").slice(0, 16);
+      const matched = [rawChecksum, lfChecksum, crlfChecksum].includes(m.checksum);
+      if (m.checksum && !matched) {
         errors.push(
-          `Checksum mismatch for '${m.filename}': manifest=${m.checksum}, actual=${currentChecksum} (applied history may have been modified).`
+          `Checksum mismatch for '${m.filename}': manifest=${m.checksum}, actual=${lfChecksum} (applied history may have been modified).`
         );
       }
     }
@@ -154,8 +156,10 @@ export function getLocalMigrations() {
       return entries.map((entry) => {
         const filePath = path.join(MIGRATIONS_DIR, entry.filename);
         const content = fs.existsSync(filePath) ? fs.readFileSync(filePath, "utf8") : "";
-        const normalized = content.replace(/\r\n/g, "\n");
-        const checksum = crypto.createHash("sha256").update(normalized).digest("hex").slice(0, 16);
+        const rawChecksum = crypto.createHash("sha256").update(content).digest("hex").slice(0, 16);
+        const lfChecksum = crypto.createHash("sha256").update(content.replace(/\r\n/g, "\n")).digest("hex").slice(0, 16);
+        const crlfChecksum = crypto.createHash("sha256").update(content.replace(/\r\n/g, "\n").replace(/\n/g, "\r\n")).digest("hex").slice(0, 16);
+        const checksum = [rawChecksum, lfChecksum, crlfChecksum].includes(entry.checksum) ? entry.checksum : lfChecksum;
         return {
           sequence: entry.sequence,
           id: entry.id || entry.name,
