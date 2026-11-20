@@ -172,7 +172,34 @@ export function GuidedOnboardingModal({
     }
   }, [isOpen, mode, currentStepIndex]);
 
-  // Handle escape key
+  const handleSkip = useCallback(() => {
+    trackAnalyticsEvent("onboarding_abandoned", {
+      mode,
+      last_step_index: currentStepIndex + 1,
+    });
+    try {
+      localStorage.setItem(`stellar_star_onboarding_${mode}_dismissed`, "true");
+    } catch {
+      // Storage unavailable
+    }
+    onClose();
+  }, [mode, currentStepIndex, onClose]);
+
+  const goToStep = useCallback(
+    (index: number) => {
+      if (index > currentStepIndex) {
+        trackAnalyticsEvent("onboarding_step_completed", {
+          mode,
+          step_index: currentStepIndex + 1,
+          step_name: currentStep.id,
+        });
+      }
+      setCurrentStepIndex(index);
+    },
+    [currentStepIndex, currentStep.id, mode]
+  );
+
+  // Handle keyboard navigation (Escape, ArrowRight, ArrowLeft)
   useEffect(() => {
     if (!isOpen) return;
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -190,31 +217,7 @@ export function GuidedOnboardingModal({
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen, currentStepIndex, steps.length]);
-
-  const handleSkip = useCallback(() => {
-    trackAnalyticsEvent("onboarding_abandoned", {
-      mode,
-      last_step_index: currentStepIndex + 1,
-    });
-    try {
-      localStorage.setItem(`stellar_star_onboarding_${mode}_dismissed`, "true");
-    } catch {
-      // Storage unavailable
-    }
-    onClose();
-  }, [mode, currentStepIndex, onClose]);
-
-  const goToStep = (index: number) => {
-    if (index > currentStepIndex) {
-      trackAnalyticsEvent("onboarding_step_completed", {
-        mode,
-        step_index: currentStepIndex + 1,
-        step_name: currentStep.id,
-      });
-    }
-    setCurrentStepIndex(index);
-  };
+  }, [isOpen, currentStepIndex, steps.length, goToStep, handleSkip]);
 
   const handleNext = () => {
     if (currentStepIndex < steps.length - 1) {
