@@ -1175,6 +1175,43 @@ export type Database = {
           count: number;
         };
       };
+      claim_idempotency_key: {
+        Args: {
+          p_wallet_address: string;
+          p_key: string;
+          p_endpoint: string;
+          p_request_fingerprint: string;
+          p_lease_seconds?: number;
+          p_now?: string;
+        };
+        Returns: {
+          outcome: string;
+          status?: string;
+          response_status?: number;
+          response_body?: Json;
+          locked_until?: string;
+          retry_after_seconds?: number;
+          recovered?: boolean;
+          error?: string;
+        };
+      };
+      complete_idempotency_key: {
+        Args: {
+          p_wallet_address: string;
+          p_key: string;
+          p_request_fingerprint: string;
+          p_response_status: number;
+          p_response_body: Json;
+        };
+        Returns: void;
+      };
+      release_idempotency_key: {
+        Args: {
+          p_wallet_address: string;
+          p_key: string;
+        };
+        Returns: void;
+      };
       check_rate_limit: {
         Args: {
           p_key: string;
