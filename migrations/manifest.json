@@ -2,7 +2,7 @@
   "$schema": "./manifest.schema.json",
   "formatVersion": "1.0.0",
   "description": "Canonical append-only migration manifest guaranteeing deterministic execution ordering and immutable identities",
-  "totalMigrations": 33,
+  "totalMigrations": 36,
   "migrations": [
     {
       "sequence": 1,
@@ -333,6 +333,36 @@
       "checksum": "206025f196f949ef",
       "sha256": "206025f196f949effdfe715bcaaee5c0331661f4c307904a4dd233033aeeb36b",
       "description": "Immutable migration identities, explicit manifest sequence, and ledger hardening"
+    },
+    {
+      "sequence": 34,
+      "id": "0021_database_deadlines_and_query_budgets",
+      "version": "0021",
+      "filename": "0021_database_deadlines_and_query_budgets.sql",
+      "name": "0021_database_deadlines_and_query_budgets",
+      "checksum": "bddbc868d191293e",
+      "sha256": "bddbc868d191293e7d5ae92415fbe0b89a8449ebca70afe468ae034731cf9c93",
+      "description": "Database query timeouts, transaction statement limits, and query budget tracking"
+    },
+    {
+      "sequence": 35,
+      "id": "0021_partition_high_volume_operational_data",
+      "version": "0021",
+      "filename": "0021_partition_high_volume_operational_data.sql",
+      "name": "0021_partition_high_volume_operational_data",
+      "checksum": "dc4be59361d16700",
+      "sha256": "dc4be59361d16700715ac11441ce690f968c69d4218a43aa6ea971ada3dbf905",
+      "description": "Table partitioning and retention boundaries for high volume tables"
+    },
+    {
+      "sequence": 36,
+      "id": "0022_transactional_outbox",
+      "version": "0022",
+      "filename": "0022_transactional_outbox.sql",
+      "name": "0022_transactional_outbox",
+      "checksum": "c7c779d75c77d6bc",
+      "sha256": "c7c779d75c77d6bc0bf30311372e1f06df782591aa87be50adbab9cb1105fd26",
+      "description": "Transactional outbox for reliable event publishing and settlement notifications"
     }
   ]
 }

@@ -198,7 +198,6 @@ export function getNetworkConfigErrors(): string[] {
   const errors: string[] = [];
 
   // Check valid network string
-  const rawNetwork = process.env.NEXT_PUBLIC_STELLAR_NETWORK?.trim();
   if (rawNetwork && rawNetwork !== "TESTNET" && rawNetwork !== "PUBLIC") {
     errors.push(
       `NEXT_PUBLIC_STELLAR_NETWORK must be "TESTNET" or "PUBLIC" (found "${rawNetwork}").`
