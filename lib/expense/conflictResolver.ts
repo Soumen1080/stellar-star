@@ -172,12 +172,12 @@ export function mergeExpenseUpdates(
   }
 
   const isSettled = serverExpense.settled || baseExpense.settled;
-  if (isSettled) {
+  if (isSettled && proposedUpdates.totalAmount !== undefined && proposedUpdates.totalAmount !== baseExpense.totalAmount) {
     return {
       success: false,
       conflict: {
-        fields: ["settled"],
-        reason: "This expense is settled and cannot be edited in place. Use a linked correction record instead.",
+        fields: ["totalAmount"],
+        reason: "Settled expenses cannot be modified in place. Use a linked correction record instead.",
         serverExpense,
         proposedUpdates,
       },
