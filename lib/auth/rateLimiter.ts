@@ -51,6 +51,46 @@ declare global {
 const memoryLimits = globalThis.stellarStarRateLimits ?? new Map<string, MemoryRateLimitRecord>();
 globalThis.stellarStarRateLimits = memoryLimits;
 
+const initialMetrics: RateLimiterMetrics = {
+  totalChecks: 0,
+  allowedCount: 0,
+  blockedCount: 0,
+  unavailableCount: 0,
+  durableChecks: 0,
+  inMemoryChecks: 0,
+  lastUnavailableAt: null,
+  lastError: null,
+};
+
+let metrics: RateLimiterMetrics = globalThis.stellarStarRateLimiterMetrics ?? { ...initialMetrics };
+globalThis.stellarStarRateLimiterMetrics = metrics;
+
+/** Returns a snapshot of current rate limiter metrics */
+export function getRateLimiterMetrics(): RateLimiterMetrics {
+  return { ...metrics };
+}
+
+/** Resets rate limiter metrics */
+export function resetRateLimiterMetrics(): void {
+  metrics = { ...initialMetrics };
+  globalThis.stellarStarRateLimiterMetrics = metrics;
+}
+
+function handleRateLimiterUnavailable(errorMessage: string, windowMs: number): RateLimitResult {
+  metrics.totalChecks += 1;
+  metrics.unavailableCount += 1;
+  metrics.lastUnavailableAt = Date.now();
+  metrics.lastError = errorMessage;
+
+  return {
+    allowed: false,
+    remaining: 0,
+    resetMs: Math.max(windowMs, 1000),
+    unavailable: true,
+    error: errorMessage,
+  };
+}
+
 // Re-export ingress-aware client IP resolver (Issue #410)
 export {
   getClientIp,

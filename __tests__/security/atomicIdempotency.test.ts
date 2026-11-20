@@ -176,7 +176,7 @@ describe("Atomic Idempotency Claims (Issue #411)", () => {
 
       // In-flight parallel calls were serialized with IdempotencyLockedError
       const lockedCalls = results.filter(
-        (r) => !r.success && r.err instanceof IdempotencyLockedError,
+        (r): r is { success: false; err: any } => !r.success && r.err instanceof IdempotencyLockedError,
       );
       expect(lockedCalls.length + succeeded.length).toBe(5);
 
