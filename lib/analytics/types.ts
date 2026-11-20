@@ -21,7 +21,13 @@ export type AnalyticsEventName =
   | "wallet_connected"
   | "wallet_connect_failed"
   | "onboarding_started"
+  | "onboarding_step_completed"
   | "onboarding_completed"
+  | "onboarding_abandoned"
+  | "first_settlement_checklist_started"
+  | "first_settlement_checklist_step_completed"
+  | "first_settlement_checklist_completed"
+  | "first_settlement_checklist_abandoned"
   // Trip Funnel
   | "trip_create_started"
   | "trip_created"
@@ -54,10 +60,35 @@ export interface EventPropertiesMap {
   };
   onboarding_started: {
     step: number;
+    mode?: "create" | "join" | "view";
+  };
+  onboarding_step_completed: {
+    mode: "create" | "join" | "view";
+    step_index: number;
+    step_name: string;
   };
   onboarding_completed: {
     step_count: number;
     duration_ms?: number;
+    mode?: "create" | "join" | "view";
+  };
+  onboarding_abandoned: {
+    mode: "create" | "join" | "view";
+    last_step_index: number;
+  };
+  first_settlement_checklist_started: {
+    context: "trip" | "payment" | "standalone";
+  };
+  first_settlement_checklist_step_completed: {
+    step_key: string;
+    step_index: number;
+  };
+  first_settlement_checklist_completed: {
+    duration_ms?: number;
+  };
+  first_settlement_checklist_abandoned: {
+    last_step_key: string;
+    incomplete_steps_count: number;
   };
   trip_create_started: Record<string, never>;
   trip_created: {

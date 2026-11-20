@@ -7,7 +7,7 @@ const config = {
     "^@/(.*)$": "<rootDir>/$1",
   },
   transform: {
-    "^.+\\.(t|j)sx?$": [
+    "^.+\\.(ts|tsx|js|jsx|mjs)$": [
       "ts-jest",
       {
         tsconfig: {

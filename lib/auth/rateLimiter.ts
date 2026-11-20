@@ -69,12 +69,14 @@ export async function checkRateLimit(
         });
 
         if (!error && data && typeof data === "object") {
-          const parsed = data as { allowed: boolean; remaining: number; reset_ms: number };
+          const parsed = data as unknown as { allowed?: boolean; remaining?: number; resetMs?: number; reset_ms?: number; count?: number };
+          const resetMs = Number(parsed.resetMs ?? parsed.reset_ms ?? windowMs);
+          const remaining = Number(parsed.remaining ?? 0);
           return {
             allowed: Boolean(parsed.allowed),
-            remaining: Number(parsed.remaining),
-            resetMs: Number(parsed.reset_ms),
-            count: Math.max(0, limit - Number(parsed.remaining)),
+            remaining,
+            resetMs,
+            count: parsed.count !== undefined ? Number(parsed.count) : Math.max(0, limit - remaining),
           };
         }
       }
