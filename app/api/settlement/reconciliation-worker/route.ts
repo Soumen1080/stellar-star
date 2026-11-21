@@ -1,19 +1,29 @@
 /**
  * app/api/settlement/reconciliation-worker/route.ts
  *
- * API endpoint for automated on-chain reconciliation worker and queryable reporting.
+ * Settlement reconciliation: queryable report and on-demand worker runs.
  *
- * GET: Returns queryable report of pending, failed, and escalated reconciliations,
- *      complete with alert threshold evaluations and aging metrics.
- * POST: Triggers a scheduled or on-demand worker run over due queued jobs.
+ * GET:  The reconciliation report. Cron or staff callers see every wallet; a
+ *       signed-in wallet sees only its own rows. Anonymous callers get 401.
+ * POST: Runs one bounded, recorded worker pass. Cron secret or staff only
+ *       (Issue #415); see lib/settlement/reconciliationAuth.ts.
+ *
+ * The scheduled run is GET /api/settlement/reconciliation-worker/cron.
  */
 
 import { NextRequest, NextResponse } from "next/server";
+import { getReconciliationReport, type ReportFilter } from "@/lib/settlement/reconciliationWorker";
+import { authorizeReconciliationRun, resolveReconciliationActor } from "@/lib/settlement/reconciliationAuth";
 import {
-  runReconciliationWorker,
-  getReconciliationReport,
-  type ReportFilter,
-} from "@/lib/settlement/reconciliationWorker";
+  reconciliationHeaders as responseHeaders,
+  reconciliationRefusal as refusal,
+  reconciliationUnconfigured as serviceUnavailable,
+} from "@/lib/settlement/reconciliationHttp";
+import {
+  clampBatchSize,
+  executeReconciliationRun,
+  recentReconciliationRuns,
+} from "@/lib/settlement/reconciliationRun";
 import { createServerClientForToken, createServiceRoleClient } from "@/lib/supabase/server";
 import { getOrCreateRequestId, REQUEST_ID_HEADER } from "@/lib/observability/requestId";
 import type { ReconciliationJobStatus } from "@/types/reconciliation";
@@ -21,54 +31,53 @@ import type { ReconciliationJobStatus } from "@/types/reconciliation";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-function responseHeaders(requestId: string): Record<string, string> {
-  return {
-    "Cache-Control": "no-store",
-    [REQUEST_ID_HEADER]: requestId,
-  };
-}
-
 export async function GET(request: NextRequest) {
   const requestId = getOrCreateRequestId(request.headers.get(REQUEST_ID_HEADER));
+  const auth = resolveReconciliationActor(request);
+  if (!auth.ok) return refusal(auth, requestId);
+  const { actor } = auth;
+
   const { searchParams } = new URL(request.url);
-
-  const statusParam = searchParams.get("status");
-  const walletParam = searchParams.get("wallet");
-  const txHashParam = searchParams.get("txHash");
-  const tripIdParam = searchParams.get("tripId");
-  const escalatedOnly = searchParams.get("escalatedOnly") === "true";
-  const limit = searchParams.get("limit") ? Number(searchParams.get("limit")) : 50;
-  const offset = searchParams.get("offset") ? Number(searchParams.get("offset")) : 0;
-
+  const limit = Math.min(Math.max(Number(searchParams.get("limit") ?? 50) || 50, 1), 200);
+  const offset = Math.max(Number(searchParams.get("offset") ?? 0) || 0, 0);
   const filter: ReportFilter = {
-    status: statusParam as ReconciliationJobStatus | "all" | "pending" | undefined,
-    wallet: walletParam ?? undefined,
-    txHash: txHashParam ?? undefined,
-    tripId: tripIdParam ?? undefined,
-    escalatedOnly,
+    status: (searchParams.get("status") ?? undefined) as ReconciliationJobStatus | "all" | "pending" | undefined,
+    wallet: searchParams.get("wallet") ?? undefined,
+    txHash: searchParams.get("txHash") ?? undefined,
+    tripId: searchParams.get("tripId") ?? undefined,
+    escalatedOnly: searchParams.get("escalatedOnly") === "true",
     limit,
     offset,
   };
 
   try {
-    const authHeader = request.headers.get("authorization") ?? "";
-    const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
-    const client = token ? createServerClientForToken(token) : createServiceRoleClient();
+    let client;
+    if (actor.kind === "wallet") {
+      // A wallet sees its own reconciliation only: its RLS-bound client, and
+      // the wallet filter pinned to itself whatever the query string says.
+      client = createServerClientForToken(actor.token!);
+      filter.wallet = actor.wallet;
+    } else {
+      client = createServiceRoleClient();
+      if (!client) return serviceUnavailable(requestId);
+    }
 
-    const report = await getReconciliationReport(filter, client ?? undefined);
-
+    const report = await getReconciliationReport(filter, client);
     return NextResponse.json(
       {
         ok: true,
         requestId,
         ...report,
+        ...(actor.kind === "wallet" ? {} : { recentRuns: recentReconciliationRuns(10) }),
       },
       { status: 200, headers: responseHeaders(requestId) },
     );
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Failed to load reconciliation report.";
+    console.error(
+      `[reconciliation:report] ${JSON.stringify({ requestId, message: err instanceof Error ? err.message : String(err) })}`,
+    );
     return NextResponse.json(
-      { ok: false, error: message, requestId },
+      { ok: false, error: "Failed to load the reconciliation report.", code: "RECONCILIATION_REPORT_FAILED", requestId },
       { status: 500, headers: responseHeaders(requestId) },
     );
   }
@@ -76,47 +85,43 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   const requestId = getOrCreateRequestId(request.headers.get(REQUEST_ID_HEADER));
+  const auth = authorizeReconciliationRun(request);
+  if (!auth.ok) return refusal(auth, requestId);
 
-  // Authorize: accept bearer CRON_SECRET or bearer session token
-  const authHeader = request.headers.get("authorization") ?? "";
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
-  const cronSecret = process.env.CRON_SECRET;
-
-  if (cronSecret && token && token !== cronSecret) {
-    // If CRON_SECRET is set but token doesn't match, verify if user session
-    // Allow service client fallback for test environments
-  }
-
-  let body: { batchSize?: number; walletAddress?: string } = {};
+  let body: { batchSize?: unknown; walletAddress?: unknown } = {};
   try {
-    body = (await request.json()) as { batchSize?: number; walletAddress?: string };
+    body = (await request.json()) as typeof body;
   } catch {
-    // Empty body is acceptable for scheduled cron invocations
+    // An empty body runs a default-sized pass.
   }
 
-  try {
-    const client = token ? createServerClientForToken(token) : createServiceRoleClient();
-    const result = await runReconciliationWorker(
-      {
-        batchSize: body.batchSize ? Number(body.batchSize) : 15,
-        walletAddress: body.walletAddress,
-      },
-      client ?? undefined,
-    );
+  const client = createServiceRoleClient();
+  if (!client) return serviceUnavailable(requestId);
 
-    return NextResponse.json(
-      {
-        ok: true,
-        requestId,
-        result,
+  const { record, errors } = await executeReconciliationRun({
+    actor: auth.actor,
+    requestId,
+    trigger: auth.actor.kind === "cron" ? "schedule" : "manual",
+    client,
+    batchSize: clampBatchSize(body.batchSize ?? undefined),
+    walletAddress: typeof body.walletAddress === "string" ? body.walletAddress : null,
+  });
+
+  return NextResponse.json(
+    {
+      ok: record.outcome === "succeeded",
+      requestId,
+      run: record,
+      result: {
+        processed: record.processed,
+        recorded: record.recorded,
+        escalated: record.escalated,
+        pending: record.pending,
+        failed: record.failed,
+        durationMs: record.durationMs,
+        errors,
       },
-      { status: 200, headers: responseHeaders(requestId) },
-    );
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "Reconciliation worker run failed.";
-    return NextResponse.json(
-      { ok: false, error: message, requestId },
-      { status: 500, headers: responseHeaders(requestId) },
-    );
-  }
+    },
+    { status: record.outcome === "succeeded" ? 200 : 500, headers: responseHeaders(requestId) },
+  );
 }

@@ -41,6 +41,7 @@ This document defines the comprehensive authorization matrix for all data bounda
 | **Claim Member Slot**| `POST /api/invitations/claim` | ❌ N/A | ❌ (Already) | ✅ ALLOW | ❌ DENY (410) | ✅ ALLOW | ❌ DENY (401) | `claim_trip_invite` + session check |
 | **Revoke Invite** | `POST /api/invitations/revoke` | ✅ ALLOW | ❌ DENY | ❌ DENY | ❌ DENY | ❌ DENY | ❌ DENY | API + `trip_invites_update_creator` |
 | **Request Attestation** | `POST /api/settlement/attest` | ✅ (as debtor)| ✅ (as debtor)| ❌ DENY | ❌ DENY | ❌ DENY | ❌ DENY | Session check (`session.wallet == member`) |
+| **Run Reconciliation Worker**| `POST /api/settlement/reconciliation-worker`| ❌ DENY | ❌ DENY | ❌ DENY | ❌ DENY | ❌ DENY | ❌ DENY | Cron secret or explicit staff credentials only (SR-09) |
 | **Reconcile Settlement**| `POST /api/settlement/reconcile`| ✅ ALLOW | ✅ ALLOW | ❌ DENY | ❌ DENY | ❌ DENY | ❌ DENY | Horizon check + session participant check |
 | **Realtime Stream** | WebSocket Postgres Changes | ✅ ALLOW | ✅ ALLOW | ❌ DENY | ❌ DENY | ❌ DENY | ❌ DENY | Supabase Realtime RLS scoping |
 | **Read Receipts** | `GET /api/receipts/[id]` | ✅ ALLOW | ✅ ALLOW | ❌ DENY | ❌ DENY | ❌ DENY | ❌ DENY | Storage signed URL + membership check |
@@ -92,6 +93,8 @@ Client bundles built via Next.js dead-code eliminate all server-only modules. In
 | **SR-06** | `lib/settlement/attestationLedger.ts`| Multi-instance attestation double-claim prevention ledger | Read/write strictly keyed by transaction hash and verified Horizon record |
 | **SR-07** | `lib/onboarding/sponsorshipLedger.ts`| Gas sponsorship ledger & capacity reserve | Rate-limited by inviter abuse-resistance controls |
 | **SR-08** | `lib/privacy/accountDeletion.ts` | Executes off-chain account deletion and anonymization | Requires verified session JWT from the account owner |
+| **SR-09** | `app/api/settlement/reconciliation-worker/route.ts`, `.../cron/route.ts` | Runs bounded reconciliation passes and serves the reconciliation report | Runs: `Authorization: Bearer $CRON_SECRET` or explicit staff credentials (`x-staff-secret`, `x-operator-secret`, or a wallet on `RECONCILIATION_STAFF_WALLETS`), all compared in constant time; there is no development fallback. The cron route accepts only the cron secret. A plain wallet session can only read its own rows; anonymous callers get 401. Every run is logged to `reconciliation_worker_runs` (#415). |
+| **SR-10** | `app/api/idempotency/cleanup/route.ts` | Redacts expired idempotency replays and deletes expired audit rows | Gated by `Authorization: Bearer $CRON_SECRET` using timing-safe comparison (#414) |
 
 ---
 

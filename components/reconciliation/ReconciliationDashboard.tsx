@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   RefreshCw,
   AlertTriangle,
@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { formatAddress } from "@/lib/utils";
 import { useToast } from "@/components/ui/Toast";
+import { useAccessToken } from "@/lib/supabase/useSession";
 import type {
   ReconciliationJob,
   ReconciliationReport,
@@ -42,6 +43,22 @@ export function ReconciliationDashboard() {
   const [tripIdFilter, setTripIdFilter] = useState("");
   const [selectedJobForDetail, setSelectedJobForDetail] = useState<ReconciliationJob | null>(null);
 
+  // Reconciliation requires the scheduler's secret or staff credentials (#415).
+  // A signed-in wallet sees only its own report; running the worker needs a
+  // staff wallet or the staff secret. The secret is held in memory only.
+  const accessToken = useAccessToken();
+  const [staffSecret, setStaffSecret] = useState("");
+  // Read through a ref so typing the secret does not refetch on every key.
+  const staffSecretRef = useRef("");
+  staffSecretRef.current = staffSecret;
+  const authHeaders = useCallback((): Record<string, string> => {
+    const headers: Record<string, string> = {};
+    if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
+    const secret = staffSecretRef.current.trim();
+    if (secret) headers["x-staff-secret"] = secret;
+    return headers;
+  }, [accessToken]);
+
   const fetchReport = useCallback(async () => {
     try {
       setLoading(true);
@@ -51,7 +68,9 @@ export function ReconciliationDashboard() {
       if (txHashFilter.trim()) params.set("txHash", txHashFilter.trim());
       if (tripIdFilter.trim()) params.set("tripId", tripIdFilter.trim());
 
-      const res = await fetch(`/api/settlement/reconciliation-worker?${params.toString()}`);
+      const res = await fetch(`/api/settlement/reconciliation-worker?${params.toString()}`, {
+        headers: authHeaders(),
+      });
       const data = await res.json();
       if (res.ok && data.ok) {
         setReport(data as ReconciliationReport);
@@ -63,7 +82,7 @@ export function ReconciliationDashboard() {
     } finally {
       setLoading(false);
     }
-  }, [selectedStatus, walletFilter, txHashFilter, tripIdFilter, error]);
+  }, [selectedStatus, walletFilter, txHashFilter, tripIdFilter, error, authHeaders]);
 
   useEffect(() => {
     void fetchReport();
@@ -74,7 +93,7 @@ export function ReconciliationDashboard() {
       setRunningWorker(true);
       const res = await fetch("/api/settlement/reconciliation-worker", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({ batchSize: 20 }),
       });
       const data = await res.json();
@@ -152,7 +171,19 @@ export function ReconciliationDashboard() {
             Server-side durable queue verifying pending payments, ledger finality, and anti-ambiguity escalations.
           </p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <label className="sr-only" htmlFor="reconciliation-staff-secret">
+            Staff secret
+          </label>
+          <input
+            id="reconciliation-staff-secret"
+            type="password"
+            autoComplete="off"
+            placeholder="Staff secret (optional)"
+            value={staffSecret}
+            onChange={(e) => setStaffSecret(e.target.value)}
+            className="w-48 px-3 py-2 text-sm bg-white border border-[#E5E5E5] rounded-xl focus:outline-none focus:ring-2 focus:ring-[#2DD4BF]/40"
+          />
           <button
             onClick={() => void fetchReport()}
             disabled={loading}
