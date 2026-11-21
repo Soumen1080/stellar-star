@@ -18,6 +18,21 @@
 import crypto from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { ServerClient } from "@/lib/supabase/server";
+import { validateIdempotencyKey, type IdempotencyKeyErrorCode } from "./key";
+
+/**
+ * Raised when a mutation is attempted without a valid idempotency key
+ * (Issue #412). Public mutations must not run without one.
+ */
+export class IdempotencyKeyError extends Error {
+  code: IdempotencyKeyErrorCode;
+  status = 400;
+  constructor(code: IdempotencyKeyErrorCode, message: string) {
+    super(message);
+    this.name = "IdempotencyKeyError";
+    this.code = code;
+  }
+}
 
 export class IdempotencyConflictError extends Error {
   code = "IDEMPOTENCY_CONFLICT";
@@ -31,9 +46,14 @@ export class IdempotencyConflictError extends Error {
 export class IdempotencyLockedError extends Error {
   code = "IDEMPOTENCY_IN_PROGRESS";
   status = 409;
-  constructor(message = "A mutation with this idempotency key is currently in progress. Please retry shortly.") {
+  retryAfterSeconds: number;
+  constructor(
+    message = "A mutation with this idempotency key is currently in progress. Please retry shortly.",
+    retryAfterSeconds = 1,
+  ) {
     super(message);
     this.name = "IdempotencyLockedError";
+    this.retryAfterSeconds = Math.max(1, Math.ceil(retryAfterSeconds));
   }
 }
 
@@ -429,6 +449,10 @@ export interface IdempotentResult<T> {
 /**
  * Wraps a mutating action with atomic idempotency enforcement.
  *
+ * A valid key is mandatory (Issue #412): a missing or malformed key throws
+ * IdempotencyKeyError (400) before `execute` runs, so the wrapper can never
+ * silently fall back to an unprotected mutation.
+ *
  * Prevents race conditions by claiming the idempotency key in one atomic transaction.
  * Deliberately handles:
  * - 'new_claim': Executes the business mutation once, then stores the completed result.
@@ -445,13 +469,12 @@ export async function withIdempotency<T>({
   execute,
   leaseSeconds = 60,
 }: WithIdempotencyOptions<T>): Promise<IdempotentResult<T>> {
-  // If no idempotency key provided, execute normally
-  if (!key) {
-    const result = await execute();
-    return { data: result.data, status: result.status, replayed: false };
+  const validation = validateIdempotencyKey(key);
+  if (!validation.ok) {
+    throw new IdempotencyKeyError(validation.code, validation.message);
   }
 
-  const cleanKey = key.trim();
+  const cleanKey = validation.key;
   const fingerprint = computeRequestFingerprint(walletAddress, endpoint, payload);
 
   // 1. Atomically claim idempotency key (1 transaction)
@@ -471,7 +494,7 @@ export async function withIdempotency<T>({
 
   // Handle outcome: Temporarily locked (in-flight parallel request)
   if (claim.outcome === "temporarily_locked") {
-    throw new IdempotencyLockedError();
+    throw new IdempotencyLockedError(undefined, claim.retryAfterSeconds ?? 1);
   }
 
   // Handle outcome: Completed replay (exact result without re-executing)

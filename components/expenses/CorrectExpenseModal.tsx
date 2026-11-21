@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { ArrowRightLeft, CheckCircle2, History, ShieldCheck } from "lucide-react";
 import { Modal } from "@/components/ui/Modal";
 import { Button } from "@/components/ui/Button";
@@ -15,6 +15,11 @@ import {
 } from "@/lib/expense/corrections";
 import { settlementAssetOf } from "@/lib/settlement/expenseAsset";
 import type { Expense } from "@/types/expense";
+import {
+  createIdempotencyKeyHolder,
+  idempotencyHeaders,
+  isIdempotencyConflict,
+} from "@/lib/idempotency/client";
 
 interface CorrectExpenseModalProps {
   open: boolean;
@@ -41,6 +46,9 @@ export function CorrectExpenseModal({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { success, error: toastError } = useToast();
+  // One key per correction, reused on retry so a lost response cannot create
+  // a second linked record (#412).
+  const correctionKey = useRef(createIdempotencyKeyHolder());
 
   const trimmedReason = reason.trim();
   const isReasonValid = trimmedReason.length >= MIN_AUDIT_REASON_LENGTH && trimmedReason.length <= MAX_AUDIT_REASON_LENGTH;
@@ -94,7 +102,7 @@ export function CorrectExpenseModal({
       } else {
         const response = await fetch(`/api/expenses/${encodeURIComponent(expense.id)}/correct`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...idempotencyHeaders(correctionKey.current.current()) },
           body: JSON.stringify({
             correctionType,
             reason: trimmedReason,
@@ -103,6 +111,7 @@ export function CorrectExpenseModal({
           }),
         });
         const json = await response.json();
+        if (response.ok || isIdempotencyConflict(response.status, json)) correctionKey.current.reset();
         if (!response.ok) {
           throw new Error(json.error || "Failed to create linked correction.");
         }

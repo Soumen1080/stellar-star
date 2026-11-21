@@ -69,16 +69,9 @@ export const OPENAPI_SPEC = {
       post: {
         summary: "Create a new trip",
         description:
-          "Creates a new trip draft. Supports idempotency via the `Idempotency-Key` header.",
+          "Creates a new trip draft. Requires an `Idempotency-Key` header; a retry with the same key replays the original response.",
         operationId: "createTrip",
-        parameters: [
-          {
-            name: "Idempotency-Key",
-            in: "header",
-            description: "Unique UUID to guarantee idempotency across retries",
-            schema: { type: "string" },
-          },
-        ],
+        parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }],
         requestBody: {
           required: true,
           content: {
@@ -103,6 +96,7 @@ export const OPENAPI_SPEC = {
           "400": { $ref: "#/components/responses/BadRequestError" },
           "401": { $ref: "#/components/responses/UnauthorizedError" },
           "403": { $ref: "#/components/responses/ForbiddenError" },
+          "409": { $ref: "#/components/responses/IdempotencyConflictError" },
         },
       },
     },
@@ -168,8 +162,10 @@ export const OPENAPI_SPEC = {
       },
       post: {
         summary: "Create an expense",
-        description: "Adds an expense to a trip.",
+        description:
+          "Adds an expense to a trip. Requires an `Idempotency-Key` header; a retry with the same key replays the original response.",
         operationId: "createExpense",
+        parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }],
         requestBody: {
           required: true,
           content: {
@@ -187,6 +183,8 @@ export const OPENAPI_SPEC = {
               },
             },
           },
+          "400": { $ref: "#/components/responses/BadRequestError" },
+          "409": { $ref: "#/components/responses/IdempotencyConflictError" },
         },
       },
     },
@@ -238,8 +236,9 @@ export const OPENAPI_SPEC = {
       post: {
         summary: "Register a webhook endpoint",
         description:
-          "Registers a new webhook URL. Returns the secret key for HMAC-SHA256 signature verification.",
+          "Registers a new webhook URL. Returns the secret key for HMAC-SHA256 signature verification. Requires an `Idempotency-Key` header.",
         operationId: "registerWebhook",
+        parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }],
         requestBody: {
           required: true,
           content: {
@@ -257,6 +256,8 @@ export const OPENAPI_SPEC = {
               },
             },
           },
+          "400": { $ref: "#/components/responses/BadRequestError" },
+          "409": { $ref: "#/components/responses/IdempotencyConflictError" },
         },
       },
     },
@@ -271,10 +272,13 @@ export const OPENAPI_SPEC = {
             required: true,
             schema: { type: "string" },
           },
+          { $ref: "#/components/parameters/IdempotencyKey" },
         ],
         responses: {
           "200": { description: "Webhook deleted successfully" },
+          "400": { $ref: "#/components/responses/BadRequestError" },
           "404": { $ref: "#/components/responses/NotFoundError" },
+          "409": { $ref: "#/components/responses/IdempotencyConflictError" },
         },
       },
     },
@@ -282,8 +286,9 @@ export const OPENAPI_SPEC = {
       post: {
         summary: "Dispatch test webhook ping",
         description:
-          "Triggers a mock `ping` event to the specified webhook endpoint to verify connectivity.",
+          "Triggers a mock `ping` event to the specified webhook endpoint to verify connectivity. Requires an `Idempotency-Key` header.",
         operationId: "testWebhook",
+        parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }],
         requestBody: {
           required: true,
           content: {
@@ -307,6 +312,8 @@ export const OPENAPI_SPEC = {
               },
             },
           },
+          "400": { $ref: "#/components/responses/BadRequestError" },
+          "409": { $ref: "#/components/responses/IdempotencyConflictError" },
         },
       },
     },
@@ -336,6 +343,19 @@ export const OPENAPI_SPEC = {
         bearerFormat: "stk_live_*",
         description:
           "Scoped API token issued via the Developer Platform console or `/api/v1/tokens`.",
+      },
+    },
+    parameters: {
+      IdempotencyKey: {
+        name: "Idempotency-Key",
+        in: "header",
+        required: true,
+        description:
+          "Required on every write. 8–255 visible ASCII characters; a UUID is recommended. " +
+          "Reuse the same key when retrying the same request: a completed 2xx response is " +
+          "replayed with `Idempotent-Replayed: true`. A missing or malformed key returns 400 " +
+          "(`IDEMPOTENCY_KEY_REQUIRED` / `IDEMPOTENCY_KEY_INVALID`) and nothing is executed.",
+        schema: { type: "string", minLength: 8, maxLength: 255, pattern: "^[\\x21-\\x7E]+$" },
       },
     },
     schemas: {
@@ -518,6 +538,12 @@ export const OPENAPI_SPEC = {
       },
       RateLimitError: {
         description: "Too Many Requests - Rate limit exceeded",
+      },
+      IdempotencyConflictError: {
+        description:
+          "Conflict - The Idempotency-Key was already used with a different payload " +
+          "(`IDEMPOTENCY_CONFLICT`), or the original request is still in progress " +
+          "(`IDEMPOTENCY_IN_PROGRESS`, with `Retry-After`).",
       },
     },
   },

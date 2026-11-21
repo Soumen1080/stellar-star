@@ -7,6 +7,7 @@ import { GET as getOpenApi } from "@/app/api/v1/openapi.json/route";
 import { generateScopedToken, clearTokenStore } from "@/lib/api/tokens";
 import { clearSandboxData } from "@/lib/api/data";
 import { clearWebhookStore } from "@/lib/api/webhooks";
+import { __resetIdempotencyForTests } from "@/lib/idempotency/store";
 
 describe("Developer API v1 End-to-End Route Handlers", () => {
   const testWallet = "G_E2E_DEVELOPER_WALLET_12345678901234567890";
@@ -18,6 +19,7 @@ describe("Developer API v1 End-to-End Route Handlers", () => {
     clearTokenStore();
     clearSandboxData();
     clearWebhookStore();
+    __resetIdempotencyForTests();
 
     readToken = generateScopedToken({
       walletAddress: testWallet,
@@ -56,6 +58,14 @@ describe("Developer API v1 End-to-End Route Handlers", () => {
   it("creates a trip and returns it via paginated listing", async () => {
     // 1. Post a new trip with idempotency key
     const idempotencyKey = "test-idem-trip-1";
+    const tripBody = JSON.stringify({
+      name: "Kyoto Summit 2026",
+      description: "Travel & Workspace",
+      members: [
+        { name: "Dev Payer", wallet_address: testWallet },
+        { name: "Guest Bob" },
+      ],
+    });
     const postReq = new NextRequest("http://localhost/api/v1/trips", {
       method: "POST",
       headers: {
@@ -63,14 +73,7 @@ describe("Developer API v1 End-to-End Route Handlers", () => {
         "Content-Type": "application/json",
         "Idempotency-Key": idempotencyKey,
       },
-      body: JSON.stringify({
-        name: "Kyoto Summit 2026",
-        description: "Travel & Workspace",
-        members: [
-          { name: "Dev Payer", wallet_address: testWallet },
-          { name: "Guest Bob" },
-        ],
-      }),
+      body: tripBody,
     });
 
     const createRes = await postTrips(postReq);
@@ -79,7 +82,7 @@ describe("Developer API v1 End-to-End Route Handlers", () => {
     expect(createdData.data.name).toBe("Kyoto Summit 2026");
     const tripId = createdData.data.id;
 
-    // 2. Replay same request - expect cached idempotent response
+    // 2. Retry the same request - expect the original response replayed
     const replayReq = new NextRequest("http://localhost/api/v1/trips", {
       method: "POST",
       headers: {
@@ -87,14 +90,29 @@ describe("Developer API v1 End-to-End Route Handlers", () => {
         "Content-Type": "application/json",
         "Idempotency-Key": idempotencyKey,
       },
-      body: JSON.stringify({
-        name: "Different Name If Ignored",
-        members: [{ name: "Dev Payer" }],
-      }),
+      body: tripBody,
     });
     const replayRes = await postTrips(replayReq);
     expect(replayRes.status).toBe(201);
     expect(replayRes.headers.get("Idempotent-Replayed")).toBe("true");
+    expect((await replayRes.json()).data.id).toBe(tripId);
+
+    // 2b. Reusing the key for a different payload is a conflict, not a replay
+    const conflictReq = new NextRequest("http://localhost/api/v1/trips", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${writeToken}`,
+        "Content-Type": "application/json",
+        "Idempotency-Key": idempotencyKey,
+      },
+      body: JSON.stringify({
+        name: "Different Name",
+        members: [{ name: "Dev Payer" }],
+      }),
+    });
+    const conflictRes = await postTrips(conflictReq);
+    expect(conflictRes.status).toBe(409);
+    expect((await conflictRes.json()).error.code).toBe("IDEMPOTENCY_CONFLICT");
 
     // 3. List trips with read token
     const listReq = new NextRequest("http://localhost/api/v1/trips?limit=10", {
@@ -123,6 +141,7 @@ describe("Developer API v1 End-to-End Route Handlers", () => {
       headers: {
         Authorization: `Bearer ${fullToken}`,
         "Content-Type": "application/json",
+        "Idempotency-Key": crypto.randomUUID(),
       },
       body: JSON.stringify({
         name: "Berlin Meetup",
@@ -138,6 +157,7 @@ describe("Developer API v1 End-to-End Route Handlers", () => {
       headers: {
         Authorization: `Bearer ${fullToken}`,
         "Content-Type": "application/json",
+        "Idempotency-Key": crypto.randomUUID(),
       },
       body: JSON.stringify({
         trip_id: trip.id,

@@ -1,12 +1,17 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { AlertCircle, Ban } from "lucide-react";
 import { Modal } from "@/components/ui/Modal";
 import { Button } from "@/components/ui/Button";
 import { useToast } from "@/components/ui/Toast";
 import { MIN_AUDIT_REASON_LENGTH, MAX_AUDIT_REASON_LENGTH } from "@/lib/expense/corrections";
 import type { Expense } from "@/types/expense";
+import {
+  createIdempotencyKeyHolder,
+  idempotencyHeaders,
+  isIdempotencyConflict,
+} from "@/lib/idempotency/client";
 
 interface VoidExpenseModalProps {
   open: boolean;
@@ -27,6 +32,8 @@ export function VoidExpenseModal({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { success, error: toastError } = useToast();
+  // One key per void, reused on retry so a lost response cannot void twice (#412).
+  const voidKey = useRef(createIdempotencyKeyHolder());
 
   const trimmed = reason.trim();
   const isValid = trimmed.length >= MIN_AUDIT_REASON_LENGTH && trimmed.length <= MAX_AUDIT_REASON_LENGTH;
@@ -47,10 +54,11 @@ export function VoidExpenseModal({
       } else {
         const response = await fetch(`/api/expenses/${encodeURIComponent(expense.id)}/void`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...idempotencyHeaders(voidKey.current.current()) },
           body: JSON.stringify({ reason: trimmed }),
         });
         const json = await response.json();
+        if (response.ok || isIdempotencyConflict(response.status, json)) voidKey.current.reset();
         if (!response.ok) {
           throw new Error(json.error || "Failed to void expense.");
         }

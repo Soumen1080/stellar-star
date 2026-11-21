@@ -20,6 +20,7 @@ import {
   recomputeSharesWithSettled,
 } from "@/lib/expense/conflictResolver";
 import { Money } from "@/lib/money";
+import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
 import type { Expense } from "@/types/expense";
 
 export const runtime = "nodejs";
@@ -84,6 +85,10 @@ export async function PATCH(
     return NextResponse.json({ error: "Unauthorized: Sign in with your wallet." }, { status: 401 });
   }
 
+  // Issue #412: a valid key is required before any work.
+  const idempotency = requireIdempotencyKey(request);
+  if (!idempotency.ok) return idempotency.response;
+
   let body: any;
   try {
     body = await request.json();
@@ -95,13 +100,32 @@ export async function PATCH(
     ? createServerClientForToken(token)
     : undefined;
 
+  // The version check runs inside the claim on purpose: a retry of an edit
+  // that already succeeded must replay that success, not trip the OCC check
+  // against the version it just wrote.
+  return runIdempotentMutation({
+    request,
+    client: client ?? null,
+    key: idempotency.key,
+    principal: session.wallet_address,
+    payload: body,
+    execute: () => applyExpenseUpdate(id, session.wallet_address, body, client),
+  });
+}
+
+async function applyExpenseUpdate(
+  id: string,
+  walletAddress: string,
+  body: any,
+  client: ReturnType<typeof createServerClientForToken> | undefined,
+): Promise<NextResponse> {
   const existing = await fetchExpenseById(id, client as any);
   if (!existing) {
     return NextResponse.json({ error: "Expense not found." }, { status: 404 });
   }
 
   // Acceptance criteria 1: Only authorized trip members can edit
-  const callerWallet = session.wallet_address.toUpperCase();
+  const callerWallet = walletAddress.toUpperCase();
   const isMember = existing.members.some(
     (m) => m.walletAddress && m.walletAddress.toUpperCase() === callerWallet
   );
@@ -124,7 +148,7 @@ export async function PATCH(
     );
   }
 
-  const { updates, expectedVersion, baseExpense } = body;
+  const { updates, expectedVersion, baseExpense } = body ?? {};
   if (!updates || typeof updates !== "object") {
     return NextResponse.json({ error: "Missing updates object." }, { status: 400 });
   }

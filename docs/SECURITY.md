@@ -106,6 +106,15 @@ database and application together, not incrementally:
    still the identifying column); they simply need to complete the
    sign-in challenge once to obtain a valid session token.
 
+## Idempotency keys on mutations
+
+Public mutations such as money movement, invitations, receipts, reminders,
+support actions and v1 writes require an `Idempotency-Key` header. A missing
+or malformed key gets `400` before any work starts. A retry with the same key
+gets the original response back. Scheduled jobs and a few naturally
+idempotent routes are exempt, and each exemption is documented with a reason.
+See [IDEMPOTENCY.md](IDEMPOTENCY.md) for the contract and the full route list.
+
 ## Known limitations
 
 - Challenge/session secrets are a single shared `SUPABASE_JWT_SECRET`; there

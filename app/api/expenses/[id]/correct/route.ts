@@ -8,6 +8,7 @@ import {
   buildLinkedAdjustment,
   validateAuditReason,
 } from "@/lib/expense/corrections";
+import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -27,6 +28,10 @@ export async function POST(
       { status: 401 }
     );
   }
+
+  // Issue #412: a valid key is required before any work.
+  const idempotency = requireIdempotencyKey(request);
+  if (!idempotency.ok) return idempotency.response;
 
   let body: any;
   try {
@@ -60,53 +65,64 @@ export async function POST(
 
   try {
     const client = createServerClientForToken(token);
-    const originalExpense = await fetchExpenseById(id, client);
-    if (!originalExpense) {
-      return NextResponse.json({ error: "Expense not found." }, { status: 404 });
-    }
+    // Eligibility is checked inside the claim, so a retry of a correction that
+    // succeeded replays its 201 rather than creating a second linked record.
+    return await runIdempotentMutation({
+      request,
+      client,
+      key: idempotency.key,
+      principal: session.wallet_address,
+      payload: body,
+      execute: async () => {
+        const originalExpense = await fetchExpenseById(id, client);
+        if (!originalExpense) {
+          return NextResponse.json({ error: "Expense not found." }, { status: 404 });
+        }
 
-    const check = canCorrectExpense(originalExpense, session.wallet_address);
-    if (!check.allowed) {
-      return NextResponse.json({ error: check.reason || "Expense cannot be corrected." }, { status: 400 });
-    }
+        const check = canCorrectExpense(originalExpense, session.wallet_address);
+        if (!check.allowed) {
+          return NextResponse.json({ error: check.reason || "Expense cannot be corrected." }, { status: 400 });
+        }
 
-    let correctionRecord;
-    if (correctionType === "reversal") {
-      correctionRecord = buildLinkedReversal({
-        originalExpense,
-        reason: auditReason,
-        actorWallet: session.wallet_address,
-      });
-    } else {
-      if (!adjustedTotalAmount || typeof adjustedTotalAmount !== "string") {
-        return NextResponse.json({ error: "Adjusted total amount is required for adjustments." }, { status: 400 });
-      }
-      correctionRecord = buildLinkedAdjustment({
-        originalExpense,
-        reason: auditReason,
-        adjustmentType: correctionType,
-        actorWallet: session.wallet_address,
-        title,
-        adjustedTotalAmount,
-        newSplitMode,
-        customWeights,
-      });
-    }
+        let correctionRecord;
+        if (correctionType === "reversal") {
+          correctionRecord = buildLinkedReversal({
+            originalExpense,
+            reason: auditReason,
+            actorWallet: session.wallet_address,
+          });
+        } else {
+          if (!adjustedTotalAmount || typeof adjustedTotalAmount !== "string") {
+            return NextResponse.json({ error: "Adjusted total amount is required for adjustments." }, { status: 400 });
+          }
+          correctionRecord = buildLinkedAdjustment({
+            originalExpense,
+            reason: auditReason,
+            adjustmentType: correctionType,
+            actorWallet: session.wallet_address,
+            title,
+            adjustedTotalAmount,
+            newSplitMode,
+            customWeights,
+          });
+        }
 
-    const saved = await insertExpense(correctionRecord, session.wallet_address, client);
+        const saved = await insertExpense(correctionRecord, session.wallet_address, client);
 
-    if (tripId && typeof tripId === "string") {
-      try {
-        await addExpenseIdToTrip(tripId, saved.id, client);
-      } catch {
-        // Linking failure non-fatal if already added
-      }
-    }
+        if (tripId && typeof tripId === "string") {
+          try {
+            await addExpenseIdToTrip(tripId, saved.id, client);
+          } catch {
+            // Linking failure non-fatal if already added
+          }
+        }
 
-    return NextResponse.json(
-      { data: saved, message: "Linked correction created successfully." },
-      { status: 201 }
-    );
+        return NextResponse.json(
+          { data: saved, message: "Linked correction created successfully." },
+          { status: 201 }
+        );
+      },
+    });
   } catch (err: any) {
     const message = err instanceof Error ? err.message : "Failed to create correction.";
     return NextResponse.json({ error: message }, { status: 500 });

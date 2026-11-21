@@ -14,13 +14,7 @@ import {
 } from "@/lib/expense/historyFilters";
 import { normalizeCategory } from "@/lib/expense/categories";
 import { normalizeTags, validateTags } from "@/lib/expense/tags";
-import {
-  extractIdempotencyKey,
-  withIdempotency,
-  idempotentJsonResponse,
-  IdempotencyConflictError,
-  IdempotencyLockedError,
-} from "@/lib/idempotency/store";
+import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
 import type { Expense } from "@/types/expense";
 
 export const runtime = "nodejs";
@@ -94,6 +88,11 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Request body must be valid JSON." }, { status: 400 });
   }
 
+  // Issue #412: a valid key is required before any work. The body field is
+  // still accepted for offline drafts queued by older clients.
+  const idempotency = requireIdempotencyKey(request, { body });
+  if (!idempotency.ok) return idempotency.response;
+
   const { title, totalAmount, currency, splitMode, paidByMemberId, members, shares } = body ?? {};
   if (!title || typeof title !== "string" || !title.trim()) {
     return NextResponse.json({ error: "Expense title is required." }, { status: 400 });
@@ -138,7 +137,6 @@ export async function POST(request: NextRequest) {
 
   try {
     const client = createServerClientForToken(token);
-    const idempotencyKey = extractIdempotencyKey(request, body);
 
     const expenseToSave: Expense = {
       id: body.id || crypto.randomUUID(),
@@ -162,26 +160,20 @@ export async function POST(request: NextRequest) {
       correctionReason: body.correctionReason?.trim() || undefined,
     };
 
-    const idempotentResult = await withIdempotency({
+    return await runIdempotentMutation({
+      request,
       client,
-      key: idempotencyKey,
-      walletAddress: session.wallet_address,
+      key: idempotency.key,
+      principal: session.wallet_address,
+      // Kept from the pre-#412 wrapper so keys stored before the change still match.
       endpoint: "/api/expenses",
       payload: body,
       execute: async () => {
         const saved = await insertExpense(expenseToSave, session.wallet_address, client);
-        return { data: saved, status: 201 };
+        return NextResponse.json(saved, { status: 201, headers: { "Cache-Control": "no-store" } });
       },
     });
-
-    return idempotentJsonResponse(idempotentResult);
   } catch (err) {
-    if (err instanceof IdempotencyConflictError || err instanceof IdempotencyLockedError) {
-      return NextResponse.json(
-        { error: err.message, code: err.code },
-        { status: 409 }
-      );
-    }
     const message = err instanceof Error ? err.message : "Failed to create expense.";
     return NextResponse.json({ error: message }, { status: 500 });
   }
