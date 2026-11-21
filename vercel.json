@@ -3,6 +3,7 @@
     { "path": "/api/recurring/run", "schedule": "0 5 * * *" },
     { "path": "/api/receipts/retention", "schedule": "30 3 * * *" },
     { "path": "/api/reminders/run", "schedule": "0 9 * * *" },
-    { "path": "/api/idempotency/cleanup", "schedule": "15 4 * * *" }
+    { "path": "/api/idempotency/cleanup", "schedule": "15 4 * * *" },
+    { "path": "/api/settlement/reconciliation-worker/cron", "schedule": "0 1 * * *" }
   ]
 }

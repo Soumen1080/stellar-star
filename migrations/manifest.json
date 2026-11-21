@@ -2,7 +2,7 @@
   "$schema": "./manifest.schema.json",
   "formatVersion": "1.0.0",
   "description": "Canonical append-only migration manifest guaranteeing deterministic execution ordering and immutable identities",
-  "totalMigrations": 38,
+  "totalMigrations": 39,
   "migrations": [
     {
       "sequence": 1,
@@ -383,6 +383,16 @@
       "checksum": "f256658f5621879a",
       "sha256": "f256658f5621879ad77bc178cb961bbd77902d0c097fde9778f4b42a2c2ae2f7",
       "description": "Allowlisted replay summaries, response digests, size cap, replay/audit retention with indexed cleanup, and caller-scoped idempotency RPCs"
+    },
+    {
+      "sequence": 39,
+      "id": "0025_reconciliation_worker_runs",
+      "version": "0025",
+      "filename": "0025_reconciliation_worker_runs.sql",
+      "name": "0025_reconciliation_worker_runs",
+      "checksum": "73042ae658b07f0f",
+      "sha256": "73042ae658b07f0fc6cfdc4d7780382df7d6bc1f3178b65e6b4e49ee47d69c3d",
+      "description": "Append-only log of reconciliation worker runs: actor, request ID, trigger, duration and result"
     }
   ]
 }

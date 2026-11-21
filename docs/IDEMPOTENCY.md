@@ -181,7 +181,7 @@ These routes are narrow and documented. Each one is protected some other way.
 | `/api/reminders/run` | POST | scheduled-job | Vercel Cron with CRON_SECRET. Each schedule's next_run_at advances after a send, and per-pair rate limits suppress duplicates. |
 | `/api/receipts/retention` | POST | scheduled-job | Vercel Cron with CRON_SECRET. Purging an already-purged receipt is a no-op. |
 | `/api/outbox/worker` | POST | scheduled-job | CRON_SECRET-authenticated worker. Outbox rows are claimed with leases and delivered at least once by design. |
-| `/api/settlement/reconciliation-worker` | POST | scheduled-job | Batch worker; every intent it touches is keyed by the derived settlement idempotency key. Authorization is tracked separately (Issue.md #006). |
+| `/api/settlement/reconciliation-worker` | POST | scheduled-job | Cron secret or explicit staff credentials only (#415); runs are bounded and recorded, and every intent it touches is keyed by the derived settlement idempotency key. |
 | `/api/developer/reconciliation` | POST | scheduled-job | Re-export of POST /api/settlement/reconciliation-worker for the developer dashboard; same protection. |
 | `/api/settlement/reconcile` | POST | derived-key | Deduplicates on a server-derived key (txHash + expenseId + memberId + asset) backed by a unique constraint; also serves anonymous webhook re-syncs, which have no principal to scope a client key to. |
 | `/api/auth/verify` | POST | session | Exchanges a single-use signed challenge for a session; a replayed challenge is rejected. |

@@ -564,6 +564,30 @@ export type IdempotencyRecordRow = {
   redacted_at: string | null;
 };
 
+export type ReconciliationWorkerRunRow = {
+  id: string;
+  request_id: string;
+  actor_kind: "cron" | "staff";
+  actor_id: string;
+  trigger: "schedule" | "manual";
+  batch_size: number;
+  batches: number;
+  wallet_filter: string | null;
+  started_at: string;
+  finished_at: string;
+  duration_ms: number;
+  outcome: "succeeded" | "failed";
+  processed: number;
+  recorded: number;
+  escalated: number;
+  pending: number;
+  failed: number;
+  error_count: number;
+  errored_job_ids: string[];
+  failure_code: string | null;
+  created_at: string;
+};
+
 export type Database = {
   public: {
     Tables: {
@@ -823,6 +847,12 @@ export type Database = {
           reason?: string;
         };
         Update: Partial<DeletedAccountRow>;
+        Relationships: [];
+      };
+      reconciliation_worker_runs: {
+        Row: ReconciliationWorkerRunRow;
+        Insert: Omit<ReconciliationWorkerRunRow, "created_at"> & { created_at?: string };
+        Update: never;
         Relationships: [];
       };
       reconciliation_queue: {

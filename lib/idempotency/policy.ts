@@ -127,7 +127,7 @@ export const IDEMPOTENCY_EXEMPT_ROUTES: Record<string, ExemptRoute> = {
     methods: ["POST"],
     kind: "scheduled-job",
     reason:
-      "Batch worker; every intent it touches is keyed by the derived settlement idempotency key. Authorization is tracked separately (Issue.md #006).",
+      "Cron secret or explicit staff credentials only (#415); runs are bounded and recorded, and every intent it touches is keyed by the derived settlement idempotency key.",
   },
   "/api/developer/reconciliation": {
     methods: ["POST"],
