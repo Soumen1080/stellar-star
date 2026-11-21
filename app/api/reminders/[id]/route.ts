@@ -16,6 +16,7 @@ import {
   type ReminderAction,
 } from "@/lib/reminders/service";
 import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
+import { REMINDER_PREFERENCE_REPLAY_FIELDS, REMINDER_REPLAY_FIELDS, replayFieldsUnder } from "@/lib/idempotency/replay";
 import { REQUEST_ID_HEADER } from "@/lib/observability/requestId";
 
 export const runtime = "nodejs";
@@ -59,6 +60,10 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       request,
       client: auth.client,
       key: idempotency.key,
+      replayFields: [
+        ...replayFieldsUnder("data.reminder", REMINDER_REPLAY_FIELDS),
+        ...replayFieldsUnder("data.preferences", REMINDER_PREFERENCE_REPLAY_FIELDS),
+      ],
       principal: auth.wallet,
       payload: { action },
       replayHeaders: { [REQUEST_ID_HEADER]: auth.requestId },

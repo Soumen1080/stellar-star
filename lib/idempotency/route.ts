@@ -25,6 +25,14 @@
  *   - Same key while the first request is still running: 409
  *     IDEMPOTENCY_IN_PROGRESS with Retry-After.
  *
+ * What is stored (Issue #414): never the raw response. Each route declares
+ * `replayFields`, and only those fields are kept, as the replay summary. The
+ * summary is capped at 16 KiB, alongside a SHA-256 digest of the full
+ * original body (`Idempotency-Response-Digest`). A replay therefore returns
+ * the original status with the allowlisted summary; a client that needs
+ * other fields re-reads the resource. Completed records replay for 24 hours
+ * (lib/idempotency/retention.ts); after that the key is free again.
+ *
  * Bodies are replayed as JSON. Response headers other than Cache-Control and
  * any `replayHeaders` are not stored.
  */
@@ -32,6 +40,10 @@
 import { NextResponse } from "next/server";
 import type { ServerClient } from "@/lib/supabase/server";
 import { IDEMPOTENT_REPLAYED_HEADER, readIdempotencyKey } from "./key";
+import { buildStoredReplay, omittedReplayBody } from "./replay";
+
+/** SHA-256 of the original response body, on first responses and replays. */
+export const IDEMPOTENCY_DIGEST_HEADER = "Idempotency-Response-Digest";
 import {
   IdempotencyConflictError,
   IdempotencyKeyError,
@@ -103,16 +115,20 @@ export function isReplayableStatus(status: number): boolean {
   return status >= 200 && status < 300;
 }
 
-async function readReplayableBody(response: Response): Promise<unknown> {
+async function readResponseText(response: Response): Promise<{ text: string; parsed: unknown }> {
   const text = await response.clone().text();
-  if (!text) return null;
+  if (!text) return { text, parsed: null };
   try {
-    return JSON.parse(text);
+    return { text, parsed: JSON.parse(text) };
   } catch {
-    // Every route in scope answers with JSON; a stray text body is kept
-    // verbatim rather than dropped so the replay still carries it.
-    return text;
+    // Every route in scope answers with JSON; a non-JSON body has no fields to
+    // allowlist, so nothing of it is stored beyond its digest.
+    return { text, parsed: null };
   }
+}
+
+function digestHeaderValue(digest: string): string {
+  return `sha-256=${digest}`;
 }
 
 export function replayResponse(
@@ -144,6 +160,12 @@ export interface IdempotentMutationOptions {
   request: RequestLike;
   /** A key already accepted by `requireIdempotencyKey`. */
   key: string;
+  /**
+   * The response fields a retry needs (see lib/idempotency/replay.ts for the
+   * path syntax). Only these are stored and replayed; everything else in the
+   * response is dropped. Required so every route decides deliberately.
+   */
+  replayFields: readonly string[];
   /**
    * Who the key belongs to: the authenticated wallet, or a fixed service
    * principal such as `staff:<id>`. Keys never collide across principals.
@@ -190,12 +212,29 @@ export async function runIdempotentMutation(options: IdempotentMutationOptions):
         const response = await options.execute();
         if (!isReplayableStatus(response.status)) throw new UnreplayableOutcome(response);
         state.original = response;
-        return { data: await readReplayableBody(response), status: response.status };
+        const { text, parsed } = await readResponseText(response);
+        const replay = buildStoredReplay(text, parsed, options.replayFields);
+        return { data: replay.body, status: response.status, replay };
       },
     });
 
-    if (!result.replayed && state.original) return state.original;
-    return replayResponse(result.status, result.data, options.replayHeaders);
+    if (!result.replayed && state.original) {
+      if (result.responseDigest) {
+        try {
+          state.original.headers.set(IDEMPOTENCY_DIGEST_HEADER, digestHeaderValue(result.responseDigest));
+        } catch {
+          // Immutable headers (a plain Response from fetch): skip the digest.
+        }
+      }
+      return state.original;
+    }
+
+    const replayHeaders = {
+      ...options.replayHeaders,
+      ...(result.responseDigest ? { [IDEMPOTENCY_DIGEST_HEADER]: digestHeaderValue(result.responseDigest) } : {}),
+    };
+    const body = result.replayOmitted ? omittedReplayBody(result.responseDigest) : result.data;
+    return replayResponse(result.status, body, replayHeaders);
   } catch (err) {
     if (err instanceof UnreplayableOutcome) return err.response;
     if (err instanceof IdempotencyKeyError) {

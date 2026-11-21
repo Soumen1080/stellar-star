@@ -231,7 +231,7 @@ describe("runIdempotentMutation", () => {
   it("runs once and replays the original status and body", async () => {
     const request = mutationRequest();
     const execute = jest.fn(async () => NextResponse.json({ data: { id: "exp-1" } }, { status: 201 }));
-    const options = { request, key: "replay-key-1", principal: WALLET, payload: { reason: "dup" }, execute };
+    const options = { request, key: "replay-key-1", replayFields: ["data"], principal: WALLET, payload: { reason: "dup" }, execute };
 
     const first = await runIdempotentMutation(options);
     const second = await runIdempotentMutation(options);
@@ -248,7 +248,7 @@ describe("runIdempotentMutation", () => {
   it("adds replay headers to a replayed response", async () => {
     const options = {
       request: mutationRequest(),
-      key: "replay-headers-1",
+      key: "replay-headers-1", replayFields: ["ok"],
       principal: WALLET,
       payload: {},
       replayHeaders: { "Cache-Control": "no-store, private", "X-Request-Id": "req-1" },
@@ -263,7 +263,7 @@ describe("runIdempotentMutation", () => {
   it("replays an empty 204 as an empty 204", async () => {
     const options = {
       request: mutationRequest("http://localhost/api/receipts/r-1", "DELETE"),
-      key: "no-content-1",
+      key: "no-content-1", replayFields: [],
       principal: WALLET,
       payload: {},
       execute: async () => new NextResponse(null, { status: 204 }),
@@ -282,7 +282,7 @@ describe("runIdempotentMutation", () => {
         ? NextResponse.json({ error: "Reason too short." }, { status: 400 })
         : NextResponse.json({ data: "voided" }, { status: 200 });
     });
-    const base = { request: mutationRequest(), key: "retry-after-fail", principal: WALLET, execute };
+    const base = { request: mutationRequest(), key: "retry-after-fail", replayFields: ["data"], principal: WALLET, execute };
 
     const failed = await runIdempotentMutation({ ...base, payload: { reason: "x" } });
     expect(failed.status).toBe(400);
@@ -299,7 +299,7 @@ describe("runIdempotentMutation", () => {
   it("releases the claim when the handler throws", async () => {
     const options = {
       request: mutationRequest(),
-      key: "throwing-handler",
+      key: "throwing-handler", replayFields: ["ok"],
       principal: WALLET,
       payload: {},
       execute: jest.fn(async (): Promise<Response> => {
@@ -315,7 +315,7 @@ describe("runIdempotentMutation", () => {
   it("answers a reused key with a different payload with 409 IDEMPOTENCY_CONFLICT", async () => {
     const base = {
       request: mutationRequest(),
-      key: "conflict-key-1",
+      key: "conflict-key-1", replayFields: ["ok"],
       principal: WALLET,
       execute: async () => NextResponse.json({ ok: true }, { status: 201 }),
     };
@@ -326,7 +326,7 @@ describe("runIdempotentMutation", () => {
   });
 
   it("treats the same key on another endpoint as a conflict, never a cross-route replay", async () => {
-    const base = { key: "cross-route-1", principal: WALLET, payload: {} };
+    const base = { key: "cross-route-1", replayFields: ["voided"], principal: WALLET, payload: {} };
     await runIdempotentMutation({
       ...base,
       request: mutationRequest("http://localhost/api/expenses/a/void"),
@@ -342,7 +342,7 @@ describe("runIdempotentMutation", () => {
 
   it("scopes keys to the principal", async () => {
     const execute = jest.fn(async () => NextResponse.json({ ok: true }, { status: 201 }));
-    const base = { request: mutationRequest(), key: "shared-key-1", payload: {}, execute };
+    const base = { request: mutationRequest(), key: "shared-key-1", replayFields: ["ok"], payload: {}, execute };
     await runIdempotentMutation({ ...base, principal: WALLET });
     const other = await runIdempotentMutation({ ...base, principal: "GOTHERWALLET" });
     expect(other.headers.get("Idempotent-Replayed")).toBeNull();
@@ -358,7 +358,7 @@ describe("runIdempotentMutation", () => {
       await gate;
       return NextResponse.json({ ok: true }, { status: 201 });
     });
-    const options = { request: mutationRequest(), key: "in-flight-key", principal: WALLET, payload: {}, execute };
+    const options = { request: mutationRequest(), key: "in-flight-key", replayFields: ["ok"], principal: WALLET, payload: {}, execute };
 
     const first = runIdempotentMutation(options);
     const second = await runIdempotentMutation(options);
@@ -373,7 +373,7 @@ describe("runIdempotentMutation", () => {
 
   it("runs a burst of parallel duplicates exactly once", async () => {
     const execute = jest.fn(async () => NextResponse.json({ ok: true }, { status: 201 }));
-    const options = { request: mutationRequest(), key: "burst-key-1", principal: WALLET, payload: {}, execute };
+    const options = { request: mutationRequest(), key: "burst-key-1", replayFields: ["ok"], principal: WALLET, payload: {}, execute };
     const results = await Promise.all(Array.from({ length: 10 }, () => runIdempotentMutation(options)));
     expect(execute).toHaveBeenCalledTimes(1);
     expect(results.filter((r) => r.status === 201)).toHaveLength(1);
@@ -383,7 +383,7 @@ describe("runIdempotentMutation", () => {
   it("uses the v1 envelope for conflicts when asked", async () => {
     const base = {
       request: mutationRequest("http://localhost/api/v1/trips"),
-      key: "v1-conflict-1",
+      key: "v1-conflict-1", replayFields: ["ok"],
       principal: WALLET,
       format: "v1" as const,
       execute: async () => NextResponse.json({ ok: true }, { status: 201 }),
@@ -400,7 +400,7 @@ describe("runIdempotentMutation", () => {
     const client = { rpc, from: jest.fn() } as any;
     const options = {
       request: mutationRequest("http://localhost/api/v1/tokens"),
-      key: "secret-bearing-1",
+      key: "secret-bearing-1", replayFields: ["data.token"],
       principal: WALLET,
       payload: {},
       client,
@@ -421,7 +421,7 @@ describe("runIdempotentMutation", () => {
     const client = { rpc } as any;
     await runIdempotentMutation({
       request: mutationRequest(),
-      key: "durable-key-1",
+      key: "durable-key-1", replayFields: ["data"],
       principal: WALLET,
       payload: { reason: "dup" },
       client,
@@ -438,7 +438,7 @@ describe("runIdempotentMutation", () => {
     const execute = jest.fn(async () => NextResponse.json({ ok: true }));
     await runIdempotentMutation({
       request: mutationRequest("http://localhost/api/reminders/schedules", "DELETE"),
-      key: "fingerprint-key",
+      key: "fingerprint-key", replayFields: ["ok"],
       principal: WALLET,
       payload: { scheduleId: "s-1" },
       execute,

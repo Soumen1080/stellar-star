@@ -4,6 +4,7 @@ import { createServerClientForToken } from "@/lib/supabase/server";
 import { setTripMemberRole } from "@/lib/supabase/queries";
 import type { TripPermission, TripRole } from "@/types/trip";
 import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
+import { TRIP_REPLAY_FIELDS } from "@/lib/idempotency/replay";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -43,6 +44,7 @@ export async function PATCH(
     request,
     client,
     key: idempotency.key,
+    replayFields: TRIP_REPLAY_FIELDS,
     principal: session.wallet_address,
     payload: { role, customPermissions },
     execute: async () => {

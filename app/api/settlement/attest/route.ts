@@ -190,6 +190,7 @@ export async function POST(request: NextRequest) {
     request,
     client: isServerSupabaseConfigured() ? createServerClientForToken(token) : null,
     key: idempotency.key,
+    replayFields: ["attestation.claim", "attestation.signatures", "reused", "durableLedger", "ledger"],
     principal: session.wallet_address,
     payload: { tripId, expenseId, payer, member, amountStroops, txHash: normalisedTxHash },
     leaseSeconds: 120,

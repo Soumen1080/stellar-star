@@ -42,6 +42,7 @@ export async function DELETE(
   return runIdempotentMutation({
     request,
     key: idempotency.key,
+    replayFields: ["success", "message"],
     principal: wallet,
     payload: { tokenId: id },
     // The token store is process-local; so is the replay.

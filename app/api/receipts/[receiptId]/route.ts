@@ -66,6 +66,7 @@ export async function DELETE(request: NextRequest, context: Context) {
       request,
       client: clients.userClient,
       key: idempotency.key,
+      replayFields: ["data.removed"],
       principal: clients.wallet,
       payload: { receiptId },
       replayHeaders: { ...RECEIPT_RESPONSE_HEADERS },

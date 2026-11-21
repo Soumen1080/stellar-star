@@ -9,6 +9,7 @@ import {
   validateAuditReason,
 } from "@/lib/expense/corrections";
 import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
+import { EXPENSE_REPLAY_FIELDS, replayFieldsUnder } from "@/lib/idempotency/replay";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -71,6 +72,7 @@ export async function POST(
       request,
       client,
       key: idempotency.key,
+      replayFields: ["message", ...replayFieldsUnder("data", EXPENSE_REPLAY_FIELDS)],
       principal: session.wallet_address,
       payload: body,
       execute: async () => {

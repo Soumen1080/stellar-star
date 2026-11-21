@@ -9,6 +9,7 @@ import {
   DEFAULT_PAGE_SIZE,
 } from "@/lib/supabase/queries";
 import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
+import { TRIP_REPLAY_FIELDS } from "@/lib/idempotency/replay";
 import type { Trip } from "@/types/trip";
 
 export const runtime = "nodejs";
@@ -120,6 +121,7 @@ export async function POST(request: NextRequest) {
       request,
       client,
       key: idempotency.key,
+      replayFields: TRIP_REPLAY_FIELDS,
       principal: session.wallet_address,
       // Kept from the pre-#412 wrapper so keys stored before the change still match.
       endpoint: "/api/trips",

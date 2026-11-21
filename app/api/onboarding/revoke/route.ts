@@ -147,6 +147,7 @@ export async function POST(request: NextRequest) {
     request,
     client: isSponsoredUser && isServerSupabaseConfigured() ? createServerClientForToken(token) : null,
     key: idempotency.key,
+    replayFields: ["revoked", "hash", "releasedStroops", "message"],
     principal: isSponsoredUser ? account : "operator:sponsorship",
     payload: { account, assetKey: typeof assetKey === "string" ? assetKey : null },
     leaseSeconds: 120,

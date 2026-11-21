@@ -3,6 +3,7 @@ import { verifyWalletSession } from "@/lib/supabase/serverAuth";
 import { createServerClientForToken } from "@/lib/supabase/server";
 import { transferTripOwnership } from "@/lib/supabase/queries";
 import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
+import { TRIP_REPLAY_FIELDS } from "@/lib/idempotency/replay";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -40,6 +41,7 @@ export async function POST(
     request,
     client,
     key: idempotency.key,
+    replayFields: TRIP_REPLAY_FIELDS,
     principal: session.wallet_address,
     payload: { memberId },
     execute: async () => {

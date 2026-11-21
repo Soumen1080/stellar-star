@@ -5,6 +5,7 @@ import {
   recordAuditLog,
 } from "@/lib/api/middleware";
 import { runIdempotentMutation } from "@/lib/idempotency/route";
+import { TRIP_REPLAY_FIELDS, replayFieldsUnder } from "@/lib/idempotency/replay";
 import { fetchPermittedTrips, insertTrip } from "@/lib/api/data";
 import { dispatchWebhookEvent } from "@/lib/api/webhooks";
 import type { Trip } from "@/types/trip";
@@ -104,6 +105,7 @@ export async function POST(request: NextRequest) {
     request,
     client: apiIdempotencyClient(),
     key: idempotencyKey,
+    replayFields: replayFieldsUnder("data", TRIP_REPLAY_FIELDS),
     principal: tokenPayload.walletAddress,
     payload: body,
     format: "v1",

@@ -48,6 +48,7 @@ export async function POST(request: NextRequest) {
   return runIdempotentMutation({
     request,
     key: idempotencyKey,
+    replayFields: ["data.id", "data.webhookId", "data.event", "data.statusCode", "data.success", "data.latencyMs", "data.attempt", "data.timestamp", "data.error"],
     principal: tokenPayload.walletAddress,
     payload: { webhookId },
     // Endpoints live in the process-local registry; so does the replay.

@@ -21,6 +21,7 @@ import {
 } from "@/lib/expense/conflictResolver";
 import { Money } from "@/lib/money";
 import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
+import { EXPENSE_REPLAY_FIELDS, replayFieldsUnder } from "@/lib/idempotency/replay";
 import type { Expense } from "@/types/expense";
 
 export const runtime = "nodejs";
@@ -107,6 +108,7 @@ export async function PATCH(
     request,
     client: client ?? null,
     key: idempotency.key,
+    replayFields: ["ok", "autoMerged", ...replayFieldsUnder("data", EXPENSE_REPLAY_FIELDS)],
     principal: session.wallet_address,
     payload: body,
     execute: () => applyExpenseUpdate(id, session.wallet_address, body, client),

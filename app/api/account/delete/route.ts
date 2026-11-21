@@ -42,6 +42,7 @@ export async function POST(request: NextRequest) {
     return await runIdempotentMutation({
       request,
       key: idempotency.key,
+      replayFields: ["success", "deletedAt", "summary"],
       principal: session.wallet_address,
       // Both verbs are the same operation, so they share one fingerprint.
       endpoint: "/api/account/delete",

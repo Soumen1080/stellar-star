@@ -27,6 +27,7 @@ export async function DELETE(
   return runIdempotentMutation({
     request,
     key: idempotencyKey,
+    replayFields: ["success", "message"],
     principal: tokenPayload.walletAddress,
     payload: { webhookId: id },
     // The endpoint registry is process-local; so is the replay.

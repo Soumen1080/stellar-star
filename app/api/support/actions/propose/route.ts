@@ -12,6 +12,7 @@ import { checkStaffAuthorization } from "@/lib/support/service";
 import { proposeCorrectiveAction, DualControlError } from "@/lib/support/dualControl";
 import { createServiceRoleClient, createServerAnonClient, isServerSupabaseConfigured } from "@/lib/supabase/server";
 import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
+import { SUPPORT_PROPOSAL_REPLAY_FIELDS, replayFieldsUnder } from "@/lib/idempotency/replay";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -62,6 +63,7 @@ export async function POST(request: NextRequest) {
     request,
     client: client ?? null,
     key: idempotency.key,
+    replayFields: ["ok", ...replayFieldsUnder("data", SUPPORT_PROPOSAL_REPLAY_FIELDS)],
     principal: `staff:${auth.staffIdentifier}`,
     payload: body,
     execute: async () => {
