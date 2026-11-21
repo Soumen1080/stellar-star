@@ -14,11 +14,19 @@ export function isUuid(value: string): boolean {
   return UUID_RE.test(value);
 }
 
-/** Receipt responses describe private documents; nothing may cache them. */
+/**
+ * Receipt responses describe private documents; nothing may cache them. Also
+ * applied to idempotent replays so a replayed receipt is just as private.
+ */
+export const RECEIPT_RESPONSE_HEADERS: Readonly<Record<string, string>> = Object.freeze({
+  "Cache-Control": "no-store, private",
+  "X-Content-Type-Options": "nosniff",
+});
+
 export function receiptJson(body: unknown, status = 200) {
   return NextResponse.json(body, {
     status,
-    headers: { "Cache-Control": "no-store, private", "X-Content-Type-Options": "nosniff" },
+    headers: { ...RECEIPT_RESPONSE_HEADERS },
   });
 }
 

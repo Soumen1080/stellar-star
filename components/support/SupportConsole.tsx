@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useRef, useState } from "react";
 import {
   Search,
   Shield,
@@ -28,6 +28,11 @@ import {
   type CorrectiveActionProposal,
 } from "@/lib/support/types";
 import { formatAddress, copyToClipboard } from "@/lib/utils";
+import {
+  createIdempotencyKeyHolder,
+  idempotencyHeaders,
+  isIdempotencyConflict,
+} from "@/lib/idempotency/client";
 
 const QUERY_TYPE_LABELS: Record<SupportQueryType, string> = {
   tx_hash: "Transaction Hash",
@@ -57,6 +62,8 @@ export function SupportConsole() {
   const [ticketRef, setTicketRef] = useState("");
   const [reason, setReason] = useState("");
   const [proposing, setProposing] = useState(false);
+  // One key per proposal submission, reused if it is retried (#412).
+  const proposeKey = useRef(createIdempotencyKeyHolder());
   const [proposals, setProposals] = useState<CorrectiveActionProposal[]>([]);
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -149,7 +156,10 @@ export function SupportConsole() {
       const targetId = incident.activeIntent?.id || incident.expense?.id || query;
       const targetType = incident.activeIntent ? "intent" : "expense";
 
-      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        ...idempotencyHeaders(proposeKey.current.current()),
+      };
       if (staffSecret.trim()) headers["x-staff-secret"] = staffSecret.trim();
 
       const res = await fetch("/api/support/actions/propose", {
@@ -165,6 +175,7 @@ export function SupportConsole() {
       });
 
       const json = await res.json();
+      if (res.ok || isIdempotencyConflict(res.status, json)) proposeKey.current.reset();
       if (!res.ok) {
         throw new Error(json.error || "Failed to submit proposal.");
       }
@@ -186,7 +197,12 @@ export function SupportConsole() {
     setActionSuccess(null);
 
     try {
-      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      // An approval happens once per proposal, so the key is derived from it:
+      // a repeated click on the same proposal replays the first result (#412).
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        ...idempotencyHeaders(`approve:${proposalId}`),
+      };
       if (staffSecret.trim()) headers["x-staff-secret"] = staffSecret.trim();
 
       const res = await fetch("/api/support/actions/approve", {

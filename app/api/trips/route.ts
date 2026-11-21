@@ -8,13 +8,7 @@ import {
   MAX_PAGE_SIZE,
   DEFAULT_PAGE_SIZE,
 } from "@/lib/supabase/queries";
-import {
-  extractIdempotencyKey,
-  withIdempotency,
-  idempotentJsonResponse,
-  IdempotencyConflictError,
-  IdempotencyLockedError,
-} from "@/lib/idempotency/store";
+import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
 import type { Trip } from "@/types/trip";
 
 export const runtime = "nodejs";
@@ -85,6 +79,10 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Request body must be valid JSON." }, { status: 400 });
   }
 
+  // Issue #412: a valid key is required before any work.
+  const idempotency = requireIdempotencyKey(request, { body });
+  if (!idempotency.ok) return idempotency.response;
+
   const { name, description, members } = body ?? {};
   if (!name || typeof name !== "string" || !name.trim()) {
     return NextResponse.json({ error: "Trip name is required." }, { status: 400 });
@@ -106,7 +104,6 @@ export async function POST(request: NextRequest) {
 
   try {
     const client = createServerClientForToken(token);
-    const idempotencyKey = extractIdempotencyKey(request, body);
 
     const tripToSave: Trip = {
       id: body.id || crypto.randomUUID(),
@@ -119,26 +116,20 @@ export async function POST(request: NextRequest) {
       createdByWallet: session.wallet_address,
     };
 
-    const idempotentResult = await withIdempotency({
+    return await runIdempotentMutation({
+      request,
       client,
-      key: idempotencyKey,
-      walletAddress: session.wallet_address,
+      key: idempotency.key,
+      principal: session.wallet_address,
+      // Kept from the pre-#412 wrapper so keys stored before the change still match.
       endpoint: "/api/trips",
       payload: body,
       execute: async () => {
         const saved = await insertTrip(tripToSave, session.wallet_address, client);
-        return { data: saved, status: 201 };
+        return NextResponse.json(saved, { status: 201, headers: { "Cache-Control": "no-store" } });
       },
     });
-
-    return idempotentJsonResponse(idempotentResult);
   } catch (err) {
-    if (err instanceof IdempotencyConflictError || err instanceof IdempotencyLockedError) {
-      return NextResponse.json(
-        { error: err.message, code: err.code },
-        { status: 409 }
-      );
-    }
     const message = err instanceof Error ? err.message : "Failed to create trip.";
     return NextResponse.json({ error: message }, { status: 500 });
   }

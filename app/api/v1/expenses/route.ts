@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
+  apiIdempotencyClient,
   authenticateApiRequest,
-  getIdempotentResponse,
-  storeIdempotentResponse,
   recordAuditLog,
 } from "@/lib/api/middleware";
+import { runIdempotentMutation } from "@/lib/idempotency/route";
 import { fetchTripById, fetchExpensesForTrip, insertExpense } from "@/lib/api/data";
 import { memberHasPermission } from "@/lib/trip/roles";
 import { dispatchWebhookEvent } from "@/lib/api/webhooks";
@@ -74,30 +74,15 @@ export async function POST(request: NextRequest) {
   const startTime = Date.now();
   const auth = await authenticateApiRequest(request, {
     requiredScopes: ["expenses:write"],
+    requireIdempotencyKey: true,
   });
 
   if (!auth.success) {
     return auth.response;
   }
 
-  const { tokenPayload, ip, userAgent, idempotencyKey } = auth.context;
-
-  const replayed = getIdempotentResponse(tokenPayload.walletAddress, idempotencyKey);
-  if (replayed) {
-    recordAuditLog({
-      timestamp: new Date().toISOString(),
-      tokenId: tokenPayload.tokenId,
-      walletAddress: tokenPayload.walletAddress,
-      method: "POST",
-      path: "/api/v1/expenses",
-      statusCode: replayed.status,
-      latencyMs: Date.now() - startTime,
-      ip,
-      userAgent,
-      idempotencyKey,
-    });
-    return replayed;
-  }
+  const { tokenPayload, ip, userAgent } = auth.context;
+  const idempotencyKey = auth.context.idempotencyKey as string;
 
   let body: any;
   try {
@@ -154,74 +139,85 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const expenseId = crypto.randomUUID();
-  const expense: Expense = {
-    id: expenseId,
-    title: String(title).trim(),
-    description: body.description ? String(body.description).trim() : undefined,
-    totalAmount: String(total_amount),
-    currency: (currency || "XLM").toUpperCase(),
-    splitMode: split_mode === "custom" ? "custom" : "equal",
-    paidByMemberId: trip.members[0]?.id || crypto.randomUUID(),
-    members: trip.members,
-    shares: trip.members.map((m) => ({
-      memberId: m.id,
-      name: m.name,
-      amount: (parseFloat(total_amount) / (trip.members.length || 1)).toFixed(7),
-      paid: m.walletAddress === tokenPayload.walletAddress,
-    })),
-    createdAt: new Date().toISOString(),
-    settled: false,
-  };
+  // Creation, outbox enqueue and eager dispatch run once per key; a retry
+  // replays the 201 instead of inserting a second expense.
+  const response = await runIdempotentMutation({
+    request,
+    client: apiIdempotencyClient(),
+    key: idempotencyKey,
+    principal: tokenPayload.walletAddress,
+    payload: body,
+    format: "v1",
+    execute: async () => {
+      const expenseId = crypto.randomUUID();
+      const expense: Expense = {
+        id: expenseId,
+        title: String(title).trim(),
+        description: body.description ? String(body.description).trim() : undefined,
+        totalAmount: String(total_amount),
+        currency: (currency || "XLM").toUpperCase(),
+        splitMode: split_mode === "custom" ? "custom" : "equal",
+        paidByMemberId: trip.members[0]?.id || crypto.randomUUID(),
+        members: trip.members,
+        shares: trip.members.map((m) => ({
+          memberId: m.id,
+          name: m.name,
+          amount: (parseFloat(total_amount) / (trip.members.length || 1)).toFixed(7),
+          paid: m.walletAddress === tokenPayload.walletAddress,
+        })),
+        createdAt: new Date().toISOString(),
+        settled: false,
+      };
 
-  const created = await insertExpense(expense, trip_id);
+      const created = await insertExpense(expense, trip_id);
 
-  // Transactional outbox durable promise (#425):
-  // Persist outbox event in the same transaction to guarantee eventual delivery
-  // even if synchronous webhook dispatch fails or network disconnects.
-  const traceId = crypto.randomUUID();
-  const outboxEvent = await enqueueOutboxEvent({
-    aggregateType: "expense",
-    aggregateId: created.id,
-    eventType: "expense.created",
-    channel: "webhook",
-    payload: {
-      expense_id: created.id,
-      trip_id,
-      title: created.title,
-      total_amount: created.totalAmount,
-      currency: created.currency,
-      created_at: created.createdAt,
+      // Transactional outbox durable promise (#425):
+      // Persist outbox event in the same transaction to guarantee eventual delivery
+      // even if synchronous webhook dispatch fails or network disconnects.
+      const traceId = crypto.randomUUID();
+      const outboxEvent = await enqueueOutboxEvent({
+        aggregateType: "expense",
+        aggregateId: created.id,
+        eventType: "expense.created",
+        channel: "webhook",
+        payload: {
+          expense_id: created.id,
+          trip_id,
+          title: created.title,
+          total_amount: created.totalAmount,
+          currency: created.currency,
+          created_at: created.createdAt,
+        },
+        traceId,
+        deduplicationKey: `outbox:webhook:expense:${created.id}:created`,
+        createdByWallet: tokenPayload.walletAddress,
+      });
+
+      // Attempt eager dispatch; on failure or timeout, outbox worker handles retry
+      dispatchWebhookEvent({
+        event: "expense.created",
+        data: {
+          expense_id: created.id,
+          trip_id,
+          title: created.title,
+          total_amount: created.totalAmount,
+          currency: created.currency,
+          created_at: created.createdAt,
+          _outboxId: outboxEvent.id,
+          _traceId: traceId,
+        },
+        walletAddress: tokenPayload.walletAddress,
+      })
+        .then(() => {
+          completeOutboxEvent(outboxEvent.id, "inline-dispatch");
+        })
+        .catch(() => {
+          // Post-commit failure safely retained in outbox table for worker retry
+        });
+
+      return NextResponse.json({ data: created }, { status: 201 });
     },
-    traceId,
-    deduplicationKey: `outbox:webhook:expense:${created.id}:created`,
-    createdByWallet: tokenPayload.walletAddress,
   });
-
-  // Attempt eager dispatch; on failure or timeout, outbox worker handles retry
-  dispatchWebhookEvent({
-    event: "expense.created",
-    data: {
-      expense_id: created.id,
-      trip_id,
-      title: created.title,
-      total_amount: created.totalAmount,
-      currency: created.currency,
-      created_at: created.createdAt,
-      _outboxId: outboxEvent.id,
-      _traceId: traceId,
-    },
-    walletAddress: tokenPayload.walletAddress,
-  })
-    .then(() => {
-      completeOutboxEvent(outboxEvent.id, "inline-dispatch");
-    })
-    .catch(() => {
-      // Post-commit failure safely retained in outbox table for worker retry
-    });
-
-  const responseBody = { data: created };
-  storeIdempotentResponse(tokenPayload.walletAddress, idempotencyKey, 201, responseBody);
 
   recordAuditLog({
     timestamp: new Date().toISOString(),
@@ -229,12 +225,12 @@ export async function POST(request: NextRequest) {
     walletAddress: tokenPayload.walletAddress,
     method: "POST",
     path: "/api/v1/expenses",
-    statusCode: 201,
+    statusCode: response.status,
     latencyMs: Date.now() - startTime,
     ip,
     userAgent,
     idempotencyKey,
   });
 
-  return NextResponse.json(responseBody, { status: 201 });
+  return response;
 }

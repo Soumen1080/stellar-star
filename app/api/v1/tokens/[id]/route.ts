@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { revokeToken } from "@/lib/api/tokens";
 import { decodeClaims } from "@/lib/supabase/session";
+import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -33,21 +34,36 @@ export async function DELETE(
     );
   }
 
+  // Issue #412: a valid key is required before any work.
+  const idempotency = requireIdempotencyKey(request, { format: "v1" });
+  if (!idempotency.ok) return idempotency.response;
+
   const { id } = await params;
-  const revoked = revokeToken(id, wallet);
+  return runIdempotentMutation({
+    request,
+    key: idempotency.key,
+    principal: wallet,
+    payload: { tokenId: id },
+    // The token store is process-local; so is the replay.
+    persist: false,
+    format: "v1",
+    execute: async () => {
+      const revoked = revokeToken(id, wallet);
 
-  if (!revoked) {
-    return NextResponse.json(
-      {
-        error: {
-          code: "NOT_FOUND",
-          message: "Token not found or not owned by authenticated wallet.",
-          status: 404,
-        },
-      },
-      { status: 404 }
-    );
-  }
+      if (!revoked) {
+        return NextResponse.json(
+          {
+            error: {
+              code: "NOT_FOUND",
+              message: "Token not found or not owned by authenticated wallet.",
+              status: 404,
+            },
+          },
+          { status: 404 }
+        );
+      }
 
-  return NextResponse.json({ success: true, message: "Token successfully revoked." });
+      return NextResponse.json({ success: true, message: "Token successfully revoked." });
+    },
+  });
 }

@@ -6,6 +6,8 @@ import {
   createDatabaseRequestContext,
   type DatabaseRequestContext,
 } from "@/lib/supabase/queryBudget";
+import { requireIdempotencyKey } from "@/lib/idempotency/route";
+import { createServiceRoleClient, isServerSupabaseConfigured, type ServerClient } from "@/lib/supabase/server";
 
 export interface AuthenticatedContext {
   tokenPayload: ScopedTokenPayload;
@@ -73,6 +75,12 @@ export async function authenticateApiRequest(
     requiredScopes?: ApiScope[];
     rateLimitMax?: number;
     rateLimitWindowMs?: number;
+    /**
+     * Writes set this (Issue #412): a missing or malformed Idempotency-Key is
+     * answered with 400 after authentication, and `context.idempotencyKey`
+     * is then the validated key.
+     */
+    requireIdempotencyKey?: boolean;
   } = {}
 ): Promise<
   | { success: true; context: AuthenticatedContext }
@@ -80,7 +88,7 @@ export async function authenticateApiRequest(
 > {
   const ip = getClientIp(request);
   const userAgent = request.headers.get("user-agent") || "unknown";
-  const idempotencyKey = request.headers.get("idempotency-key");
+  let idempotencyKey = request.headers.get("idempotency-key");
 
   // 1. Extract Bearer token
   const authHeader = request.headers.get("authorization");
@@ -184,6 +192,13 @@ export async function authenticateApiRequest(
     };
   }
 
+  // 4. Require a valid idempotency key on writes
+  if (options.requireIdempotencyKey) {
+    const required = requireIdempotencyKey(request, { format: "v1" });
+    if (!required.ok) return { success: false, response: required.response };
+    idempotencyKey = required.key;
+  }
+
   const databaseContext = createDatabaseRequestContext({
     route: request.nextUrl.pathname,
     headers: request.headers,
@@ -199,6 +214,21 @@ export async function authenticateApiRequest(
       databaseContext,
     },
   };
+}
+
+/**
+ * Client for the durable idempotency ledger on v1 writes. Scoped tokens are not
+ * Supabase sessions, so there is no RLS-bound client to use; the ledger RPCs
+ * scope every row to the token's wallet themselves. Null falls back to the
+ * process-local ledger.
+ */
+export function apiIdempotencyClient(): ServerClient | null {
+  if (!isServerSupabaseConfigured()) return null;
+  try {
+    return createServiceRoleClient();
+  } catch {
+    return null;
+  }
 }
 
 /** Attaches database performance, deadlines, and budget headers to an API response. */
@@ -224,7 +254,12 @@ export function attachDatabaseDeadlineHeaders(
   return response;
 }
 
-/** Checks if an idempotent replay is available. */
+/**
+ * Checks if an idempotent replay is available.
+ *
+ * @deprecated v1 writes now use runIdempotentMutation (lib/idempotency/route.ts),
+ * which binds the key to the request fingerprint and claims it atomically.
+ */
 export function getIdempotentResponse(
   walletAddress: string,
   idempotencyKey: string | null
@@ -249,7 +284,11 @@ export function getIdempotentResponse(
   });
 }
 
-/** Stores an idempotent response in the replay cache. */
+/**
+ * Stores an idempotent response in the replay cache.
+ *
+ * @deprecated See getIdempotentResponse.
+ */
 export function storeIdempotentResponse(
   walletAddress: string,
   idempotencyKey: string | null,

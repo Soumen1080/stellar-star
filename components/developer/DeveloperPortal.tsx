@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   Key,
   Webhook,
@@ -19,6 +19,12 @@ import { useWallet } from "@/hooks/useWallet";
 import { useToast } from "@/components/ui/Toast";
 import { OPENAPI_SPEC, ACCOUNTING_SANDBOX_MAPPINGS } from "@/lib/api/openapi";
 import type { ApiScope, ApiTokenRecord, WebhookEndpoint, WebhookDeliveryLog } from "@/lib/api/types";
+import {
+  createIdempotencyKeyHolder,
+  idempotencyHeaders,
+  isIdempotencyConflict,
+  newIdempotencyKey,
+} from "@/lib/idempotency/client";
 
 type Tab = "overview" | "tokens" | "webhooks" | "openapi" | "sandbox";
 
@@ -31,6 +37,8 @@ export function DeveloperPortal() {
   const [webhooks, setWebhooks] = useState<WebhookEndpoint[]>([]);
   const [deliveries, setDeliveries] = useState<WebhookDeliveryLog[]>([]);
   const [loading, setLoading] = useState(false);
+  // One key per mint, reused on retry so a double click mints one token (#412).
+  const mintKey = useRef(createIdempotencyKeyHolder());
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
   // New token form state
@@ -69,6 +77,7 @@ export function DeveloperPortal() {
         headers: {
           "Content-Type": "application/json",
           "x-wallet-address": activeWallet,
+          ...idempotencyHeaders(mintKey.current.current()),
         },
         body: JSON.stringify({
           name: tokenName.trim(),
@@ -78,6 +87,7 @@ export function DeveloperPortal() {
       });
 
       const json = await res.json();
+      if (res.ok || isIdempotencyConflict(res.status, json)) mintKey.current.reset();
       if (res.ok && json.data) {
         setNewlyMintedToken(json.data.token);
         setTokens((prev) => [json.data, ...prev]);
@@ -101,7 +111,11 @@ export function DeveloperPortal() {
       setLoading(true);
       const tokenRes = await fetch("/api/v1/tokens", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "x-wallet-address": activeWallet },
+        headers: {
+          "Content-Type": "application/json",
+          "x-wallet-address": activeWallet,
+          ...idempotencyHeaders(newIdempotencyKey()),
+        },
         body: JSON.stringify({ name: "Webhook Admin", scopes: ["webhooks:manage"], wallet_address: activeWallet }),
       });
       const tokenJson = await tokenRes.json();
@@ -112,6 +126,7 @@ export function DeveloperPortal() {
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${bearer}`,
+          ...idempotencyHeaders(newIdempotencyKey()),
         },
         body: JSON.stringify({
           url: webhookUrl.trim(),
@@ -141,7 +156,11 @@ export function DeveloperPortal() {
       setTestingWebhookId(webhookId);
       const tokenRes = await fetch("/api/v1/tokens", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "x-wallet-address": activeWallet },
+        headers: {
+          "Content-Type": "application/json",
+          "x-wallet-address": activeWallet,
+          ...idempotencyHeaders(newIdempotencyKey()),
+        },
         body: JSON.stringify({ name: "Webhook Tester", scopes: ["webhooks:manage"], wallet_address: activeWallet }),
       });
       const tokenJson = await tokenRes.json();
@@ -152,6 +171,7 @@ export function DeveloperPortal() {
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${bearer}`,
+          ...idempotencyHeaders(newIdempotencyKey()),
         },
         body: JSON.stringify({ webhook_id: webhookId }),
       });
@@ -247,7 +267,7 @@ export function DeveloperPortal() {
               </div>
               <h3 className="text-sm font-bold text-[#0F0F14]">Idempotency & Rate Limits</h3>
               <p className="text-xs text-[#666] mt-1 leading-relaxed">
-                Pass `Idempotency-Key: &lt;uuid&gt;` on writes to prevent double-charges. 60 requests/min rate limit with standard headers.
+                Every write requires an `Idempotency-Key: &lt;uuid&gt;` header (400 without one); retries with the same key replay the original response. 60 requests/min rate limit with standard headers.
               </p>
             </div>
             <div className="p-5 rounded-2xl border border-[#E5E5E5] bg-white">

@@ -2,13 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { verifyWalletSession } from "@/lib/supabase/serverAuth";
 import { createServerClientForToken } from "@/lib/supabase/server";
 import { createTripInvite } from "@/lib/invitations/claim";
-import {
-  extractIdempotencyKey,
-  withIdempotency,
-  idempotentJsonResponse,
-  IdempotencyConflictError,
-  IdempotencyLockedError,
-} from "@/lib/idempotency/store";
+import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
 import { enforceAbuseProtection, enforceIdempotencyKeyLimit } from "@/lib/security/abuseProtection";
 
 export const runtime = "nodejs";
@@ -42,6 +36,10 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Request body must be valid JSON." }, { status: 400 });
   }
 
+  // Issue #412: a valid key is required before any work.
+  const idempotency = requireIdempotencyKey(request, { body });
+  if (!idempotency.ok) return idempotency.response;
+
   if (!body.tripId || typeof body.tripId !== "string") {
     return NextResponse.json({ error: "tripId is required." }, { status: 400 });
   }
@@ -49,14 +47,15 @@ export async function POST(request: NextRequest) {
   try {
     const origin = request.nextUrl.origin;
     const serverClient = createServerClientForToken(token);
-    const idempotencyKey = extractIdempotencyKey(request, body);
-    const keyLimit = await enforceIdempotencyKeyLimit(request, session.wallet_address, idempotencyKey);
+    const keyLimit = await enforceIdempotencyKeyLimit(request, session.wallet_address, idempotency.key);
     if (!keyLimit.ok) return keyLimit.response;
 
-    const result = await withIdempotency({
+    return await runIdempotentMutation({
+      request,
       client: serverClient,
-      key: idempotencyKey,
-      walletAddress: session.wallet_address,
+      key: idempotency.key,
+      principal: session.wallet_address,
+      // Kept from the pre-#412 wrapper so keys stored before the change still match.
       endpoint: "/api/invitations/create",
       payload: body,
       execute: async () => {
@@ -71,24 +70,10 @@ export async function POST(request: NextRequest) {
           },
           serverClient,
         );
-        return { data: created, status: 200 };
+        return NextResponse.json(created, { headers: { "Cache-Control": "no-store" } });
       },
     });
-
-    return idempotentJsonResponse(result);
   } catch (err) {
-    if (err instanceof IdempotencyConflictError) {
-      return NextResponse.json(
-        { error: err.message, code: err.code },
-        { status: 409 }
-      );
-    }
-    if (err instanceof IdempotencyLockedError) {
-      return NextResponse.json(
-        { error: err.message, code: err.code },
-        { status: 409 }
-      );
-    }
     const message = err instanceof Error ? err.message : "Failed to create invitation.";
     return NextResponse.json({ error: message }, { status: 500 });
   }

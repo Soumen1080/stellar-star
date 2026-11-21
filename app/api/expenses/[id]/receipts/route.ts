@@ -1,3 +1,4 @@
+import { createHash } from "crypto";
 import type { NextRequest } from "next/server";
 import { hasExpensePermission } from "@/lib/supabase/queries";
 import { inspectReceiptUpload } from "@/lib/receipts/inspect";
@@ -6,11 +7,13 @@ import { listReceipts, loadExpenseAccess, storeReceipt } from "@/lib/receipts/st
 import {
   errorResponse,
   isUuid,
+  RECEIPT_RESPONSE_HEADERS,
   receiptClients,
   receiptError,
   receiptJson,
 } from "@/lib/receipts/http";
 import { enforceAbuseProtection } from "@/lib/security/abuseProtection";
+import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -51,6 +54,10 @@ export async function POST(request: NextRequest, context: Context) {
   const clients = receiptClients(request);
   if ("response" in clients) return clients.response;
 
+  // Issue #412: a valid key is required before the upload is read.
+  const idempotency = requireIdempotencyKey(request);
+  if (!idempotency.ok) return idempotency.response;
+
   const maxBytes = receiptMaxBytes();
   // Refuse an oversized body before buffering it.
   const declaredLength = Number(request.headers.get("content-length") ?? "0");
@@ -76,21 +83,41 @@ export async function POST(request: NextRequest, context: Context) {
     if (!file || typeof file === "string") return receiptError("Choose a file to upload.", 400);
 
     const bytes = new Uint8Array(await file.arrayBuffer());
+    const fileName = "name" in file ? (file as File).name : null;
+    const caption = form.get("caption");
     const inspected = inspectReceiptUpload({
       bytes,
       declaredType: file.type,
-      fileName: "name" in file ? (file as File).name : null,
-      caption: form.get("caption"),
+      fileName,
+      caption,
       maxBytes,
     });
 
-    const receipt = await storeReceipt(clients.serviceClient, {
-      expenseId: id,
-      wallet: clients.wallet,
-      inspected,
-      bytes,
+    // The same bytes, name and caption under the same key are the same upload;
+    // a retry replays the stored receipt instead of storing a second copy.
+    return await runIdempotentMutation({
+      request,
+      client: clients.userClient,
+      key: idempotency.key,
+      principal: clients.wallet,
+      payload: {
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+        fileName,
+        declaredType: file.type,
+        caption: typeof caption === "string" ? caption : null,
+      },
+      leaseSeconds: 120,
+      replayHeaders: { ...RECEIPT_RESPONSE_HEADERS },
+      execute: async () => {
+        const receipt = await storeReceipt(clients.serviceClient, {
+          expenseId: id,
+          wallet: clients.wallet,
+          inspected,
+          bytes,
+        });
+        return receiptJson({ data: receipt }, 201);
+      },
     });
-    return receiptJson({ data: receipt }, 201);
   } catch (err) {
     return errorResponse(err);
   }

@@ -38,6 +38,8 @@ import {
   SPONSORSHIP_PER_ACCOUNT_STROOPS,
 } from "@/lib/onboarding/sponsorshipLedger";
 import { checkEligibility, recordInvite } from "@/lib/onboarding/abuseResistance";
+import { createServerClientForToken, isServerSupabaseConfigured } from "@/lib/supabase/server";
+import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -100,125 +102,142 @@ export async function POST(request: NextRequest) {
     return jsonError("You cannot sponsor your own account.", 400);
   }
 
-  // A partially funded account is not the same as an unfunded one: it exists on
-  // the network but may be below the reserve needed to hold a trustline. In that
-  // case we still sponsor, but the caller is told so the UI can explain why the
-  // invitee's balance did not change.
-  let partiallyFunded = false;
+  // Issue #412: a valid key is required before any reservation work.
+  const idempotency = requireIdempotencyKey(request);
+  if (!idempotency.ok) return idempotency.response;
 
-  // Already exists? Then there is nothing to create, and sponsoring would lock
-  // reserves for no reason.
-  let inviteeState;
-  try {
-    inviteeState = await getAccountState(invitee);
-  } catch (err) {
-    return jsonError(
-      err instanceof Error ? err.message : "Could not check the invitee's account.",
-      503,
-      { reason: "horizon_unavailable" },
-    );
-  }
+  // Eligibility, capacity reservation and sponsor signing run under the claim:
+  // a retry gets the envelope prepared the first time instead of reserving a
+  // second slot of sponsor capacity.
+  return runIdempotentMutation({
+    request,
+    client: isServerSupabaseConfigured() ? createServerClientForToken(token) : null,
+    key: idempotency.key,
+    principal: inviter,
+    payload: { invitee, assetKey: assetKey ?? null },
+    leaseSeconds: 120,
+    execute: async () => {
+      // A partially funded account is not the same as an unfunded one: it exists on
+      // the network but may be below the reserve needed to hold a trustline. In that
+      // case we still sponsor, but the caller is told so the UI can explain why the
+      // invitee's balance did not change.
+      let partiallyFunded = false;
 
-  if (inviteeState.status === "funded" && inviteeState.subentryCount === 0) {
-    partiallyFunded = true;
-  }
+      // Already exists? Then there is nothing to create, and sponsoring would lock
+      // reserves for no reason.
+      let inviteeState;
+      try {
+        inviteeState = await getAccountState(invitee);
+      } catch (err) {
+        return jsonError(
+          err instanceof Error ? err.message : "Could not check the invitee's account.",
+          503,
+          { reason: "horizon_unavailable" },
+        );
+      }
 
-  if (inviteeState.status !== "unfunded") {
-    return NextResponse.json(
-      {
-        alreadyFunded: true,
-        message: "This account already exists on the network — no sponsorship needed.",
-      },
-      { headers: { "Cache-Control": "no-store" } },
-    );
-  }
+      if (inviteeState.status === "funded" && inviteeState.subentryCount === 0) {
+        partiallyFunded = true;
+      }
 
-  // ── Abuse resistance ───────────────────────────────────────────────────────
-  let eligibility;
-  try {
-    eligibility = await checkEligibility(inviter, invitee);
-  } catch (err) {
-    return jsonError(
-      err instanceof Error ? err.message : "Could not check invite eligibility.",
-      503,
-    );
-  }
+      if (inviteeState.status !== "unfunded") {
+        return NextResponse.json(
+          {
+            alreadyFunded: true,
+            message: "This account already exists on the network — no sponsorship needed.",
+          },
+          { headers: { "Cache-Control": "no-store" } },
+        );
+      }
 
-  if (!eligibility.allowed) {
-    return jsonError(eligibility.message ?? "You cannot send this invite.", 429, {
-      reason: eligibility.reason,
-      retryAfterMs: eligibility.retryAfterMs,
-    });
-  }
+      // ── Abuse resistance ───────────────────────────────────────────────────────
+      let eligibility;
+      try {
+        eligibility = await checkEligibility(inviter, invitee);
+      } catch (err) {
+        return jsonError(
+          err instanceof Error ? err.message : "Could not check invite eligibility.",
+          503,
+        );
+      }
 
-  // ── Capacity ───────────────────────────────────────────────────────────────
-  // Reserved before submission on purpose: reserving afterwards leaves a window
-  // where concurrent requests each see headroom that is about to be consumed.
-  let reservation;
-  try {
-    reservation = await reserveCapacity(invitee, inviter);
-  } catch (err) {
-    return jsonError(
-      err instanceof Error ? err.message : "Could not reserve sponsorship capacity.",
-      503,
-    );
-  }
+      if (!eligibility.allowed) {
+        return jsonError(eligibility.message ?? "You cannot send this invite.", 429, {
+          reason: eligibility.reason,
+          retryAfterMs: eligibility.retryAfterMs,
+        });
+      }
 
-  if (!reservation) {
-    const capacity = await getCapacity();
-    // Exhaustion is a distinct, explicable state — not a generic failure.
-    return jsonError(
-      "Sponsored onboarding is at capacity right now. Your friend can still join by " +
-        "funding their own account, or you can try again later as capacity frees up.",
-      503,
-      {
-        reason: "sponsor_exhausted",
-        activeSponsorships: capacity.activeCount,
-        reclaimableSponsorships: capacity.reclaimableCount,
-      },
-    );
-  }
+      // ── Capacity ───────────────────────────────────────────────────────────────
+      // Reserved before submission on purpose: reserving afterwards leaves a window
+      // where concurrent requests each see headroom that is about to be consumed.
+      let reservation;
+      try {
+        reservation = await reserveCapacity(invitee, inviter);
+      } catch (err) {
+        return jsonError(
+          err instanceof Error ? err.message : "Could not reserve sponsorship capacity.",
+          503,
+        );
+      }
 
-  // ── Build and sponsor-sign ─────────────────────────────────────────────────
-  try {
-    const sponsor = sponsorPublicKey();
-    const capacity = await getCapacity();
-    const { xdr } = await buildSponsoredCreation({
-      sponsorPublicKey: sponsor,
-      newAccountPublicKey: invitee,
-      asset,
-      sponsoredCount: capacity.activeCount - 1,
-    });
+      if (!reservation) {
+        const capacity = await getCapacity();
+        // Exhaustion is a distinct, explicable state — not a generic failure.
+        return jsonError(
+          "Sponsored onboarding is at capacity right now. Your friend can still join by " +
+            "funding their own account, or you can try again later as capacity frees up.",
+          503,
+          {
+            reason: "sponsor_exhausted",
+            activeSponsorships: capacity.activeCount,
+            reclaimableSponsorships: capacity.reclaimableCount,
+          },
+        );
+      }
 
-    const partiallySigned = signAsSponsor(xdr, loadSponsorKeypair());
+      // ── Build and sponsor-sign ─────────────────────────────────────────────────
+      try {
+        const sponsor = sponsorPublicKey();
+        const capacity = await getCapacity();
+        const { xdr } = await buildSponsoredCreation({
+          sponsorPublicKey: sponsor,
+          newAccountPublicKey: invitee,
+          asset,
+          sponsoredCount: capacity.activeCount - 1,
+        });
 
-    await recordInvite(inviter, invitee);
+        const partiallySigned = signAsSponsor(xdr, loadSponsorKeypair());
 
-    return NextResponse.json(
-      {
-        // Inert until the invitee signs. That is the point.
-        xdr: partiallySigned,
-        sponsor,
-        requiresSignatureFrom: invitee,
-        lockedStroops: SPONSORSHIP_PER_ACCOUNT_STROOPS.toString(),
-        partiallyFunded,
-        message:
-          "Sponsorship prepared. The new account holder must sign this transaction to " +
-          "complete it — their key never leaves their wallet.",
-      },
-      { headers: { "Cache-Control": "no-store" } },
-    );
-  } catch (err) {
-    // The reservation is pessimistic, so a failure here must release it or the
-    // cap slowly fills with sponsorships that were never created.
-    await releaseFailedReservation(invitee).catch(() => {});
+        await recordInvite(inviter, invitee);
 
-    if (err instanceof SponsorUnavailableError) {
-      return jsonError(err.message, 503, { reason: "sponsor_unconfigured" });
-    }
-    console.error("[onboarding/sponsor] Failed to build sponsorship:", err);
-    return jsonError("Could not prepare the sponsorship transaction.", 503);
-  }
+        return NextResponse.json(
+          {
+            // Inert until the invitee signs. That is the point.
+            xdr: partiallySigned,
+            sponsor,
+            requiresSignatureFrom: invitee,
+            lockedStroops: SPONSORSHIP_PER_ACCOUNT_STROOPS.toString(),
+            partiallyFunded,
+            message:
+              "Sponsorship prepared. The new account holder must sign this transaction to " +
+              "complete it — their key never leaves their wallet.",
+          },
+          { headers: { "Cache-Control": "no-store" } },
+        );
+      } catch (err) {
+        // The reservation is pessimistic, so a failure here must release it or the
+        // cap slowly fills with sponsorships that were never created.
+        await releaseFailedReservation(invitee).catch(() => {});
+
+        if (err instanceof SponsorUnavailableError) {
+          return jsonError(err.message, 503, { reason: "sponsor_unconfigured" });
+        }
+        console.error("[onboarding/sponsor] Failed to build sponsorship:", err);
+        return jsonError("Could not prepare the sponsorship transaction.", 503);
+      }
+    },
+  });
 }
 
 /** Current sponsorship capacity, so the UI can warn before someone tries. */

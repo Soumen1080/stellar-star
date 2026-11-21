@@ -317,6 +317,7 @@ describe("Support Console & Incident Response (#314)", () => {
         headers: {
           "Content-Type": "application/json",
           "x-staff-id": "staff-proposer-sam",
+          "Idempotency-Key": crypto.randomUUID(),
         },
         body: JSON.stringify({
           actionType: "MARK_INTENT_FAILED",
@@ -341,6 +342,7 @@ describe("Support Console & Incident Response (#314)", () => {
         headers: {
           "Content-Type": "application/json",
           "x-staff-id": "staff-proposer-sam",
+          "Idempotency-Key": crypto.randomUUID(),
         },
         body: JSON.stringify({ proposalId, approverIdentifier: "staff-proposer-sam" }),
       });
@@ -355,6 +357,7 @@ describe("Support Console & Incident Response (#314)", () => {
         headers: {
           "Content-Type": "application/json",
           "x-staff-id": "staff-approver-jen",
+          "Idempotency-Key": crypto.randomUUID(),
         },
         body: JSON.stringify({ proposalId, approverIdentifier: "staff-approver-jen" }),
       });

@@ -42,6 +42,8 @@ import {
   REQUEST_ID_HEADER,
   getOrCreateRequestId,
 } from "@/lib/observability/requestId";
+import { createServerClientForToken, isServerSupabaseConfigured } from "@/lib/supabase/server";
+import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -157,6 +159,10 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  // Issue #412: a valid key is required before any Horizon or signer work.
+  const idempotency = requireIdempotencyKey(request);
+  if (!idempotency.ok) return idempotency.response;
+
   // ── Deployment prerequisites ───────────────────────────────────────────────
   // 503 rather than 500: invariant 5 says the client must be able to tell
   // "the oracle cannot answer right now" (degrade to off-chain, retry later)
@@ -178,141 +184,154 @@ export async function POST(request: NextRequest) {
 
   const normalisedTxHash = txHash.toLowerCase();
 
-  // ── Independent Horizon verification ───────────────────────────────────────
-  let payment;
-  try {
-    payment = await verifyPaymentByHash(normalisedTxHash, requestId);
-  } catch (err) {
-    if (err instanceof HorizonVerificationError) {
-      // Transient Horizon trouble is an availability problem, not a verdict on
-      // the claim, so it must not be reported as a rejection.
-      logAttestationError(requestId, "horizon-verification-failed", err);
-      return jsonError(err.message, err.transient ? 503 : 422, requestId);
-    }
-    logAttestationError(requestId, "horizon-verification-error", err);
-    return jsonError("Could not verify the transaction.", 503, requestId);
-  }
+  // Verification, allocation and signing run under the claim: a retry with
+  // the same key gets the attestation minted the first time, byte for byte.
+  return runIdempotentMutation({
+    request,
+    client: isServerSupabaseConfigured() ? createServerClientForToken(token) : null,
+    key: idempotency.key,
+    principal: session.wallet_address,
+    payload: { tripId, expenseId, payer, member, amountStroops, txHash: normalisedTxHash },
+    leaseSeconds: 120,
+    replayHeaders: responseHeaders(requestId),
+    execute: async () => {
+      // ── Independent Horizon verification ─────────────────────────────────────
+      let payment;
+      try {
+        payment = await verifyPaymentByHash(normalisedTxHash, requestId);
+      } catch (err) {
+        if (err instanceof HorizonVerificationError) {
+          // Transient Horizon trouble is an availability problem, not a verdict on
+          // the claim, so it must not be reported as a rejection.
+          logAttestationError(requestId, "horizon-verification-failed", err);
+          return jsonError(err.message, err.transient ? 503 : 422, requestId);
+        }
+        logAttestationError(requestId, "horizon-verification-error", err);
+        return jsonError("Could not verify the transaction.", 503, requestId);
+      }
 
-  // Horizon's answer is the source of truth. The request's assertions are only
-  // ever compared against it — disagreement is a rejection, never a silent
-  // substitution of one value for another.
-  if (payment.source !== member) {
-    return jsonError(
-      "The transaction was not sent by your account, so it cannot settle your debt.",
-      422,
-      requestId,
-    );
-  }
-  if (payment.destination !== payer) {
-    return jsonError(
-      "The transaction was not sent to the payer of this expense.",
-      422,
-      requestId,
-    );
-  }
+      // Horizon's answer is the source of truth. The request's assertions are only
+      // ever compared against it — disagreement is a rejection, never a silent
+      // substitution of one value for another.
+      if (payment.source !== member) {
+        return jsonError(
+          "The transaction was not sent by your account, so it cannot settle your debt.",
+          422,
+          requestId,
+        );
+      }
+      if (payment.destination !== payer) {
+        return jsonError(
+          "The transaction was not sent to the payer of this expense.",
+          422,
+          requestId,
+        );
+      }
 
-  // ── Allocation: one payment cannot settle the same debt twice, nor more
-  //    debt than it actually paid (atomic check & commit) ─────────────────────
-  let allocationResult;
-  try {
-    allocationResult = await allocateAndCommit({
-      txHash: normalisedTxHash,
-      expenseId,
-      member,
-      claimedAmountStroops: claimedAmount,
-      totalPaymentStroops: payment.amountStroops,
-      createEntry: async () => {
-        const nonce = crypto.randomBytes(NONCE_BYTES).toString("hex");
-        const expiresAt = Math.floor(Date.now() / 1000) + ATTESTATION_TTL_SECONDS;
-
-        const claim: SettlementClaim = {
-          contractId: CONTRACT_ID,
-          tripId,
-          expenseId,
-          payer,
-          member,
-          amountStroops: claimedAmount.toString(),
-          asset: SETTLEMENT_ASSET_ID,
-          txHash: normalisedTxHash,
-          nonce,
-          expiresAt,
-        };
-
-        const signed = await signClaimMessages(buildClaimMessage(claim));
-        if (signed.length < oracleThreshold()) throw new OracleKeyUnavailableError("Configured signer count is below the attestation threshold.");
-        return {
+      // ── Allocation: one payment cannot settle the same debt twice, nor more
+      //    debt than it actually paid (atomic check & commit) ─────────────────────
+      let allocationResult;
+      try {
+        allocationResult = await allocateAndCommit({
           txHash: normalisedTxHash,
           expenseId,
           member,
-          amountStroops: claim.amountStroops,
-          nonce,
-          expiresAt,
-          signature: JSON.stringify(signed.map(({ signature, publicKey }) => ({ signer: publicKey, signature }))),
-        };
-      },
-    });
-  } catch (err) {
-    if (err instanceof OracleKeyUnavailableError) {
-      return jsonError(err.message, 503, requestId);
-    }
-    logAttestationError(requestId, "allocation-error", err);
-    return jsonError("The attestation ledger is unavailable.", 503, requestId);
-  }
+          claimedAmountStroops: claimedAmount,
+          totalPaymentStroops: payment.amountStroops,
+          createEntry: async () => {
+            const nonce = crypto.randomBytes(NONCE_BYTES).toString("hex");
+            const expiresAt = Math.floor(Date.now() / 1000) + ATTESTATION_TTL_SECONDS;
 
-  if (!allocationResult.success) {
-    if (allocationResult.reason === "AMOUNT_MISMATCH") {
-      return jsonError(
-        "This expense was already attested against this transaction for a different amount.",
-        409,
-        requestId,
+            const claim: SettlementClaim = {
+              contractId: CONTRACT_ID,
+              tripId,
+              expenseId,
+              payer,
+              member,
+              amountStroops: claimedAmount.toString(),
+              asset: SETTLEMENT_ASSET_ID,
+              txHash: normalisedTxHash,
+              nonce,
+              expiresAt,
+            };
+
+            const signed = await signClaimMessages(buildClaimMessage(claim));
+            if (signed.length < oracleThreshold()) throw new OracleKeyUnavailableError("Configured signer count is below the attestation threshold.");
+            return {
+              txHash: normalisedTxHash,
+              expenseId,
+              member,
+              amountStroops: claim.amountStroops,
+              nonce,
+              expiresAt,
+              signature: JSON.stringify(signed.map(({ signature, publicKey }) => ({ signer: publicKey, signature }))),
+            };
+          },
+        });
+      } catch (err) {
+        if (err instanceof OracleKeyUnavailableError) {
+          return jsonError(err.message, 503, requestId);
+        }
+        logAttestationError(requestId, "allocation-error", err);
+        return jsonError("The attestation ledger is unavailable.", 503, requestId);
+      }
+
+      if (!allocationResult.success) {
+        if (allocationResult.reason === "AMOUNT_MISMATCH") {
+          return jsonError(
+            "This expense was already attested against this transaction for a different amount.",
+            409,
+            requestId,
+          );
+        }
+        return jsonError(
+          `This transaction paid ${payment.amountStroops} stroops, of which ` +
+            `${allocationResult.allocatedStroops} are already attested. It cannot cover a further ` +
+            `${claimedAmount}.`,
+          422,
+          requestId,
+        );
+      }
+
+      const stored = allocationResult.entry;
+      let signatures: Array<{ signer: string; signature: string }>;
+      try {
+        if (configuredOracleSignerCount() < oracleThreshold()) throw new Error("Configured signer count is below the attestation threshold.");
+        signatures = JSON.parse(stored.signature) as Array<{ signer: string; signature: string }>;
+        if (signatures.length < oracleThreshold()) throw new Error("Stored signature quorum is incomplete.");
+      } catch (err) {
+        return jsonError(
+          err instanceof Error ? err.message : "Oracle key unavailable.",
+          503,
+          requestId,
+        );
+      }
+
+      const finalClaim: SettlementClaim = {
+        contractId: CONTRACT_ID,
+        tripId,
+        expenseId,
+        payer,
+        member,
+        amountStroops: stored.amountStroops,
+        asset: SETTLEMENT_ASSET_ID,
+        txHash: normalisedTxHash,
+        nonce: stored.nonce,
+        expiresAt: stored.expiresAt,
+      };
+
+      return NextResponse.json(
+        {
+          attestation: {
+            claim: finalClaim,
+            signatures,
+          },
+          reused: allocationResult.reused,
+          durableLedger: isDurable(),
+          ledger: payment.ledger,
+        },
+        { headers: responseHeaders(requestId) },
       );
-    }
-    return jsonError(
-      `This transaction paid ${payment.amountStroops} stroops, of which ` +
-        `${allocationResult.allocatedStroops} are already attested. It cannot cover a further ` +
-        `${claimedAmount}.`,
-      422,
-      requestId,
-    );
-  }
-
-  const stored = allocationResult.entry;
-  let signatures: Array<{ signer: string; signature: string }>;
-  try {
-    if (configuredOracleSignerCount() < oracleThreshold()) throw new Error("Configured signer count is below the attestation threshold.");
-    signatures = JSON.parse(stored.signature) as Array<{ signer: string; signature: string }>;
-    if (signatures.length < oracleThreshold()) throw new Error("Stored signature quorum is incomplete.");
-  } catch (err) {
-    return jsonError(
-      err instanceof Error ? err.message : "Oracle key unavailable.",
-      503,
-      requestId,
-    );
-  }
-
-  const finalClaim: SettlementClaim = {
-    contractId: CONTRACT_ID,
-    tripId,
-    expenseId,
-    payer,
-    member,
-    amountStroops: stored.amountStroops,
-    asset: SETTLEMENT_ASSET_ID,
-    txHash: normalisedTxHash,
-    nonce: stored.nonce,
-    expiresAt: stored.expiresAt,
-  };
-
-  return NextResponse.json(
-    {
-      attestation: {
-        claim: finalClaim,
-        signatures,
-      },
-      reused: allocationResult.reused,
-      durableLedger: isDurable(),
-      ledger: payment.ledger,
     },
-    { headers: responseHeaders(requestId) },
-  );
+  });
 }

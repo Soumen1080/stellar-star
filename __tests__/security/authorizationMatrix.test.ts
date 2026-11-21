@@ -109,6 +109,7 @@ describe("Data Boundary Authorization Matrix (#311)", () => {
           headers: {
             "Content-Type": "application/json",
             Authorization: `Bearer ${unrelatedToken}`,
+            "Idempotency-Key": crypto.randomUUID(),
           },
           body: JSON.stringify({}),
         });

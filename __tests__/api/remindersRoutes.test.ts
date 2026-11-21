@@ -35,11 +35,22 @@ jest.mock("@/lib/reminders/repository", () => {
 
 
 
-function req(url: string, init: { method?: string; wallet?: string | null; body?: unknown } = {}) {
+function req(
+  url: string,
+  init: { method?: string; wallet?: string | null; body?: unknown; idempotencyKey?: string | null } = {},
+) {
   const token = init.wallet ? signWalletSession(init.wallet) : null;
+  const method = init.method ?? "GET";
+  // Writes require an Idempotency-Key (#412); each call is a distinct action
+  // unless a test passes the same key on purpose. null sends none.
+  const key = init.idempotencyKey === undefined && method !== "GET" ? crypto.randomUUID() : init.idempotencyKey;
   return new NextRequest(`http://localhost:3000${url}`, {
-    method: init.method ?? "GET",
-    headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), "content-type": "application/json" },
+    method,
+    headers: {
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...(key ? { "idempotency-key": key } : {}),
+      "content-type": "application/json",
+    },
     body: init.body === undefined ? undefined : JSON.stringify(init.body),
   });
 }
@@ -109,6 +120,35 @@ describe("/api/reminders", () => {
     );
     expect(again.status).toBe(429);
     expect(again.headers.get("Retry-After")).toBeTruthy();
+  });
+
+  it("requires an Idempotency-Key to send (#412)", async () => {
+    const res = await remindersRoute.POST(
+      req("/api/reminders", {
+        method: "POST",
+        wallet: ALICE,
+        idempotencyKey: null,
+        body: { tripId: "trip-1", expenseId: "exp-1", memberId: "bob" },
+      }),
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe("IDEMPOTENCY_KEY_REQUIRED");
+    expect(db.reminders.size).toBe(0);
+  });
+
+  it("replays a retried send instead of sending a second reminder (#412)", async () => {
+    const key = crypto.randomUUID();
+    const body = { tripId: "trip-1", expenseId: "exp-1", memberId: "bob" };
+    const first = await remindersRoute.POST(req("/api/reminders", { method: "POST", wallet: ALICE, idempotencyKey: key, body }));
+    const retry = await remindersRoute.POST(req("/api/reminders", { method: "POST", wallet: ALICE, idempotencyKey: key, body }));
+
+    expect(first.status).toBe(201);
+    // Without the key this retry would be rate-limited (429); with it, the
+    // client gets the original 201 back and nothing is sent twice.
+    expect(retry.status).toBe(201);
+    expect(retry.headers.get("Idempotent-Replayed")).toBe("true");
+    expect((await retry.json()).data.reminder.id).toBe((await first.json()).data.reminder.id);
+    expect(db.reminders.size).toBe(1);
   });
 
   it("lists the recipient's inbox without muted reminders", async () => {

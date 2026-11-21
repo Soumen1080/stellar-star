@@ -2,13 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { verifyWalletSession } from "@/lib/supabase/serverAuth";
 import { createServerClientForToken } from "@/lib/supabase/server";
 import { claimTripInvite } from "@/lib/invitations/claim";
-import {
-  extractIdempotencyKey,
-  withIdempotency,
-  idempotentJsonResponse,
-  IdempotencyConflictError,
-  IdempotencyLockedError,
-} from "@/lib/idempotency/store";
+import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
 import { enforceAbuseProtection, enforceIdempotencyKeyLimit } from "@/lib/security/abuseProtection";
 
 export const runtime = "nodejs";
@@ -41,20 +35,25 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Request body must be valid JSON." }, { status: 400 });
   }
 
+  // Issue #412: a valid key is required before any work.
+  const idempotency = requireIdempotencyKey(request, { body });
+  if (!idempotency.ok) return idempotency.response;
+
   if (!body.token || typeof body.token !== "string") {
     return NextResponse.json({ error: "Invitation token is required." }, { status: 400 });
   }
 
   try {
     const serverClient = createServerClientForToken(token);
-    const idempotencyKey = extractIdempotencyKey(request, body);
-    const keyLimit = await enforceIdempotencyKeyLimit(request, session.wallet_address, idempotencyKey);
+    const keyLimit = await enforceIdempotencyKeyLimit(request, session.wallet_address, idempotency.key);
     if (!keyLimit.ok) return keyLimit.response;
 
-    const result = await withIdempotency({
+    return await runIdempotentMutation({
+      request,
       client: serverClient,
-      key: idempotencyKey,
-      walletAddress: session.wallet_address,
+      key: idempotency.key,
+      principal: session.wallet_address,
+      // Kept from the pre-#412 wrapper so keys stored before the change still match.
       endpoint: "/api/invitations/claim",
       payload: body,
       execute: async () => {
@@ -64,18 +63,10 @@ export async function POST(request: NextRequest) {
           body.selectedMemberId,
           serverClient,
         );
-        return { data: claimed, status: 200 };
+        return NextResponse.json(claimed, { headers: { "Cache-Control": "no-store" } });
       },
     });
-
-    return idempotentJsonResponse(result);
   } catch (err) {
-    if (err instanceof IdempotencyConflictError || err instanceof IdempotencyLockedError) {
-      return NextResponse.json(
-        { error: err.message, code: err.code },
-        { status: 409 }
-      );
-    }
     const message = err instanceof Error ? err.message : "Failed to claim invitation.";
     let status = 400;
     if (message.includes("SLOT_ALREADY_CLAIMED") || message.includes("WALLET_ALREADY_MEMBER")) {

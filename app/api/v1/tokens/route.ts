@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { generateScopedToken, listTokensForWallet } from "@/lib/api/tokens";
 import { decodeClaims } from "@/lib/supabase/session";
 import type { ApiScope } from "@/lib/api/types";
+import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -55,34 +56,51 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  // Issue #412: a valid key is required before a token is minted.
+  const idempotency = requireIdempotencyKey(request, { format: "v1" });
+  if (!idempotency.ok) return idempotency.response;
+
   const name = body.name || "Developer Integration Token";
   const scopes: ApiScope[] = Array.isArray(body.scopes) && body.scopes.length > 0
     ? body.scopes
     : ["trips:read", "expenses:read"];
   const expiresInDays = body.expires_in_days !== undefined ? Number(body.expires_in_days) : 90;
 
-  try {
-    const { token, record } = generateScopedToken({
-      walletAddress: wallet,
-      name,
-      scopes,
-      expiresInDays,
-    });
+  // A retry mints nothing new; it replays the token issued the first time.
+  // The response carries the raw secret, so it stays in the process-local
+  // ledger (like the token store itself) and is never written to the database.
+  return runIdempotentMutation({
+    request,
+    key: idempotency.key,
+    principal: wallet.toUpperCase(),
+    payload: { name, scopes, expiresInDays },
+    persist: false,
+    format: "v1",
+    execute: async () => {
+      try {
+        const { token, record } = generateScopedToken({
+          walletAddress: wallet,
+          name,
+          scopes,
+          expiresInDays,
+        });
 
-    return NextResponse.json(
-      {
-        data: {
-          token, // Returned in full ONLY on creation
-          ...record,
-        },
-      },
-      { status: 201 }
-    );
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : "Failed to create scoped token.";
-    return NextResponse.json(
-      { error: { code: "TOKEN_CREATION_FAILED", message, status: 400 } },
-      { status: 400 }
-    );
-  }
+        return NextResponse.json(
+          {
+            data: {
+              token, // Returned in full ONLY on creation
+              ...record,
+            },
+          },
+          { status: 201, headers: { "Cache-Control": "no-store" } }
+        );
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : "Failed to create scoped token.";
+        return NextResponse.json(
+          { error: { code: "TOKEN_CREATION_FAILED", message, status: 400 } },
+          { status: 400 }
+        );
+      }
+    },
+  });
 }
