@@ -14,6 +14,7 @@ import { normalizeNote } from "@/lib/reminders/policy";
 import { authenticate, ID_PATTERN, json, readJson } from "@/lib/reminders/server";
 import { sendReminder } from "@/lib/reminders/service";
 import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
+import { REMINDER_REPLAY_FIELDS, replayFieldsUnder } from "@/lib/idempotency/replay";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -55,6 +56,7 @@ export async function POST(request: NextRequest) {
       request,
       client: auth.client,
       key: idempotency.key,
+      replayFields: ["data.channels", ...replayFieldsUnder("data.reminder", REMINDER_REPLAY_FIELDS)],
       principal: auth.wallet,
       payload: { tripId, expenseId, memberId, note },
       replayHeaders: { [REQUEST_ID_HEADER]: auth.requestId },

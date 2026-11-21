@@ -67,6 +67,7 @@ export async function POST(request: NextRequest) {
   return runIdempotentMutation({
     request,
     key: idempotencyKey,
+    replayFields: ["data.id", "data.url", "data.events", "data.description", "data.secret", "data.active", "data.createdAt", "data.walletAddress"],
     principal: tokenPayload.walletAddress,
     payload: body,
     persist: false,

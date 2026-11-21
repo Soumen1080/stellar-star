@@ -15,6 +15,7 @@ import {
 import { normalizeCategory } from "@/lib/expense/categories";
 import { normalizeTags, validateTags } from "@/lib/expense/tags";
 import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
+import { EXPENSE_REPLAY_FIELDS } from "@/lib/idempotency/replay";
 import type { Expense } from "@/types/expense";
 
 export const runtime = "nodejs";
@@ -164,6 +165,7 @@ export async function POST(request: NextRequest) {
       request,
       client,
       key: idempotency.key,
+      replayFields: EXPENSE_REPLAY_FIELDS,
       principal: session.wallet_address,
       // Kept from the pre-#412 wrapper so keys stored before the change still match.
       endpoint: "/api/expenses",

@@ -552,9 +552,16 @@ export type IdempotencyRecordRow = {
   request_fingerprint: string;
   status: "pending" | "completed" | "failed";
   response_status: number | null;
+  /** Allowlisted replay summary (#414); NULL once redacted or omitted for size. */
   response_body: Json;
   created_at: string;
   locked_until: string;
+  response_digest: string | null;
+  response_bytes: number | null;
+  replay_omitted: boolean;
+  completed_at: string | null;
+  replay_expires_at: string | null;
+  redacted_at: string | null;
 };
 
 export type Database = {
@@ -1040,6 +1047,12 @@ export type Database = {
           response_body?: Json;
           created_at?: string;
           locked_until?: string;
+          response_digest?: string | null;
+          response_bytes?: number | null;
+          replay_omitted?: boolean;
+          completed_at?: string | null;
+          replay_expires_at?: string | null;
+          redacted_at?: string | null;
         };
         Update: Partial<IdempotencyRecordRow>;
         Relationships: [];
@@ -1189,6 +1202,8 @@ export type Database = {
           status?: string;
           response_status?: number;
           response_body?: Json;
+          response_digest?: string | null;
+          replay_omitted?: boolean;
           locked_until?: string;
           retry_after_seconds?: number;
           recovered?: boolean;
@@ -1202,8 +1217,27 @@ export type Database = {
           p_request_fingerprint: string;
           p_response_status: number;
           p_response_body: Json;
+          p_response_digest?: string | null;
+          p_response_bytes?: number | null;
+          p_replay_omitted?: boolean;
+          p_replay_seconds?: number;
+          p_now?: string;
         };
         Returns: void;
+      };
+      purge_idempotency_records: {
+        Args: {
+          p_now?: string;
+          p_batch_size?: number;
+          p_audit_retention_days?: number;
+          p_stale_pending_hours?: number;
+        };
+        Returns: {
+          redacted: number;
+          deleted: number;
+          stale_pending_deleted: number;
+          batch_size: number;
+        };
       };
       release_idempotency_key: {
         Args: {

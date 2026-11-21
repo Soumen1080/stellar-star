@@ -14,6 +14,7 @@ import {
 } from "@/lib/receipts/http";
 import { enforceAbuseProtection } from "@/lib/security/abuseProtection";
 import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
+import { RECEIPT_REPLAY_FIELDS, replayFieldsUnder } from "@/lib/idempotency/replay";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -99,6 +100,7 @@ export async function POST(request: NextRequest, context: Context) {
       request,
       client: clients.userClient,
       key: idempotency.key,
+      replayFields: replayFieldsUnder("data", RECEIPT_REPLAY_FIELDS),
       principal: clients.wallet,
       payload: {
         sha256: createHash("sha256").update(bytes).digest("hex"),

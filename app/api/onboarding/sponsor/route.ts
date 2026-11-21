@@ -113,6 +113,7 @@ export async function POST(request: NextRequest) {
     request,
     client: isServerSupabaseConfigured() ? createServerClientForToken(token) : null,
     key: idempotency.key,
+    replayFields: ["xdr", "sponsor", "requiresSignatureFrom", "lockedStroops", "partiallyFunded", "alreadyFunded", "message"],
     principal: inviter,
     payload: { invitee, assetKey: assetKey ?? null },
     leaseSeconds: 120,

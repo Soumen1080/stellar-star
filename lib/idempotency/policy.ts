@@ -101,6 +101,12 @@ export const IDEMPOTENCY_EXEMPT_ROUTES: Record<string, ExemptRoute> = {
     reason:
       "Vercel Cron with CRON_SECRET. Drafts are unique on (template_id, occurrence_date), so overlapping or repeated runs create nothing new.",
   },
+  "/api/idempotency/cleanup": {
+    methods: ["POST"],
+    kind: "scheduled-job",
+    reason:
+      "Vercel Cron with CRON_SECRET. The retention sweep is batched and convergent: re-running only finds less to redact or delete.",
+  },
   "/api/reminders/run": {
     methods: ["POST"],
     kind: "scheduled-job",

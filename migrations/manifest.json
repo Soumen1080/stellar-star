@@ -2,7 +2,7 @@
   "$schema": "./manifest.schema.json",
   "formatVersion": "1.0.0",
   "description": "Canonical append-only migration manifest guaranteeing deterministic execution ordering and immutable identities",
-  "totalMigrations": 36,
+  "totalMigrations": 38,
   "migrations": [
     {
       "sequence": 1,
@@ -373,6 +373,16 @@
       "checksum": "0a283c68ac09bfcf",
       "sha256": "0a283c68ac09bfcf633dc1408ccc2dacf2865986fb49457fedb2fadbf54815df",
       "description": "Atomic claim, deliberate outcome evaluation, and lease recovery for idempotency records"
+    },
+    {
+      "sequence": 38,
+      "id": "0024_idempotency_retention",
+      "version": "0024",
+      "filename": "0024_idempotency_retention.sql",
+      "name": "0024_idempotency_retention",
+      "checksum": "f256658f5621879a",
+      "sha256": "f256658f5621879ad77bc178cb961bbd77902d0c097fde9778f4b42a2c2ae2f7",
+      "description": "Allowlisted replay summaries, response digests, size cap, replay/audit retention with indexed cleanup, and caller-scoped idempotency RPCs"
     }
   ]
 }

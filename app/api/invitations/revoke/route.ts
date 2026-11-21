@@ -43,6 +43,7 @@ export async function POST(request: NextRequest) {
       request,
       client: serverClient,
       key: idempotency.key,
+      replayFields: ["success"],
       principal: session.wallet_address,
       payload: { inviteId: body.inviteId },
       execute: async () => {

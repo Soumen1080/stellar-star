@@ -19,6 +19,13 @@ import crypto from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { ServerClient } from "@/lib/supabase/server";
 import { validateIdempotencyKey, type IdempotencyKeyErrorCode } from "./key";
+import {
+  IDEMPOTENCY_MAX_MEMORY_RECORDS,
+  IDEMPOTENCY_MAX_REPLAY_BYTES,
+  IDEMPOTENCY_REPLAY_TTL_SECONDS,
+  IDEMPOTENCY_STALE_PENDING_HOURS,
+} from "./retention";
+import { digestResponseBody, type StoredReplay } from "./replay";
 
 /**
  * Raised when a mutation is attempted without a valid idempotency key
@@ -71,6 +78,10 @@ export interface IdempotencyClaimResult {
   recovered?: boolean;
   retryAfterSeconds?: number;
   error?: string;
+  /** SHA-256 of the original response body (completed replays). */
+  responseDigest?: string;
+  /** True when the summary exceeded the size cap and no body was stored. */
+  replayOmitted?: boolean;
 }
 
 export interface IdempotencyRecord {
@@ -80,9 +91,47 @@ export interface IdempotencyRecord {
   request_fingerprint: string;
   status: "pending" | "completed" | "failed";
   response_status: number | null;
+  /** Allowlisted replay summary (Issue #414), never the raw response. */
   response_body: any;
   created_at: string;
   locked_until: string;
+  response_digest?: string | null;
+  response_bytes?: number | null;
+  replay_omitted?: boolean;
+  completed_at?: string | null;
+  /** After this instant the record no longer replays and the key is free again. */
+  replay_expires_at?: string | null;
+}
+
+function isReplayExpired(record: IdempotencyRecord, now: number): boolean {
+  if (record.status !== "completed") return false;
+  const expiry = record.replay_expires_at ? Date.parse(record.replay_expires_at) : NaN;
+  return !Number.isFinite(expiry) || expiry <= now;
+}
+
+/**
+ * Removes expired replays and abandoned pending claims from the process-local
+ * ledger, then evicts the oldest records beyond IDEMPOTENCY_MAX_MEMORY_RECORDS.
+ * Returns how many records were removed.
+ */
+export function sweepIdempotencyMemory(now = Date.now()): number {
+  let removed = 0;
+  const staleBefore = now - IDEMPOTENCY_STALE_PENDING_HOURS * 60 * 60 * 1000;
+  for (const [memKey, record] of memoryLedger) {
+    const abandoned =
+      record.status === "pending" && Date.parse(record.locked_until) < staleBefore;
+    if (isReplayExpired(record, now) || abandoned) {
+      memoryLedger.delete(memKey);
+      removed += 1;
+    }
+  }
+  // Map iteration order is insertion order, so the first keys are the oldest.
+  for (const memKey of memoryLedger.keys()) {
+    if (memoryLedger.size <= IDEMPOTENCY_MAX_MEMORY_RECORDS) break;
+    memoryLedger.delete(memKey);
+    removed += 1;
+  }
+  return removed;
 }
 
 // Global in-memory ledger for fast local development and process-level serialization
@@ -156,7 +205,14 @@ export function atomicClaimInMemory(
   now = Date.now(),
 ): IdempotencyClaimResult {
   const memKey = `${walletAddress}:${key}`;
-  const existing = memoryLedger.get(memKey);
+  if (memoryLedger.size >= IDEMPOTENCY_MAX_MEMORY_RECORDS) sweepIdempotencyMemory(now);
+
+  let existing = memoryLedger.get(memKey);
+  // Past its replay window a completed record no longer answers for the key.
+  if (existing && isReplayExpired(existing, now)) {
+    memoryLedger.delete(memKey);
+    existing = undefined;
+  }
 
   if (!existing) {
     const lockedUntil = new Date(now + leaseSeconds * 1000).toISOString();
@@ -189,6 +245,8 @@ export function atomicClaimInMemory(
       outcome: "completed_replay",
       responseStatus: existing.response_status ?? 200,
       responseBody: existing.response_body,
+      responseDigest: existing.response_digest ?? undefined,
+      replayOmitted: Boolean(existing.replay_omitted),
     };
   }
 
@@ -283,6 +341,8 @@ export async function claimIdempotencyKey({
           recovered: Boolean(parsed.recovered),
           retryAfterSeconds: parsed.retry_after_seconds ? Number(parsed.retry_after_seconds) : undefined,
           error: parsed.error ? String(parsed.error) : undefined,
+          responseDigest: parsed.response_digest ? String(parsed.response_digest) : undefined,
+          replayOmitted: Boolean(parsed.replay_omitted),
         };
 
         // Sync to memory ledger
@@ -298,19 +358,9 @@ export async function claimIdempotencyKey({
             created_at: new Date(now).toISOString(),
             locked_until: result.lockedUntil || new Date(now + leaseSeconds * 1000).toISOString(),
           });
-        } else if (outcome === "completed_replay") {
-          memoryLedger.set(memKey, {
-            key,
-            wallet_address: walletAddress,
-            endpoint,
-            request_fingerprint: fingerprint,
-            status: "completed",
-            response_status: result.responseStatus ?? 200,
-            response_body: result.responseBody,
-            created_at: new Date(now).toISOString(),
-            locked_until: "",
-          });
         }
+        // A completed replay is not mirrored into memory: the database owns its
+        // retention window, and a local copy could outlive it.
 
         return result;
       }
@@ -329,7 +379,13 @@ export interface CompleteIdempotencyOptions {
   key: string;
   fingerprint: string;
   responseStatus: number;
+  /** The allowlisted replay summary (Issue #414); null when omitted. */
   responseBody: any;
+  responseDigest?: string | null;
+  responseBytes?: number | null;
+  replayOmitted?: boolean;
+  replayTtlSeconds?: number;
+  now?: number;
 }
 
 /**
@@ -343,8 +399,15 @@ export async function completeIdempotencyClaim({
   fingerprint,
   responseStatus,
   responseBody,
+  responseDigest = null,
+  responseBytes = null,
+  replayOmitted = false,
+  replayTtlSeconds = IDEMPOTENCY_REPLAY_TTL_SECONDS,
+  now = Date.now(),
 }: CompleteIdempotencyOptions): Promise<void> {
   const memKey = `${walletAddress}:${key}`;
+  const completedAt = new Date(now).toISOString();
+  const replayExpiresAt = new Date(now + replayTtlSeconds * 1000).toISOString();
 
   // Update memory
   const existing = memoryLedger.get(memKey);
@@ -355,9 +418,14 @@ export async function completeIdempotencyClaim({
     request_fingerprint: fingerprint,
     status: "completed",
     response_status: responseStatus,
-    response_body: responseBody,
-    created_at: existing?.created_at || new Date().toISOString(),
-    locked_until: "",
+    response_body: replayOmitted ? null : responseBody,
+    created_at: existing?.created_at || completedAt,
+    locked_until: completedAt,
+    response_digest: responseDigest,
+    response_bytes: responseBytes,
+    replay_omitted: replayOmitted,
+    completed_at: completedAt,
+    replay_expires_at: replayExpiresAt,
   };
   memoryLedger.set(memKey, completedRecord);
 
@@ -369,7 +437,12 @@ export async function completeIdempotencyClaim({
         p_key: key,
         p_request_fingerprint: fingerprint,
         p_response_status: responseStatus,
-        p_response_body: responseBody as any,
+        p_response_body: (replayOmitted ? null : responseBody) as any,
+        p_response_digest: responseDigest,
+        p_response_bytes: responseBytes,
+        p_replay_omitted: replayOmitted,
+        p_replay_seconds: replayTtlSeconds,
+        p_now: completedAt,
       });
 
       if (error) {
@@ -379,7 +452,13 @@ export async function completeIdempotencyClaim({
           .update({
             status: "completed",
             response_status: responseStatus,
-            response_body: responseBody as any,
+            response_body: (replayOmitted ? null : responseBody) as any,
+            response_digest: responseDigest,
+            response_bytes: responseBytes,
+            replay_omitted: replayOmitted,
+            completed_at: completedAt,
+            replay_expires_at: replayExpiresAt,
+            locked_until: completedAt,
           })
           .eq("wallet_address", walletAddress)
           .eq("key", key)
@@ -436,14 +515,32 @@ export interface WithIdempotencyOptions<T> {
   walletAddress: string;
   endpoint: string;
   payload: any;
-  execute: () => Promise<{ data: T; status: number }>;
+  /**
+   * Runs the mutation. `replay` is what gets persisted (Issue #414); route
+   * code supplies an allowlisted summary via runIdempotentMutation. When it is
+   * omitted, `data` itself is stored, subject to the size cap.
+   */
+  execute: () => Promise<{ data: T; status: number; replay?: StoredReplay }>;
   leaseSeconds?: number;
 }
 
 export interface IdempotentResult<T> {
+  /** The original data on first execution; the stored summary on a replay. */
   data: T;
   status: number;
   replayed: boolean;
+  /** SHA-256 of the original response body, when known. */
+  responseDigest?: string;
+  /** True on a replay whose summary exceeded the size cap and was not stored. */
+  replayOmitted?: boolean;
+}
+
+/** Storage form for callers that pass no explicit summary: the data, capped. */
+function defaultStoredReplay(data: unknown): StoredReplay {
+  const text = JSON.stringify(data ?? null);
+  const bytes = Buffer.byteLength(text, "utf8");
+  const omitted = bytes > IDEMPOTENCY_MAX_REPLAY_BYTES;
+  return { body: omitted ? null : data, digest: digestResponseBody(text), bytes, omitted };
 }
 
 /**
@@ -503,12 +600,14 @@ export async function withIdempotency<T>({
       data: claim.responseBody as T,
       status: claim.responseStatus ?? 200,
       replayed: true,
+      responseDigest: claim.responseDigest,
+      replayOmitted: claim.replayOmitted,
     };
   }
 
   // Handle outcome: New claim (or recovered expired lease)
   // Execute the business mutation
-  let mutationResult: { data: T; status: number };
+  let mutationResult: { data: T; status: number; replay?: StoredReplay };
   try {
     mutationResult = await execute();
   } catch (err) {
@@ -517,20 +616,26 @@ export async function withIdempotency<T>({
     throw err;
   }
 
-  // Store completion only after business operation completes successfully
+  // Store completion only after business operation completes successfully.
+  // Only the summary, digest and size are persisted, never the raw response.
+  const stored = mutationResult.replay ?? defaultStoredReplay(mutationResult.data);
   await completeIdempotencyClaim({
     client,
     walletAddress,
     key: cleanKey,
     fingerprint,
     responseStatus: mutationResult.status,
-    responseBody: mutationResult.data,
+    responseBody: stored.body,
+    responseDigest: stored.digest,
+    responseBytes: stored.bytes,
+    replayOmitted: stored.omitted,
   });
 
   return {
     data: mutationResult.data,
     status: mutationResult.status,
     replayed: false,
+    responseDigest: stored.digest,
   };
 }
 

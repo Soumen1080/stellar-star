@@ -54,9 +54,13 @@ export async function POST(request: NextRequest) {
       request,
       client: serverClient,
       key: idempotency.key,
+      replayFields: ["inviteUrl", "invite.id", "invite.tripId", "invite.memberId", "invite.expiresAt", "invite.maxUses", "invite.uses", "invite.revoked", "invite.createdAt"],
       principal: session.wallet_address,
       // Kept from the pre-#412 wrapper so keys stored before the change still match.
       endpoint: "/api/invitations/create",
+      // The invite URL carries the raw join token, so the replay stays in the
+      // process-local ledger and the token is never written to the database.
+      persist: false,
       payload: body,
       execute: async () => {
         const created = await createTripInvite(

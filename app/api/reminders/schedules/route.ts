@@ -13,6 +13,7 @@ import type { NextRequest } from "next/server";
 import { authenticate, json, readJson, UUID_PATTERN } from "@/lib/reminders/server";
 import { createSchedule, disableSchedule } from "@/lib/reminders/service";
 import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
+import { REMINDER_SCHEDULE_REPLAY_FIELDS, replayFieldsUnder } from "@/lib/idempotency/replay";
 import { REQUEST_ID_HEADER } from "@/lib/observability/requestId";
 
 export const runtime = "nodejs";
@@ -42,6 +43,7 @@ export async function POST(request: NextRequest) {
       request,
       client: auth.client,
       key: idempotency.key,
+      replayFields: replayFieldsUnder("data", REMINDER_SCHEDULE_REPLAY_FIELDS),
       principal: auth.wallet,
       payload: { tripId: body.tripId ?? null, intervalDays: body.intervalDays ?? null },
       replayHeaders: { [REQUEST_ID_HEADER]: auth.requestId },
@@ -70,6 +72,7 @@ export async function DELETE(request: NextRequest) {
       request,
       client: auth.client,
       key: idempotency.key,
+      replayFields: ["data.disabled"],
       principal: auth.wallet,
       payload: { scheduleId: id },
       replayHeaders: { [REQUEST_ID_HEADER]: auth.requestId },
