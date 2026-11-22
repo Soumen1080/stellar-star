@@ -46,6 +46,7 @@ Date: 2026-03-29
 - [x] Public GitHub repository ready
 - [x] Commit history exceeds minimum requirement (44 commits)
 - [x] Mainnet Go/No-Go release gate evaluated and approved in [MAINNET_READINESS.md](MAINNET_READINESS.md)
+- [ ] Release readiness scorecard returns PROMOTE (`npm run release:scorecard`); every override is an accountable exception, see [RELEASE_READINESS_SCORECARD.md](RELEASE_READINESS_SCORECARD.md)
 - [x] Release governance, pause, and rollback authority documented in [RUNBOOK.md](RUNBOOK.md)
 - [x] Add one explicit mobile viewport screenshot (phone-sized capture) and reference it in README before final submission
 
