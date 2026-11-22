@@ -1,0 +1,259 @@
+{
+  "$comment": "Release readiness policy (#447). Evaluated by `npm run release:scorecard`. Every requirement is machine-checked; a failed blocking requirement blocks promotion unless an accountable exception in release/exceptions.json covers it. See docs/RELEASE_READINESS_SCORECARD.md.",
+  "version": "1.0.0",
+  "evidenceDir": "release/evidence",
+  "maxExceptionDays": 14,
+  "approvers": {
+    "migrations": ["@sre-lead", "@release-mgmt"],
+    "rls": ["@security-lead"],
+    "performance": ["@sre-lead", "@release-mgmt"],
+    "security": ["@security-lead"],
+    "backups": ["@sre-lead", "@release-mgmt"],
+    "dependencies": ["@security-lead", "@release-mgmt"],
+    "slos": ["@sre-lead", "@release-mgmt"],
+    "contracts": ["@contracts-lead", "@security-lead"],
+    "rollback": ["@release-mgmt"]
+  },
+  "requirements": [
+    {
+      "id": "MIG-01",
+      "domain": "migrations",
+      "title": "Migration manifest tracks every migration with a matching checksum and contiguous sequence",
+      "owner": "@sre-lead",
+      "blocking": true,
+      "overridable": false,
+      "check": { "type": "migration-manifest", "dir": "migrations", "manifest": "migrations/manifest.json" }
+    },
+    {
+      "id": "MIG-02",
+      "domain": "migrations",
+      "title": "Every migration added after the scorecard baseline carries rollback notes",
+      "owner": "@sre-lead",
+      "blocking": true,
+      "overridable": true,
+      "check": { "type": "migration-rollback-notes", "dir": "migrations", "manifest": "migrations/manifest.json", "fromSequence": 42 }
+    },
+    {
+      "id": "RLS-01",
+      "domain": "rls",
+      "title": "Every table in the canonical schema enables row level security",
+      "owner": "@security-lead",
+      "blocking": true,
+      "overridable": false,
+      "check": {
+        "type": "rls-enabled",
+        "schemaFile": "supabase-setup.sql",
+        "exempt": ["schema_migrations"]
+      }
+    },
+    {
+      "id": "PERF-01",
+      "domain": "performance",
+      "title": "Captured query plans for hot paths use indexes, not sequential scans",
+      "owner": "@sre-lead",
+      "blocking": true,
+      "overridable": true,
+      "check": {
+        "type": "query-plan-fixtures",
+        "files": [
+          "__tests__/database/fixtures/batchTripPermissionsPlan.fixture.json",
+          "__tests__/database/fixtures/outboxQueryPlan.fixture.json",
+          "__tests__/database/fixtures/partitionQueryPlan.fixture.json",
+          "__tests__/database/fixtures/reconciliationQueuePlan.fixture.json"
+        ]
+      }
+    },
+    {
+      "id": "PERF-02",
+      "domain": "performance",
+      "title": "Release-candidate load test meets the latency and error budgets",
+      "owner": "@sre-lead",
+      "blocking": true,
+      "overridable": true,
+      "check": {
+        "type": "evidence",
+        "name": "performance",
+        "maxAgeDays": 14,
+        "assertions": [
+          { "path": "data.p95Ms", "op": "<=", "value": 800 },
+          { "path": "data.errorRate", "op": "<=", "value": 0.01 },
+          { "path": "data.commit", "op": "exists" }
+        ]
+      }
+    },
+    {
+      "id": "SEC-01",
+      "domain": "security",
+      "title": "Every finding in the security audit report is fixed",
+      "owner": "@security-lead",
+      "blocking": true,
+      "overridable": false,
+      "check": {
+        "type": "line-rules",
+        "file": "docs/SECURITY_AUDIT_REPORT.md",
+        "lineMatches": "^\\|\\s*\\*\\*SEC-F\\d+\\*\\*",
+        "mustMatch": "\\*\\*FIXED\\*\\*\\s*\\|\\s*$"
+      }
+    },
+    {
+      "id": "SEC-02",
+      "domain": "security",
+      "title": "Production bundle contains no E2E wallet bypass (npm run test:security-build)",
+      "owner": "@security-lead",
+      "blocking": true,
+      "overridable": false,
+      "check": {
+        "type": "evidence",
+        "name": "security-build",
+        "maxAgeDays": 1,
+        "assertions": [{ "path": "data.passed", "op": "==", "value": true }]
+      }
+    },
+    {
+      "id": "BAK-01",
+      "domain": "backups",
+      "title": "Recovery drill restores sampled data within the RTO and rejects tampered archives",
+      "owner": "@sre-lead",
+      "blocking": true,
+      "overridable": true,
+      "check": {
+        "type": "evidence",
+        "name": "restore-drill",
+        "maxAgeDays": 7,
+        "assertions": [
+          { "path": "data.passed", "op": "==", "value": true },
+          { "path": "data.tamperDetected", "op": "==", "value": true },
+          { "path": "data.rtoMs", "op": "<=", "value": 1800000 }
+        ]
+      }
+    },
+    {
+      "id": "BAK-02",
+      "domain": "backups",
+      "title": "A verified production backup exists within the RPO window",
+      "owner": "@sre-lead",
+      "blocking": true,
+      "overridable": true,
+      "check": {
+        "type": "evidence",
+        "name": "backup-snapshot",
+        "maxAgeDays": 2,
+        "assertions": [
+          { "path": "data.verified", "op": "==", "value": true },
+          { "path": "data.lastSuccessfulBackupAt", "op": "maxAgeHours", "value": 26 }
+        ]
+      }
+    },
+    {
+      "id": "DEP-01",
+      "domain": "dependencies",
+      "title": "Every declared dependency is locked with an integrity hash and a bounded range",
+      "owner": "@security-lead",
+      "blocking": true,
+      "overridable": false,
+      "check": { "type": "lockfile-integrity", "packageJson": "package.json", "lockfile": "package-lock.json" }
+    },
+    {
+      "id": "DEP-02",
+      "domain": "dependencies",
+      "title": "No critical or high severity advisories in production dependencies",
+      "owner": "@security-lead",
+      "blocking": true,
+      "overridable": true,
+      "check": {
+        "type": "evidence",
+        "name": "npm-audit",
+        "maxAgeDays": 1,
+        "assertions": [
+          { "path": "data.metadata.vulnerabilities.critical", "op": "==", "value": 0 },
+          { "path": "data.metadata.vulnerabilities.high", "op": "==", "value": 0 }
+        ]
+      }
+    },
+    {
+      "id": "SLO-01",
+      "domain": "slos",
+      "title": "Availability SLO met over a 28-day window with error budget remaining",
+      "owner": "@sre-lead",
+      "blocking": true,
+      "overridable": true,
+      "check": {
+        "type": "evidence",
+        "name": "slos",
+        "maxAgeDays": 7,
+        "assertions": [
+          { "path": "data.windowDays", "op": ">=", "value": 28 },
+          { "path": "data.availability", "op": ">=", "value": 0.999 },
+          { "path": "data.errorBudgetRemaining", "op": ">=", "value": 0 }
+        ]
+      }
+    },
+    {
+      "id": "CON-01",
+      "domain": "contracts",
+      "title": "Deployed contract WASM digest is recorded in the security audit report",
+      "owner": "@contracts-lead",
+      "blocking": true,
+      "overridable": false,
+      "check": {
+        "type": "file-contains",
+        "file": "docs/SECURITY_AUDIT_REPORT.md",
+        "patterns": ["SHA-256 WASM Digest\\*\\*\\s*\\|\\s*`[0-9a-f]{64}`"]
+      }
+    },
+    {
+      "id": "CON-02",
+      "domain": "contracts",
+      "title": "Soroban contract test suite passes on the release commit",
+      "owner": "@contracts-lead",
+      "blocking": true,
+      "overridable": false,
+      "check": {
+        "type": "evidence",
+        "name": "contracts",
+        "maxAgeDays": 1,
+        "assertions": [{ "path": "data.passed", "op": "==", "value": true }]
+      }
+    },
+    {
+      "id": "RB-01",
+      "domain": "rollback",
+      "title": "Runbook documents incident pause and rollback authority",
+      "owner": "@release-mgmt",
+      "blocking": true,
+      "overridable": false,
+      "check": { "type": "file-contains", "file": "docs/RUNBOOK.md", "patterns": ["^##\\s.*Rollback"] }
+    },
+    {
+      "id": "RB-02",
+      "domain": "rollback",
+      "title": "Database rollback procedure is forward-compatible and documented",
+      "owner": "@release-mgmt",
+      "blocking": true,
+      "overridable": false,
+      "check": {
+        "type": "file-contains",
+        "file": "docs/DATABASE_MIGRATIONS.md",
+        "patterns": ["^##\\s.*Rollback Procedures", "Forward-Compatible Rollbacks"]
+      }
+    },
+    {
+      "id": "RB-03",
+      "domain": "rollback",
+      "title": "Rollback target for this release is named and the rollback was rehearsed recently",
+      "owner": "@release-mgmt",
+      "blocking": true,
+      "overridable": true,
+      "check": {
+        "type": "evidence",
+        "name": "rollback-plan",
+        "maxAgeDays": 30,
+        "assertions": [
+          { "path": "data.previousReleaseCommit", "op": "exists" },
+          { "path": "data.verifiedBy", "op": "exists" },
+          { "path": "data.rehearsedAt", "op": "maxAgeHours", "value": 720 }
+        ]
+      }
+    }
+  ]
+}
