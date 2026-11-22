@@ -2,7 +2,7 @@
   "$schema": "./manifest.schema.json",
   "formatVersion": "1.0.0",
   "description": "Canonical append-only migration manifest guaranteeing deterministic execution ordering and immutable identities",
-  "totalMigrations": 40,
+  "totalMigrations": 41,
   "migrations": [
     {
       "sequence": 1,
@@ -403,6 +403,16 @@
       "checksum": "ad43df4ccc7f5b95",
       "sha256": "ad43df4ccc7f5b95ccb900668401d7080269ff816982fccb895208f73fcc4db0",
       "description": "Batched, non-disclosing trip permission resolution (trips_with_permission) for archive exports"
+    },
+    {
+      "sequence": 41,
+      "id": "0026_reconciliation_leased_queue",
+      "version": "0026",
+      "filename": "0026_reconciliation_leased_queue.sql",
+      "name": "0026_reconciliation_leased_queue",
+      "checksum": "b0fa1f8f3712141e",
+      "sha256": "b0fa1f8f3712141e6ed3ac133e8f80201df4714efc780e29f51e63b16e0143d8",
+      "description": "Leased reconciliation queue: SKIP LOCKED claims, fenced lease tokens, heartbeats, backoff and dead-letter handling"
     }
   ]
 }
