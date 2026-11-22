@@ -1,9 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { verifyWalletSession } from "@/lib/supabase/serverAuth";
-import { createServerClientForToken } from "@/lib/supabase/server";
 import { transferTripOwnership } from "@/lib/supabase/queries";
 import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
 import { TRIP_REPLAY_FIELDS } from "@/lib/idempotency/replay";
+import { authenticateWalletRequest } from "@/lib/api/routeGuard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -12,11 +11,9 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  const token = (request.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "").trim();
-  const session = token ? verifyWalletSession(token) : null;
-  if (!session) {
-    return NextResponse.json({ error: "Unauthorized: sign in with your wallet." }, { status: 401 });
-  }
+  const auth = authenticateWalletRequest(request, { message: "Unauthorized: sign in with your wallet." });
+  if (!auth.ok) return auth.response;
+  const session = auth.ctx.claims;
 
   // Issue #412: a valid key is required before any work.
   const idempotency = requireIdempotencyKey(request);
@@ -34,7 +31,7 @@ export async function POST(
 
   const { id } = await params;
   const memberId = body.memberId;
-  const client = createServerClientForToken(token);
+  const client = auth.ctx.db();
   // A retry of a transfer that landed replays it; without the claim the
   // former owner would now fail the FORBIDDEN check.
   return runIdempotentMutation({

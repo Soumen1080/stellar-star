@@ -16,7 +16,6 @@ import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 import { StrKey } from "@stellar/stellar-sdk";
 import { CONTRACT_ID, SETTLEMENT_ASSET_ID } from "@/lib/utils/constants";
-import { verifyWalletSession } from "@/lib/supabase/serverAuth";
 import {
   buildClaimMessage,
   NONCE_BYTES,
@@ -42,8 +41,8 @@ import {
   REQUEST_ID_HEADER,
   getOrCreateRequestId,
 } from "@/lib/observability/requestId";
-import { createServerClientForToken, isServerSupabaseConfigured } from "@/lib/supabase/server";
 import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
+import { authenticateWalletRequest } from "@/lib/api/routeGuard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -104,6 +103,12 @@ function oracleThreshold(): number { return Math.max(1, Number(process.env.SETTL
 
 export async function POST(request: NextRequest) {
   const requestId = getOrCreateRequestId(request.headers.get(REQUEST_ID_HEADER));
+  const auth = authenticateWalletRequest(request, {
+    message: "A valid wallet session is required to request an attestation.",
+    requestId,
+  });
+  if (!auth.ok) return auth.response;
+  const session = auth.ctx.claims;
 
   let body: AttestRequestBody;
   try {
@@ -140,17 +145,6 @@ export async function POST(request: NextRequest) {
   // The oracle attests your settlements, not settlements you nominate someone
   // else for. Without this, anyone could burn a stranger's pool credit by
   // getting an attestation minted in their name.
-  const authHeader = request.headers.get("authorization") ?? "";
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
-  const session = token ? verifyWalletSession(token) : null;
-
-  if (!session) {
-    return jsonError(
-      "A valid wallet session is required to request an attestation.",
-      401,
-      requestId,
-    );
-  }
   if (session.wallet_address !== member) {
     return jsonError(
       "You may only request attestations for your own settlements.",
@@ -188,7 +182,7 @@ export async function POST(request: NextRequest) {
   // the same key gets the attestation minted the first time, byte for byte.
   return runIdempotentMutation({
     request,
-    client: isServerSupabaseConfigured() ? createServerClientForToken(token) : null,
+    client: auth.ctx.dbIfConfigured(),
     key: idempotency.key,
     replayFields: ["attestation.claim", "attestation.signatures", "reused", "durableLedger", "ledger"],
     principal: session.wallet_address,

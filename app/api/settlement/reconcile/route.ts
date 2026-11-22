@@ -14,8 +14,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { StrKey } from "@stellar/stellar-sdk";
 import { CONTRACT_ID } from "@/lib/utils/constants";
-import { verifyWalletSession } from "@/lib/supabase/serverAuth";
-import { createServerClientForToken } from "@/lib/supabase/server";
 import {
   HorizonVerificationError,
   verifyPaymentByHash,
@@ -37,6 +35,7 @@ import {
   getOrCreateRequestId,
 } from "@/lib/observability/requestId";
 import { enqueueOutboxEvent, buildSettlementRecordedOutboxEvent } from "@/lib/outbox";
+import { optionalWalletSession } from "@/lib/api/routeGuard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -115,19 +114,12 @@ export async function POST(request: NextRequest) {
   const cleanAsset = rawAsset.trim().toUpperCase() || "XLM";
   const cleanTripId = typeof tripId === "string" && tripId.trim() ? tripId.trim() : "none";
 
-  // Authentication check: verify session token if provided
-  const authHeader = request.headers.get("authorization") ?? "";
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
-  let serverClient;
-  let session = null;
-
-  if (token) {
-    session = verifyWalletSession(token);
-    if (!session) {
-      return jsonError("Invalid or expired wallet session token.", 401, requestId);
-    }
-    serverClient = createServerClientForToken(token);
-  }
+  // Authentication: optional (anonymous webhook re-syncs are allowed), but a
+  // session that is present must verify. Shared guard, #419.
+  const auth = optionalWalletSession(request, { message: "Invalid or expired wallet session token.", requestId });
+  if (!auth.ok) return auth.response;
+  const session = auth.ctx?.claims ?? null;
+  const serverClient = auth.ctx?.db();
 
   // Derive deterministic idempotency key: txHash + expenseId + memberId + assetCode
   const idempotencyKey = derivePaymentIdempotencyKey(

@@ -1,24 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
-import { verifyWalletSession } from "@/lib/supabase/serverAuth";
-import { createServerClientForToken } from "@/lib/supabase/server";
 import { createTripInvite } from "@/lib/invitations/claim";
 import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
 import { enforceAbuseProtection, enforceIdempotencyKeyLimit } from "@/lib/security/abuseProtection";
+import { authenticateWalletRequest } from "@/lib/api/routeGuard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function POST(request: NextRequest) {
-  const authHeader = request.headers.get("authorization") ?? "";
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
-  const session = token ? verifyWalletSession(token) : null;
-
-  if (!session) {
-    return NextResponse.json(
-      { error: "Unauthorized: Sign in with your wallet to create invites." },
-      { status: 401 },
-    );
-  }
+  const auth = authenticateWalletRequest(request, { message: "Unauthorized: Sign in with your wallet to create invites." });
+  if (!auth.ok) return auth.response;
+  const session = auth.ctx.claims;
   const abuse = await enforceAbuseProtection(request, "invitation.create", session.wallet_address);
   if (!abuse.ok) return abuse.response;
 
@@ -46,7 +38,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const origin = request.nextUrl.origin;
-    const serverClient = createServerClientForToken(token);
+    const serverClient = auth.ctx.db();
     const keyLimit = await enforceIdempotencyKeyLimit(request, session.wallet_address, idempotency.key);
     if (!keyLimit.ok) return keyLimit.response;
 
