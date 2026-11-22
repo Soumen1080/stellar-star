@@ -1,0 +1,38 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "version": "1.0.0",
+  "description": "PostgreSQL 16 plan for public.trips_with_permission (#417, migration 0026_batch_trip_permissions). Captured with EXPLAIN (COSTS OFF) after ANALYZE on 20,001 trips, resolving 1,000 requested ids for one wallet.",
+  "fixtures": [
+    {
+      "name": "batch_trip_permissions_1000_ids",
+      "function": "public.trips_with_permission",
+      "table": "public.trips",
+      "index_name": "trips_pkey",
+      "query": "SELECT t.id FROM caller c JOIN public.trips t ON t.id = ANY ($1) AND t.member_wallets @> ARRAY[c.wallet] CROSS JOIN LATERAL (SELECT ... FROM jsonb_array_elements(t.members) m WHERE m->>'walletAddress' = c.wallet LIMIT 1) r WHERE c.wallet IS NOT NULL",
+      "plan": {
+        "node_type": "Result -> Nested Loop",
+        "one_time_filter": "current_wallet() IS NOT NULL",
+        "outer": "Index Scan using trips_pkey on trips t",
+        "index_cond": "id = ANY ($1)",
+        "filter_predicate": "member_wallets @> ARRAY[current_wallet()]",
+        "inner": "Limit -> Function Scan on jsonb_array_elements m"
+      },
+      "performance": {
+        "statements_per_export": 1,
+        "requested_ids": 1000,
+        "measured_ms": 12.4
+      },
+      "equivalence": {
+        "checked_against": "public.trip_has_permission(id, permission) per trip",
+        "permissions_checked": ["exports.view", "members.manage"],
+        "mismatches": 0
+      },
+      "non_disclosure": {
+        "foreign_trip_returned": false,
+        "nonexistent_trip_returned": false,
+        "anonymous_caller_rows": 0,
+        "over_1000_ids_rows": 0
+      }
+    }
+  ]
+}

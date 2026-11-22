@@ -1200,6 +1200,10 @@ export type Database = {
         Args: { p_trip_id: string; p_permission: string };
         Returns: boolean;
       };
+      trips_with_permission: {
+        Args: { p_trip_ids: string[]; p_permission: string };
+        Returns: string[];
+      };
       expense_has_permission: {
         Args: { p_expense_id: string; p_permission: string };
         Returns: boolean;
