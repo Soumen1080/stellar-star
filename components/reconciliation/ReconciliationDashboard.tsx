@@ -114,6 +114,25 @@ export function ReconciliationDashboard() {
     }
   };
 
+  const handleRequeue = async (jobId: string) => {
+    try {
+      const res = await fetch("/api/settlement/reconciliation-worker", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        body: JSON.stringify({ action: "requeue", jobId }),
+      });
+      const data = await res.json();
+      if (res.ok && data.ok) {
+        success("Job requeued", "The next worker run will pick it up.");
+        void fetchReport();
+      } else {
+        error("Requeue failed", data.error || "The job could not be requeued.");
+      }
+    } catch {
+      error("Network error", "Failed to requeue the job.");
+    }
+  };
+
   const getStatusBadge = (status: ReconciliationJobStatus) => {
     switch (status) {
       case "recorded":
@@ -150,6 +169,12 @@ export function ReconciliationDashboard() {
         return (
           <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-zinc-100 text-zinc-700">
             <AlertOctagon size={12} /> Failed
+          </span>
+        );
+      case "dead_letter":
+        return (
+          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-orange-100 text-orange-800">
+            <AlertOctagon size={12} /> Dead Letter
           </span>
         );
     }
@@ -280,14 +305,17 @@ export function ReconciliationDashboard() {
             </span>
           </div>
           <div className="text-2xl font-bold text-zinc-800 mt-2">{summary?.failed ?? 0}</div>
-          <div className="text-xs text-[#666] mt-1">Expired / invalid txs</div>
+          <div className="text-xs text-[#666] mt-1">
+            Expired / invalid txs · Dead letter:{" "}
+            <span className={summary?.deadLetter ? "text-orange-700 font-bold" : ""}>{summary?.deadLetter ?? 0}</span>
+          </div>
         </div>
       </div>
 
       {/* Filter and Query controls */}
       <div className="p-4 bg-white rounded-2xl border border-[#E5E5E5] shadow-sm space-y-3">
         <div className="flex flex-wrap items-center gap-2">
-          {["all", "pending", "escalated", "not_submitted", "submitted_not_confirmed", "confirmed_not_recorded", "recorded", "failed"].map((st) => (
+          {["all", "pending", "escalated", "not_submitted", "submitted_not_confirmed", "confirmed_not_recorded", "recorded", "failed", "dead_letter"].map((st) => (
             <button
               key={st}
               onClick={() => setSelectedStatus(st)}
@@ -374,6 +402,11 @@ export function ReconciliationDashboard() {
                           {job.escalationReason}
                         </p>
                       )}
+                      {job.deadLetterReason && (
+                        <p className="text-[11px] text-orange-700 mt-1 max-w-xs truncate font-mono" title={job.deadLetterReason}>
+                          {job.deadLetterReason}
+                        </p>
+                      )}
                     </td>
 
                     <td className="px-4 py-3 align-top">
@@ -424,6 +457,14 @@ export function ReconciliationDashboard() {
                     </td>
 
                     <td className="px-4 py-3 align-top text-right">
+                      {job.status === "dead_letter" && (
+                        <button
+                          onClick={() => void handleRequeue(job.id)}
+                          className="mr-2 px-2.5 py-1 text-xs font-medium text-orange-800 bg-orange-50 hover:bg-orange-100 rounded-lg transition"
+                        >
+                          Requeue
+                        </button>
+                      )}
                       <button
                         onClick={() => setSelectedJobForDetail(job)}
                         className="px-2.5 py-1 text-xs font-medium text-[#0F0F14] bg-[#F6F6F6] hover:bg-[#EDEDED] rounded-lg transition"

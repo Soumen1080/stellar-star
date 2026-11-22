@@ -308,6 +308,15 @@ export type SettlementAttestationRow = {
   created_at: string;
 };
 
+export type ReconciliationJobStatusValue =
+  | "not_submitted"
+  | "submitted_not_confirmed"
+  | "confirmed_not_recorded"
+  | "recorded"
+  | "escalated"
+  | "failed"
+  | "dead_letter";
+
 export type ReconciliationJobRow = {
   id: string;
   intent_id: string | null;
@@ -323,7 +332,7 @@ export type ReconciliationJobRow = {
   request_id: string | null;
   tx_hash: string | null;
   ledger: number | null;
-  status: "not_submitted" | "submitted_not_confirmed" | "confirmed_not_recorded" | "recorded" | "escalated" | "failed";
+  status: ReconciliationJobStatusValue;
   attempts: number;
   max_attempts: number;
   backoff_ms: number;
@@ -335,6 +344,19 @@ export type ReconciliationJobRow = {
   recorded_at: string | null;
   created_at: string;
   updated_at: string;
+  /** Leased queue (migration 0026, #416). */
+  dedupe_key: string | null;
+  lease_owner: string | null;
+  lease_token: string | null;
+  leased_at: string | null;
+  lease_expires_at: string | null;
+  heartbeat_at: string | null;
+  claim_count: number;
+  lease_recoveries: number;
+  max_lease_recoveries: number;
+  dead_lettered_at: string | null;
+  dead_lettered_from: string | null;
+  dead_letter_reason: string | null;
 };
 
 export type TransactionalOutboxRow = {
@@ -586,6 +608,10 @@ export type ReconciliationWorkerRunRow = {
   errored_job_ids: string[];
   failure_code: string | null;
   created_at: string;
+  /** Migration 0026 (#416): lease owner used for the run's claims. */
+  worker_id: string | null;
+  dead_lettered: number;
+  lease_lost: number;
 };
 
 export type Database = {
@@ -851,7 +877,12 @@ export type Database = {
       };
       reconciliation_worker_runs: {
         Row: ReconciliationWorkerRunRow;
-        Insert: Omit<ReconciliationWorkerRunRow, "created_at"> & { created_at?: string };
+        Insert: Omit<ReconciliationWorkerRunRow, "created_at" | "worker_id" | "dead_lettered" | "lease_lost"> & {
+          created_at?: string;
+          worker_id?: string | null;
+          dead_lettered?: number;
+          lease_lost?: number;
+        };
         Update: never;
         Relationships: [];
       };
@@ -872,7 +903,7 @@ export type Database = {
           request_id?: string | null;
           tx_hash?: string | null;
           ledger?: number | null;
-          status?: "not_submitted" | "submitted_not_confirmed" | "confirmed_not_recorded" | "recorded" | "escalated" | "failed";
+          status?: ReconciliationJobStatusValue;
           attempts?: number;
           max_attempts?: number;
           backoff_ms?: number;
@@ -884,6 +915,10 @@ export type Database = {
           recorded_at?: string | null;
           created_at?: string;
           updated_at?: string;
+          dedupe_key?: string | null;
+          claim_count?: number;
+          lease_recoveries?: number;
+          max_lease_recoveries?: number;
         };
         Update: Partial<Omit<ReconciliationJobRow, "id" | "created_at">>;
         Relationships: [];
@@ -1418,6 +1453,46 @@ export type Database = {
       prune_old_partitions: {
         Args: { p_parent_table: string; p_cutoff_date: string };
         Returns: number;
+      };
+      enqueue_reconciliation_job: {
+        Args: {
+          p_dedupe_key: string;
+          p_intent_id: string | null;
+          p_trip_id: string;
+          p_expense_id: string;
+          p_member_id: string;
+          p_payer_wallet: string;
+          p_member_wallet: string;
+          p_asset: string;
+          p_amount: string;
+          p_amount_stroops: string;
+          p_expected_memo?: string | null;
+          p_request_id?: string | null;
+          p_tx_hash?: string | null;
+          p_max_attempts?: number;
+          p_backoff_ms?: number;
+        };
+        Returns: ReconciliationJobRow[];
+      };
+      claim_reconciliation_jobs: {
+        Args: { p_worker_id: string; p_batch_size?: number; p_lease_seconds?: number };
+        Returns: ReconciliationJobRow[];
+      };
+      heartbeat_reconciliation_job: {
+        Args: { p_id: string; p_lease_token: string; p_lease_seconds?: number };
+        Returns: boolean;
+      };
+      fail_reconciliation_job: {
+        Args: { p_id: string; p_lease_token: string; p_error_code: string; p_backoff_ms?: number };
+        Returns: "retry" | "dead_letter" | "lease_lost";
+      };
+      release_reconciliation_job: {
+        Args: { p_id: string; p_lease_token: string };
+        Returns: boolean;
+      };
+      requeue_reconciliation_job: {
+        Args: { p_id: string };
+        Returns: boolean;
       };
       claim_outbox_batch: {
         Args: {

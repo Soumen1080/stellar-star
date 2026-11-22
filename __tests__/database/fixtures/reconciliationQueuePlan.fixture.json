@@ -1,0 +1,88 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "version": "1.0.0",
+  "description": "PostgreSQL 16 query plans for the leased reconciliation queue (#416, migration 0026). Captured with EXPLAIN (COSTS OFF) after ANALYZE on 200,000 rows spread over the 2026-10 and 2026-11 partitions (1% live, 1% dead_letter, the rest recorded). Partitions with no rows show a Seq Scan over zero rows; every populated partition uses the index named here.",
+  "fixtures": [
+    {
+      "name": "reconciliation_claim_due_jobs",
+      "function": "public.claim_reconciliation_jobs",
+      "table": "public.reconciliation_queue",
+      "index_name": "idx_reconciliation_queue_claimable",
+      "query": "SELECT id, created_at FROM public.reconciliation_queue WHERE status IN ('not_submitted', 'submitted_not_confirmed', 'confirmed_not_recorded') AND next_attempt_at <= NOW() AND (lease_token IS NULL OR lease_expires_at < NOW()) ORDER BY next_attempt_at, created_at LIMIT 15 FOR UPDATE SKIP LOCKED",
+      "plan": {
+        "node_type": "Limit -> LockRows -> Merge Append",
+        "sort_key": "next_attempt_at, created_at",
+        "index_name": "idx_reconciliation_queue_claimable",
+        "per_partition_node": "Index Scan using reconciliation_queue_<partition>_next_attempt_at_created_at_idx",
+        "index_cond": "next_attempt_at <= now()",
+        "filter_predicate": "status = ANY ('{not_submitted,submitted_not_confirmed,confirmed_not_recorded}'::text[]) AND (lease_token IS NULL OR lease_expires_at < now())",
+        "locking_clause": "FOR UPDATE SKIP LOCKED",
+        "note": "Partial index: terminal rows are never scanned, so claim cost follows the backlog, not the history."
+      },
+      "performance": {
+        "measured_claim_of_50_ms": 6.7,
+        "rows_in_table": 200000
+      }
+    },
+    {
+      "name": "reconciliation_poison_lease_sweep",
+      "function": "public.claim_reconciliation_jobs",
+      "table": "public.reconciliation_queue",
+      "index_name": "idx_reconciliation_queue_lease_expiry",
+      "query": "SELECT id, created_at FROM public.reconciliation_queue WHERE lease_token IS NOT NULL AND lease_expires_at < NOW() AND lease_recoveries >= max_lease_recoveries AND status IN ('not_submitted', 'submitted_not_confirmed', 'confirmed_not_recorded') FOR UPDATE SKIP LOCKED",
+      "plan": {
+        "node_type": "LockRows -> Append",
+        "index_name": "idx_reconciliation_queue_lease_expiry",
+        "per_partition_node": "Index Scan using reconciliation_queue_<partition>_lease_expires_at_idx",
+        "index_cond": "lease_expires_at < now()",
+        "locking_clause": "FOR UPDATE SKIP LOCKED"
+      }
+    },
+    {
+      "name": "reconciliation_enqueue_dedupe_lookup",
+      "function": "public.enqueue_reconciliation_job",
+      "table": "public.reconciliation_queue",
+      "index_name": "idx_reconciliation_queue_dedupe_key",
+      "query": "SELECT * FROM public.reconciliation_queue q WHERE q.dedupe_key = 'intent:123' ORDER BY q.created_at DESC LIMIT 1",
+      "plan": {
+        "node_type": "Limit -> Sort -> Append",
+        "index_name": "idx_reconciliation_queue_dedupe_key",
+        "per_partition_node": "Index Scan using reconciliation_queue_<partition>_dedupe_key_idx",
+        "index_cond": "dedupe_key = 'intent:123'::text",
+        "concurrency_protection": "pg_advisory_xact_lock(hashtextextended('reconciliation_queue:' || key, 0)) held until commit"
+      }
+    },
+    {
+      "name": "reconciliation_dead_letter_listing",
+      "table": "public.reconciliation_queue",
+      "index_name": "idx_reconciliation_queue_dead_letter",
+      "query": "SELECT id FROM public.reconciliation_queue WHERE status = 'dead_letter' ORDER BY dead_lettered_at DESC LIMIT 50",
+      "plan": {
+        "node_type": "Limit -> Merge Append",
+        "index_name": "idx_reconciliation_queue_dead_letter",
+        "per_partition_node": "Index Scan using reconciliation_queue_<partition>_dead_lettered_at_idx"
+      }
+    }
+  ],
+  "concurrency": {
+    "description": "Measured against PostgreSQL 16 with concurrent psql sessions calling claim_reconciliation_jobs().",
+    "two_sessions_overlapping_transactions": {
+      "backlog": 200,
+      "batch_size": 50,
+      "session_a_claimed": 50,
+      "session_b_claimed": 50,
+      "overlap": 0
+    },
+    "eight_parallel_workers": {
+      "backlog": 200,
+      "batch_size": 50,
+      "claimed_total": 200,
+      "unique_jobs": 200
+    },
+    "concurrent_enqueue_same_key": {
+      "callers": 6,
+      "rows_created": 1
+    },
+    "duplicate_claims": 0
+  }
+}
