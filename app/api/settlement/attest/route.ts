@@ -111,11 +111,9 @@ export async function POST(request: NextRequest) {
   const session = auth.ctx.claims;
 
   let body: AttestRequestBody;
-  try {
-    body = (await request.json()) as AttestRequestBody;
-  } catch {
-    return jsonError("Request body must be JSON.", 400, requestId);
-  }
+  const parsedBody = await parseJsonBody(request, { route: "/api/settlement/attest", requestId });
+  if (!parsedBody.ok) return parsedBody.response;
+  body = (parsedBody.value) as typeof body;
 
   const { tripId, expenseId, payer, member, amountStroops, txHash } = body;
 

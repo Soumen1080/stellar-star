@@ -64,11 +64,9 @@ export async function POST(request: NextRequest) {
   }
 
   let body: { invitee?: unknown; assetKey?: unknown };
-  try {
-    body = (await request.json()) as typeof body;
-  } catch {
-    return jsonError("Request body must be JSON.", 400);
-  }
+  const parsedBody = await parseJsonBody(request, { route: "/api/onboarding/sponsor" });
+  if (!parsedBody.ok) return parsedBody.response;
+  body = (parsedBody.value) as typeof body;
 
   const { invitee, assetKey } = body;
 

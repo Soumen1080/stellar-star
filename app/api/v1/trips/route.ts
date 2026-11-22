@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
 import {
   apiIdempotencyClient,
   authenticateApiRequest,
@@ -9,6 +9,11 @@ import { TRIP_REPLAY_FIELDS, replayFieldsUnder } from "@/lib/idempotency/replay"
 import { fetchPermittedTrips, insertTrip } from "@/lib/api/data";
 import { dispatchWebhookEvent } from "@/lib/api/webhooks";
 import type { Trip } from "@/types/trip";
+import { parseJsonBody, limitedJson, responseLimitFor } from "@/lib/api/bodyLimits";
+
+/** Every JSON response here is size-capped (#418). */
+const respond = (body: unknown, init?: ResponseInit) =>
+  limitedJson(body, init, responseLimitFor("/api/v1/trips"));
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -47,7 +52,7 @@ export async function GET(request: NextRequest) {
     idempotencyKey: null,
   });
 
-  return NextResponse.json({
+  return respond({
     data: trips,
     pagination: {
       limit,
@@ -72,24 +77,19 @@ export async function POST(request: NextRequest) {
   const idempotencyKey = auth.context.idempotencyKey as string;
 
   let body: any;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json(
-      { error: { code: "BAD_REQUEST", message: "Invalid JSON body.", status: 400 } },
-      { status: 400 }
-    );
-  }
+  const parsedBody = await parseJsonBody(request, { route: "/api/v1/trips", format: "v1" });
+  if (!parsedBody.ok) return parsedBody.response;
+  body = parsedBody.value;
 
   if (!body.name || typeof body.name !== "string" || !body.name.trim()) {
-    return NextResponse.json(
+    return respond(
       { error: { code: "VALIDATION_FAILED", message: "Trip name is required.", status: 400 } },
       { status: 400 }
     );
   }
 
   if (!Array.isArray(body.members) || body.members.length === 0) {
-    return NextResponse.json(
+    return respond(
       {
         error: {
           code: "VALIDATION_FAILED",
@@ -143,7 +143,7 @@ export async function POST(request: NextRequest) {
         walletAddress: tokenPayload.walletAddress,
       }).catch(() => {});
 
-      return NextResponse.json({ data: created }, { status: 201 });
+      return respond({ data: created }, { status: 201 });
     },
   });
 

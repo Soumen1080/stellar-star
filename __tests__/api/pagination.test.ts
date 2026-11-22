@@ -89,7 +89,7 @@ describe("Server-side pagination and route validation", () => {
       const token = signWalletSession(WALLET);
       const req = new NextRequest("http://localhost:3000/api/trips", {
         method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
         body: JSON.stringify({ name: "" }),
       });
       const res = await postTripsRoute(req);
@@ -134,7 +134,7 @@ describe("Server-side pagination and route validation", () => {
       const token = signWalletSession(WALLET);
       const req = new NextRequest("http://localhost:3000/api/expenses", {
         method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
         body: JSON.stringify({ title: "" }),
       });
       const res = await postExpensesRoute(req);

@@ -19,11 +19,9 @@ export async function POST(request: NextRequest) {
     inviteId?: string;
   };
 
-  try {
-    body = (await request.json()) as typeof body;
-  } catch {
-    return NextResponse.json({ error: "Request body must be valid JSON." }, { status: 400 });
-  }
+  const parsedBody = await parseJsonBody(request, { route: "/api/invitations/revoke" });
+  if (!parsedBody.ok) return parsedBody.response;
+  body = (parsedBody.value) as typeof body;
 
   if (!body.inviteId || typeof body.inviteId !== "string") {
     return NextResponse.json({ error: "inviteId is required." }, { status: 400 });

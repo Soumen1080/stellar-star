@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { authenticateApiRequest, recordAuditLog } from "@/lib/api/middleware";
 import { sendTestWebhookPing } from "@/lib/api/webhooks";
 import { runIdempotentMutation } from "@/lib/idempotency/route";
+import { parseJsonBody } from "@/lib/api/bodyLimits";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -21,14 +22,9 @@ export async function POST(request: NextRequest) {
   const idempotencyKey = auth.context.idempotencyKey as string;
 
   let body: any;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json(
-      { error: { code: "BAD_REQUEST", message: "Invalid JSON body.", status: 400 } },
-      { status: 400 }
-    );
-  }
+  const parsedBody = await parseJsonBody(request, { route: "/api/v1/webhooks/test", format: "v1" });
+  if (!parsedBody.ok) return parsedBody.response;
+  body = parsedBody.value;
 
   const webhookId = body.webhook_id;
   if (!webhookId || typeof webhookId !== "string") {

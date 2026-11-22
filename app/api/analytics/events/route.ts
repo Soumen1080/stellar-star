@@ -5,10 +5,13 @@ import {
   sanitizeAnalyticsEvent,
   ANALYTICS_SCHEMA_VERSION,
 } from "@/lib/analytics";
+import { parseJsonBody } from "@/lib/api/bodyLimits";
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
+    const parsedBody = await parseJsonBody<any>(req, { route: "/api/analytics/events" });
+    if (!parsedBody.ok) return parsedBody.response;
+    const body = parsedBody.value;
 
     if (!body || typeof body !== "object") {
       return NextResponse.json({ error: "Invalid payload" }, { status: 400 });

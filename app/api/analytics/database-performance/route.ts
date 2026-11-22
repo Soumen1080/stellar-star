@@ -6,6 +6,7 @@ import {
   DEFAULT_ROUTE_BUDGETS,
   type QueryTraceStatus,
 } from "@/lib/supabase/queryBudget";
+import { parseJsonBody } from "@/lib/api/bodyLimits";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -43,7 +44,9 @@ export async function GET() {
  */
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json().catch(() => ({}));
+    const parsedBody = await parseJsonBody<Record<string, any>>(request, { route: "/api/analytics/database-performance", allowEmpty: true });
+    if (!parsedBody.ok) return parsedBody.response;
+    const body = parsedBody.value ?? {};
     const {
       simulate = false,
       route = "/api/trips",

@@ -2,7 +2,7 @@
   "$schema": "./manifest.schema.json",
   "formatVersion": "1.0.0",
   "description": "Canonical append-only migration manifest guaranteeing deterministic execution ordering and immutable identities",
-  "totalMigrations": 39,
+  "totalMigrations": 40,
   "migrations": [
     {
       "sequence": 1,
@@ -393,6 +393,16 @@
       "checksum": "73042ae658b07f0f",
       "sha256": "73042ae658b07f0fc6cfdc4d7780382df7d6bc1f3178b65e6b4e49ee47d69c3d",
       "description": "Append-only log of reconciliation worker runs: actor, request ID, trigger, duration and result"
+    },
+    {
+      "sequence": 40,
+      "id": "0026_batch_trip_permissions",
+      "version": "0026",
+      "filename": "0026_batch_trip_permissions.sql",
+      "name": "0026_batch_trip_permissions",
+      "checksum": "ad43df4ccc7f5b95",
+      "sha256": "ad43df4ccc7f5b95ccb900668401d7080269ff816982fccb895208f73fcc4db0",
+      "description": "Batched, non-disclosing trip permission resolution (trips_with_permission) for archive exports"
     }
   ]
 }

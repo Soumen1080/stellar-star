@@ -69,11 +69,9 @@ export async function POST(request: NextRequest) {
   const session = auth.ctx.claims;
 
   let body: any;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "Request body must be valid JSON." }, { status: 400 });
-  }
+  const parsedBody = await parseJsonBody(request, { route: "/api/expenses" });
+  if (!parsedBody.ok) return parsedBody.response;
+  body = (parsedBody.value) as typeof body;
 
   // Issue #412: a valid key is required before any work. The body field is
   // still accepted for offline drafts queued by older clients.

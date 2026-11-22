@@ -11,7 +11,7 @@ export async function GET(request: NextRequest) {
   const session = auth.ctx.claims;
 
   if (!isServerSupabaseConfigured()) {
-    return NextResponse.json(
+    return respond(
       { error: "Database service is not configured on the server." },
       { status: 503 }
     );
@@ -61,12 +61,12 @@ export async function GET(request: NextRequest) {
         "This export contains your off-chain application data. Public blockchain transactions, contract calls, and signatures are recorded on the public Stellar ledger.",
     };
 
-    return NextResponse.json(exportPayload, {
+    return respond(exportPayload, {
       headers: { "Cache-Control": "no-store" },
     });
   } catch (err: any) {
     console.error("[account/export] Export failed:", err);
-    return NextResponse.json(
+    return respond(
       { error: err.message || "Failed to generate account export." },
       { status: 500 }
     );

@@ -20,11 +20,9 @@ export async function POST(
   if (!idempotency.ok) return idempotency.response;
 
   let body: { memberId?: unknown };
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "Request body must be valid JSON." }, { status: 400 });
-  }
+  const parsedBody = await parseJsonBody(request, { route: "/api/trips/[id]/transfer-ownership" });
+  if (!parsedBody.ok) return parsedBody.response;
+  body = (parsedBody.value) as typeof body;
   if (!body || typeof body.memberId !== "string" || !body.memberId.trim()) {
     return NextResponse.json({ error: "A new owner memberId is required." }, { status: 400 });
   }
