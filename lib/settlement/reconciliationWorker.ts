@@ -22,7 +22,10 @@
  *    - An ambiguous transaction is NEVER marked paid.
  *    - Ambiguous records transition to 'escalated' with explicit escalation reasons
  *      for operator review.
- * 4. Durable queue, exponential backoff with jitter, and rate limiting against Horizon.
+ * 4. Durable leased queue (#416): jobs are claimed FOR UPDATE SKIP LOCKED
+ *    under a heartbeated lease, every transition is fenced on the lease token,
+ *    and failures back off exponentially with jitter until they dead-letter.
+ *    See lib/settlement/reconciliationQueue.ts.
  * 5. Queryable reporting and alert thresholds.
  */
 
@@ -43,6 +46,17 @@ import { checkIsPaid, recordPaymentOnChain } from "@/lib/stellar/contract";
 import { fetchAttestation } from "@/lib/settlement/settleOnChain";
 import { installmentSeqFromKey, installmentClaimId } from "@/lib/settlement/installments";
 import { requireAuthenticatedClient, type StellarStarClient } from "@/lib/supabase/client";
+import {
+  LEASE_RELEASE_FIELDS,
+  ReconciliationLease,
+  ReconciliationLeaseLostError,
+  claimReconciliationJobs,
+  failReconciliationJob,
+  newReconciliationWorkerId,
+  reconciliationDedupeKey,
+  reconciliationFailureCode,
+  releaseReconciliationJob,
+} from "@/lib/settlement/reconciliationQueue";
 import { getOrCreateRequestId } from "@/lib/observability/requestId";
 import { reportError } from "@/lib/observability/reportError";
 import type {
@@ -74,6 +88,7 @@ export const ALERT_THRESHOLDS = {
   maxPendingQueue: 10,
   maxFailureRatePercent: 5,
   escalationThreshold: 0, // Any escalated record triggers an alert
+  deadLetterThreshold: 0, // Any dead-lettered job needs an operator (#416)
 };
 
 // ─── Rate Limiter ─────────────────────────────────────────────────────────────
@@ -147,6 +162,12 @@ export function rowToReconciliationJob(row: ReconciliationJobRow): Reconciliatio
     recordedAt: row.recorded_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    leaseOwner: row.lease_owner ?? null,
+    leaseExpiresAt: row.lease_expires_at ?? null,
+    claimCount: row.claim_count ?? 0,
+    leaseRecoveries: row.lease_recoveries ?? 0,
+    deadLetteredAt: row.dead_lettered_at ?? null,
+    deadLetterReason: row.dead_letter_reason ?? null,
   };
 }
 
@@ -445,14 +466,24 @@ export async function pollAccountForMatchingPayment(
 /**
  * Resolves a single reconciliation job across the state machine:
  * 'not_submitted' -> 'submitted_not_confirmed' -> 'confirmed_not_recorded' -> 'recorded'
- * Or transitions to 'escalated' / 'failed'.
+ * Or transitions to 'escalated' / 'failed' / 'dead_letter'.
+ *
+ * With a `lease` (how runReconciliationWorker calls it, #416), the one state
+ * transition a call makes is fenced on the lease token and hands the lease
+ * back. If another worker has taken the job over, the write matches no row
+ * and ReconciliationLeaseLostError is thrown. Irreversible side effects
+ * (contract write, share and intent updates) run only after the lease has
+ * been re-confirmed.
  */
 export async function processReconciliationJob(
   job: ReconciliationJob,
   client?: StellarStarClient,
   rateLimiter: WorkerRateLimiter = defaultRateLimiter,
+  lease?: ReconciliationLease,
 ): Promise<{ status: ReconciliationJobStatus; changed: boolean; message?: string }> {
   const supabase = client ?? requireAuthenticatedClient();
+  const transition = (updates: ReconciliationJobUpdate) =>
+    updateReconciliationJobRow(job.id, updates, supabase, lease);
   const now = new Date();
   const attempts = job.attempts + 1;
   const nextBackoff = calculateBackoffMs(attempts, job.backoffMs);
@@ -463,15 +494,13 @@ export async function processReconciliationJob(
   if (job.status === "not_submitted") {
     // If a tx_hash was already populated, advance to submitted_not_confirmed
     if (job.txHash) {
-      await updateReconciliationJobRow(
-        job.id,
+      await transition(
         {
           status: "submitted_not_confirmed",
           last_attempt_at: now.toISOString(),
           next_attempt_at: now.toISOString(),
           updated_at: now.toISOString(),
         },
-        supabase,
       );
       return { status: "submitted_not_confirmed", changed: true, message: "Transaction hash attached; advancing to submitted_not_confirmed." };
     }
@@ -490,22 +519,19 @@ export async function processReconciliationJob(
     );
 
     if (searchResult.ambiguous) {
-      await updateReconciliationJobRow(
-        job.id,
+      await transition(
         {
           status: "escalated",
           escalation_reason: searchResult.reason ?? "Ambiguous candidate transactions found on chain.",
           last_attempt_at: now.toISOString(),
           updated_at: now.toISOString(),
         },
-        supabase,
       );
       return { status: "escalated", changed: true, message: searchResult.reason };
     }
 
     if (searchResult.found && searchResult.txHash) {
-      await updateReconciliationJobRow(
-        job.id,
+      await transition(
         {
           tx_hash: searchResult.txHash,
           status: "submitted_not_confirmed",
@@ -513,7 +539,6 @@ export async function processReconciliationJob(
           next_attempt_at: now.toISOString(),
           updated_at: now.toISOString(),
         },
-        supabase,
       );
       return { status: "submitted_not_confirmed", changed: true, message: `Discovered on-chain tx ${searchResult.txHash}.` };
     }
@@ -521,15 +546,13 @@ export async function processReconciliationJob(
     // If not found, check expiration
     const jobAgeMs = Date.now() - new Date(job.createdAt).getTime();
     if (attempts >= job.maxAttempts || jobAgeMs > 15 * 60 * 1000) {
-      await updateReconciliationJobRow(
-        job.id,
+      await transition(
         {
           status: "failed",
           error_message: "Settlement expired without on-chain submission.",
           last_attempt_at: now.toISOString(),
           updated_at: now.toISOString(),
         },
-        supabase,
       );
       if (job.intentId) {
         await markIntentFailed(job.intentId, "Settlement expired without submission.", supabase);
@@ -538,15 +561,13 @@ export async function processReconciliationJob(
     }
 
     // Schedule next backoff attempt
-    await updateReconciliationJobRow(
-      job.id,
+    await transition(
       {
         attempts,
         last_attempt_at: now.toISOString(),
         next_attempt_at: nextAttemptAt,
         updated_at: now.toISOString(),
       },
-      supabase,
     );
     return { status: "not_submitted", changed: false, message: `Polling account again in ${Math.round(nextBackoff / 1000)}s.` };
   }
@@ -555,15 +576,13 @@ export async function processReconciliationJob(
   if (job.status === "submitted_not_confirmed") {
     if (!job.txHash) {
       // Revert to not_submitted if txHash was cleared
-      await updateReconciliationJobRow(
-        job.id,
+      await transition(
         {
           status: "not_submitted",
           last_attempt_at: now.toISOString(),
           next_attempt_at: now.toISOString(),
           updated_at: now.toISOString(),
         },
-        supabase,
       );
       return { status: "not_submitted", changed: true };
     }
@@ -582,30 +601,26 @@ export async function processReconciliationJob(
 
     if (verification.escalated) {
       // ANTI-AMBIGUITY GUARD: Escalate! Never mark paid!
-      await updateReconciliationJobRow(
-        job.id,
+      await transition(
         {
           status: "escalated",
           escalation_reason: verification.escalationReason,
           last_attempt_at: now.toISOString(),
           updated_at: now.toISOString(),
         },
-        supabase,
       );
       return { status: "escalated", changed: true, message: verification.escalationReason };
     }
 
     if (!verification.ok) {
       if (verification.failureReason?.includes("failed on the Stellar ledger")) {
-        await updateReconciliationJobRow(
-          job.id,
+        await transition(
           {
             status: "failed",
             error_message: verification.failureReason,
             last_attempt_at: now.toISOString(),
             updated_at: now.toISOString(),
           },
-          supabase,
         );
         if (job.intentId) {
           await markIntentFailed(job.intentId, verification.failureReason, supabase);
@@ -613,38 +628,38 @@ export async function processReconciliationJob(
         return { status: "failed", changed: true, message: verification.failureReason };
       }
 
-      // Transient delay / not yet in ledger
+      // Transient delay / not yet in ledger. Out of retries the payment may
+      // still land, so the job is parked for an operator rather than failed.
       if (attempts >= job.maxAttempts) {
-        await updateReconciliationJobRow(
-          job.id,
+        await transition(
           {
-            status: "failed",
+            status: "dead_letter",
+            attempts,
+            dead_lettered_at: now.toISOString(),
+            dead_lettered_from: "submitted_not_confirmed",
+            dead_letter_reason: "CONFIRMATION_ATTEMPTS_EXHAUSTED",
             error_message: `Transaction not confirmed after ${job.maxAttempts} attempts.`,
             last_attempt_at: now.toISOString(),
             updated_at: now.toISOString(),
           },
-          supabase,
         );
-        return { status: "failed", changed: true, message: `Exhausted ${job.maxAttempts} attempts.` };
+        return { status: "dead_letter", changed: true, message: `Exhausted ${job.maxAttempts} attempts.` };
       }
 
-      await updateReconciliationJobRow(
-        job.id,
+      await transition(
         {
           attempts,
           last_attempt_at: now.toISOString(),
           next_attempt_at: nextAttemptAt,
           updated_at: now.toISOString(),
         },
-        supabase,
       );
       return { status: "submitted_not_confirmed", changed: false, message: verification.failureReason };
     }
 
     // Transaction verified on ledger! Transition to confirmed_not_recorded
     const ledger = verification.verifiedPayment?.ledger ?? null;
-    await updateReconciliationJobRow(
-      job.id,
+    await transition(
       {
         status: "confirmed_not_recorded",
         ledger,
@@ -653,7 +668,6 @@ export async function processReconciliationJob(
         next_attempt_at: now.toISOString(),
         updated_at: now.toISOString(),
       },
-      supabase,
     );
     return { status: "confirmed_not_recorded", changed: true, message: "Transaction verified on-chain; proceeding to recording." };
   }
@@ -661,8 +675,22 @@ export async function processReconciliationJob(
   // ── 3. STATE: 'confirmed_not_recorded' ─────────────────────────────────────
   if (job.status === "confirmed_not_recorded") {
     if (!job.txHash) {
+      // Persist the outcome; returning without a write would hand the job
+      // straight back to the queue on every claim.
+      await transition(
+        {
+          status: "failed",
+          error_message: "Missing transaction hash in confirmed state.",
+          last_attempt_at: now.toISOString(),
+          updated_at: now.toISOString(),
+        },
+      );
       return { status: "failed", changed: true, message: "Missing transaction hash in confirmed state." };
     }
+
+    // Everything below has effects outside this row. Re-confirm the lease
+    // first, so a worker that lost the job stops before touching them.
+    await lease?.assertHeld();
 
     let onChain = false;
     let ledger = job.ledger;
@@ -707,6 +735,10 @@ export async function processReconciliationJob(
       }
     }
 
+    // The contract step can be slow; confirm the lease again before the
+    // database side effects.
+    await lease?.assertHeld();
+
     // Atomically mark Supabase share as paid
     try {
       await markSharePaidRow(job.expenseId, job.memberId, job.txHash, supabase);
@@ -724,8 +756,7 @@ export async function processReconciliationJob(
     }
 
     // Advance job to recorded
-    await updateReconciliationJobRow(
-      job.id,
+    await transition(
       {
         status: "recorded",
         ledger,
@@ -733,7 +764,6 @@ export async function processReconciliationJob(
         last_attempt_at: now.toISOString(),
         updated_at: now.toISOString(),
       },
-      supabase,
     );
 
     return { status: "recorded", changed: true, message: "Payment successfully reconciled and recorded." };
@@ -743,23 +773,35 @@ export async function processReconciliationJob(
   return { status: job.status, changed: false };
 }
 
-// ─── Queue Management & Polling ───────────────────────────────────────────────
+// ─── Queue Management (leased, #416) ──────────────────────────────────────────
 
+export interface EnqueueReconciliationJobParams {
+  intentId?: string | null;
+  tripId: string;
+  expenseId: string;
+  memberId: string;
+  payerWallet: string;
+  memberWallet: string;
+  asset?: string;
+  amount: string;
+  amountStroops?: string | bigint;
+  expectedMemo?: string | null;
+  requestId?: string | null;
+  txHash?: string | null;
+  /** Defaults to reconciliationDedupeKey(params). */
+  dedupeKey?: string;
+}
+
+/**
+ * Durably enqueues a reconciliation job, at most once per dedupe key (by
+ * default one job per settlement intent, or per tx hash + share). Makes no
+ * network call: a worker claims the job later. Repeating the call returns the
+ * existing job, so an HTTP retry cannot create duplicate work.
+ *
+ * With a wallet session's client, RLS only lets the payer or member enqueue.
+ */
 export async function enqueueReconciliationJob(
-  params: {
-    intentId?: string | null;
-    tripId: string;
-    expenseId: string;
-    memberId: string;
-    payerWallet: string;
-    memberWallet: string;
-    asset?: string;
-    amount: string;
-    amountStroops?: string | bigint;
-    expectedMemo?: string | null;
-    requestId?: string | null;
-    txHash?: string | null;
-  },
+  params: EnqueueReconciliationJobParams,
   client?: StellarStarClient,
 ): Promise<ReconciliationJob> {
   const supabase = client ?? requireAuthenticatedClient();
@@ -777,43 +819,42 @@ export async function enqueueReconciliationJob(
     }
   }
 
-  const initialStatus: ReconciliationJobStatus = params.txHash ? "submitted_not_confirmed" : "not_submitted";
-
-  const insertData: ReconciliationJobInsert = {
-    intent_id: params.intentId ?? null,
-    trip_id: params.tripId,
-    expense_id: params.expenseId,
-    member_id: params.memberId,
-    payer_wallet: params.payerWallet,
-    member_wallet: params.memberWallet,
-    asset: cleanAsset,
-    amount: cleanAmount,
-    amount_stroops: stroopsStr,
-    expected_memo: params.expectedMemo ?? null,
-    request_id: params.requestId ?? null,
-    tx_hash: params.txHash ?? null,
-    status: initialStatus,
-    attempts: 0,
-    max_attempts: DEFAULT_MAX_ATTEMPTS,
-    backoff_ms: DEFAULT_BASE_BACKOFF_MS,
-    next_attempt_at: new Date().toISOString(),
-  };
-
-  const { data, error } = await supabase
-    .from("reconciliation_queue")
-    .insert(insertData)
-    .select("*")
-    .single();
+  const dedupeKey = params.dedupeKey ?? reconciliationDedupeKey(params);
+  const { data, error } = await supabase.rpc("enqueue_reconciliation_job", {
+    p_dedupe_key: dedupeKey,
+    p_intent_id: params.intentId ?? null,
+    p_trip_id: params.tripId,
+    p_expense_id: params.expenseId,
+    p_member_id: params.memberId,
+    p_payer_wallet: params.payerWallet,
+    p_member_wallet: params.memberWallet,
+    p_asset: cleanAsset,
+    p_amount: cleanAmount,
+    p_amount_stroops: stroopsStr,
+    p_expected_memo: params.expectedMemo ?? null,
+    p_request_id: params.requestId ?? null,
+    p_tx_hash: params.txHash ?? null,
+    p_max_attempts: DEFAULT_MAX_ATTEMPTS,
+    p_backoff_ms: DEFAULT_BASE_BACKOFF_MS,
+  });
 
   if (error) {
     throw new DatabaseError(error.message, error.code, "enqueue reconciliation job");
   }
-
-  return rowToReconciliationJob(data as ReconciliationJobRow);
+  const row = (Array.isArray(data) ? data[0] : data) as ReconciliationJobRow | undefined;
+  if (!row) {
+    throw new DatabaseError("The reconciliation job was not returned after enqueueing.", undefined, "enqueue reconciliation job");
+  }
+  return rowToReconciliationJob(row);
 }
 
+/** Upper bound on intents one sync pass looks at, so a sync stays bounded. */
+export const SYNC_INTENTS_LIMIT = 200;
+
 /**
- * Synchronizes any pending settlement intents that do not yet have an active queue row.
+ * Enqueues pending settlement intents that have no queue row yet. Two
+ * queries plus one enqueue per missing intent; the enqueue itself dedupes,
+ * so concurrent syncs cannot create two jobs for one intent.
  */
 export async function syncPendingIntentsToQueue(
   walletAddress?: string,
@@ -829,129 +870,221 @@ export async function syncPendingIntentsToQueue(
     query = query.or(`member_wallet.eq.${walletAddress},payer_wallet.eq.${walletAddress}`);
   }
 
-  const { data: intents, error } = await query;
+  const { data: intents, error } = await query.order("created_at", { ascending: true }).limit(SYNC_INTENTS_LIMIT);
   if (error || !intents || intents.length === 0) return 0;
 
-  let enqueuedCount = 0;
-  for (const intent of intents as SettlementIntentRow[]) {
-    // Check if job already exists for this intent
-    const { data: existing } = await supabase
-      .from("reconciliation_queue")
-      .select("id")
-      .eq("intent_id", intent.id)
-      .maybeSingle();
+  const intentRows = intents as SettlementIntentRow[];
+  const { data: existing, error: existingError } = await supabase
+    .from("reconciliation_queue")
+    .select("intent_id")
+    .in("intent_id", intentRows.map((intent) => intent.id));
+  if (existingError) {
+    throw new DatabaseError(existingError.message, existingError.code, "read queued settlement intents");
+  }
+  const queued = new Set((existing ?? []).map((row) => (row as { intent_id: string | null }).intent_id));
 
-    if (!existing) {
-      await enqueueReconciliationJob(
-        {
-          intentId: intent.id,
-          tripId: intent.trip_id,
-          expenseId: intent.expense_id,
-          memberId: intent.member_id,
-          payerWallet: intent.payer_wallet,
-          memberWallet: intent.member_wallet,
-          asset: intent.currency,
-          amount: intent.amount,
-          expectedMemo: intent.request_id,
-          requestId: intent.request_id,
-          txHash: intent.tx_hash,
-        },
-        supabase,
-      );
-      enqueuedCount++;
-    }
+  let enqueuedCount = 0;
+  for (const intent of intentRows) {
+    if (queued.has(intent.id)) continue;
+    await enqueueReconciliationJob(
+      {
+        intentId: intent.id,
+        tripId: intent.trip_id,
+        expenseId: intent.expense_id,
+        memberId: intent.member_id,
+        payerWallet: intent.payer_wallet,
+        memberWallet: intent.member_wallet,
+        asset: intent.currency,
+        amount: intent.amount,
+        expectedMemo: intent.request_id,
+        requestId: intent.request_id,
+        txHash: intent.tx_hash,
+      },
+      supabase,
+    );
+    enqueuedCount++;
   }
 
   return enqueuedCount;
 }
 
-export async function fetchDueReconciliationJobs(
-  limit = 20,
-  client?: StellarStarClient,
-): Promise<ReconciliationJob[]> {
-  const supabase = client ?? requireAuthenticatedClient();
-  const now = new Date().toISOString();
-
-  const { data, error } = await supabase
-    .from("reconciliation_queue")
-    .select("*")
-    .in("status", ["not_submitted", "submitted_not_confirmed", "confirmed_not_recorded"])
-    .lte("next_attempt_at", now)
-    .order("next_attempt_at", { ascending: true })
-    .limit(limit);
-
-  if (error) {
-    throw new DatabaseError(error.message, error.code, "fetch due reconciliation jobs");
-  }
-
-  return (data ?? []).map((row) => rowToReconciliationJob(row as ReconciliationJobRow));
-}
-
+/**
+ * Writes one state transition.
+ *
+ * With a lease, the write is fenced on the lease token and also hands the
+ * lease back. If the token no longer matches (the lease expired and another
+ * worker took the job), nothing is written and ReconciliationLeaseLostError
+ * is thrown.
+ */
 export async function updateReconciliationJobRow(
   id: string,
   updates: ReconciliationJobUpdate,
   client?: StellarStarClient,
+  lease?: ReconciliationLease,
 ): Promise<void> {
   const supabase = client ?? requireAuthenticatedClient();
-  const { error } = await supabase.from("reconciliation_queue").update(updates).eq("id", id);
+
+  if (!lease) {
+    const { error } = await supabase.from("reconciliation_queue").update(updates).eq("id", id);
+    if (error) {
+      throw new DatabaseError(error.message, error.code, "update reconciliation job");
+    }
+    return;
+  }
+
+  if (lease.lost) throw new ReconciliationLeaseLostError(id);
+  const { data, error } = await supabase
+    .from("reconciliation_queue")
+    .update({ ...updates, ...LEASE_RELEASE_FIELDS })
+    .eq("id", id)
+    .eq("lease_token", lease.token)
+    .select("id");
   if (error) {
     throw new DatabaseError(error.message, error.code, "update reconciliation job");
   }
+  if (!Array.isArray(data) || data.length === 0) {
+    lease.markLost();
+    throw new ReconciliationLeaseLostError(id);
+  }
+  lease.markReleased();
 }
 
 // ─── Batch Worker Execution ───────────────────────────────────────────────────
 
+export interface ReconciliationWorkerOptions {
+  batchSize?: number;
+  walletAddress?: string;
+  /** Lease owner recorded on every claim. Defaults to a fresh random ID. */
+  workerId?: string;
+  /** Epoch ms after which no new job is started; leftover claims are released. */
+  deadline?: number;
+  leaseSeconds?: number;
+  heartbeatMs?: number;
+  /** Set false to claim without first syncing pending intents into the queue. */
+  syncIntents?: boolean;
+  clock?: () => number;
+}
+
+/**
+ * One leased batch: sync pending intents, claim up to `batchSize` due jobs
+ * (FOR UPDATE SKIP LOCKED), and process each one while heartbeating its
+ * lease. A job that throws is retried with backoff or dead-lettered
+ * (fail_reconciliation_job). A job whose lease passed to another worker is
+ * counted in `leaseLost` and left alone. Claims not started before
+ * `deadline` are released unconsumed.
+ *
+ * Any number of these can run at once, on any number of instances: the claim
+ * gives each job to one worker only.
+ */
 export async function runReconciliationWorker(
-  options?: {
-    batchSize?: number;
-    walletAddress?: string;
-  },
+  options?: ReconciliationWorkerOptions,
   client?: StellarStarClient,
   rateLimiter: WorkerRateLimiter = defaultRateLimiter,
 ): Promise<ReconciliationWorkerRunResult> {
-  const startTime = Date.now();
+  const clock = options?.clock ?? Date.now;
+  const startTime = clock();
   const supabase = client ?? requireAuthenticatedClient();
-  const batchSize = options?.batchSize ?? 15;
+  const batchSize = Math.min(50, Math.max(1, Math.floor(options?.batchSize ?? 15)));
+  const workerId = options?.workerId ?? newReconciliationWorkerId();
+  const leaseOptions = { leaseSeconds: options?.leaseSeconds, heartbeatMs: options?.heartbeatMs };
 
-  // 1. Sync pending intents
-  try {
-    await syncPendingIntentsToQueue(options?.walletAddress, supabase);
-  } catch (err) {
-    console.warn("[reconciliationWorker] syncPendingIntentsToQueue warning:", err);
+  // 1. Sync pending intents (enqueue only; no network calls)
+  if (options?.syncIntents !== false) {
+    try {
+      await syncPendingIntentsToQueue(options?.walletAddress, supabase);
+    } catch (err) {
+      reportError("reconciliation.sync-intents-failed", err, { workerId }, "warning");
+    }
   }
 
-  // 2. Fetch due jobs
-  const dueJobs = await fetchDueReconciliationJobs(batchSize, supabase);
+  // 2. Claim due jobs under a lease
+  const claims = await claimReconciliationJobs(supabase, {
+    workerId,
+    batchSize,
+    leaseSeconds: options?.leaseSeconds,
+  });
 
   let processed = 0;
   let recorded = 0;
   let escalated = 0;
   let pending = 0;
   let failed = 0;
+  let deadLettered = 0;
+  let leaseLost = 0;
+  let released = 0;
   const errors: Array<{ jobId: string; error: string }> = [];
 
-  for (const job of dueJobs) {
+  for (let index = 0; index < claims.length; index++) {
+    const { row, leaseToken } = claims[index];
+
+    if (options?.deadline !== undefined && clock() >= options.deadline) {
+      // Out of time: hand the rest back now rather than let their leases lapse.
+      for (const leftover of claims.slice(index)) {
+        const ok = await releaseReconciliationJob(supabase, leftover.row.id, leftover.leaseToken).catch(() => false);
+        if (ok) released++;
+      }
+      break;
+    }
+
+    const job = rowToReconciliationJob(row);
+    const lease = new ReconciliationLease(supabase, job.id, leaseToken, leaseOptions);
+    lease.start();
+    processed++;
     try {
-      processed++;
-      const result = await processReconciliationJob(job, supabase, rateLimiter);
+      const result = await processReconciliationJob(job, supabase, rateLimiter, lease);
       if (result.status === "recorded") recorded++;
       else if (result.status === "escalated") escalated++;
       else if (result.status === "failed") failed++;
+      else if (result.status === "dead_letter") deadLettered++;
       else pending++;
     } catch (err) {
+      if (err instanceof ReconciliationLeaseLostError || lease.lost) {
+        leaseLost++;
+        continue;
+      }
       const errMsg = err instanceof Error ? err.message : String(err);
       errors.push({ jobId: job.id, error: errMsg });
-      reportError("reconciliation.job-processing-failed", err, { jobId: job.id }, "error");
+      reportError("reconciliation.job-processing-failed", err, { jobId: job.id, workerId }, "error");
+
+      const outcome = await failReconciliationJob(
+        supabase,
+        job.id,
+        leaseToken,
+        reconciliationFailureCode(err),
+        calculateBackoffMs(job.attempts + 1, job.backoffMs),
+      ).catch(() => null);
+      if (outcome === "dead_letter") {
+        deadLettered++;
+        lease.markReleased();
+      } else if (outcome === "retry") {
+        pending++;
+        lease.markReleased();
+      } else if (outcome === "lease_lost") {
+        lease.markLost();
+      }
+      // null: the failure itself could not be recorded. The lease lapses and
+      // the job is recovered by the next claim.
+    } finally {
+      lease.stop();
+      if (!lease.released && !lease.lost) {
+        // The job made no transition (nothing to do this attempt). Give it back.
+        await releaseReconciliationJob(supabase, job.id, leaseToken).catch(() => false);
+      }
     }
   }
 
   return {
+    claimed: claims.length,
     processed,
     recorded,
     escalated,
     pending,
     failed,
-    durationMs: Date.now() - startTime,
+    deadLettered,
+    leaseLost,
+    released,
+    workerId,
+    durationMs: clock() - startTime,
     errors,
   };
 }
@@ -1004,7 +1137,18 @@ export function evaluateAlertThresholds(summary: ReconciliationSummary): Reconci
     });
   }
 
-  // 4. Failure rate alert
+  // 4. Dead-lettered jobs: retries or lease recoveries ran out (#416)
+  if ((summary.deadLetter ?? 0) > ALERT_THRESHOLDS.deadLetterThreshold) {
+    alerts.push({
+      code: "DEAD_LETTERED_JOBS",
+      level: "critical",
+      message: `${summary.deadLetter} reconciliation job(s) exhausted their retries and are parked in the dead-letter queue for operator review.`,
+      count: summary.deadLetter,
+      threshold: ALERT_THRESHOLDS.deadLetterThreshold,
+    });
+  }
+
+  // 5. Failure rate alert
   if (summary.total >= 5 && summary.failureRatePercent > ALERT_THRESHOLDS.maxFailureRatePercent) {
     alerts.push({
       code: "HIGH_FAILURE_RATE",
@@ -1044,6 +1188,7 @@ export async function getReconciliationReport(
   let recorded = 0;
   let escalated = 0;
   let failed = 0;
+  let deadLetter = 0;
 
   let under5m = 0;
   let from5mTo15m = 0;
@@ -1056,6 +1201,7 @@ export async function getReconciliationReport(
     else if (r.status === "recorded") recorded++;
     else if (r.status === "escalated") escalated++;
     else if (r.status === "failed") failed++;
+    else if (r.status === "dead_letter") deadLetter++;
 
     const isPending =
       r.status === "not_submitted" ||
@@ -1082,6 +1228,7 @@ export async function getReconciliationReport(
     recorded,
     escalated,
     failed,
+    deadLetter,
     totalPending,
     pendingAging: { under5m, from5mTo15m, over15m },
     failureRatePercent,
