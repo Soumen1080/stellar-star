@@ -166,6 +166,11 @@ export function parseHistoryFilters(
     if (raw.length > MAX_QUERY_LENGTH) {
       throw new HistoryFilterError(`Search text must be at most ${MAX_QUERY_LENGTH} characters.`);
     }
+    if (searchTerms(raw).length === 0) {
+      throw new HistoryFilterError(
+        `Search text needs at least one word of ${MIN_SEARCH_TERM_LENGTH} or more letters or digits.`,
+      );
+    }
     return raw;
   }, (value) => (filters.q = value));
   read(KEYS.category, parseCategory, (value) => (filters.category = value));
@@ -232,13 +237,28 @@ export function parseTripIdFilter(raw: string | null): string | null {
 
 // ─── Derived values ───────────────────────────────────────────────────────────
 
-/** Lowercased search terms; every term must match somewhere in the expense. */
+/** Shortest and longest term that is searched; shorter terms are ignored (#450). */
+export const MIN_SEARCH_TERM_LENGTH = 2;
+export const MAX_SEARCH_TERM_LENGTH = 64;
+
+/**
+ * Lowercase, and collapse runs of non-alphanumerics to one space. Mirrors
+ * public.expense_search_normalize() (migration 0028).
+ */
+export function normalizeSearchText(text: string): string {
+  return text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+}
+
+/**
+ * Normalized search terms; every term must match somewhere in the expense.
+ * Same minimum-query rules as public.expense_search_query(): terms outside
+ * 2–64 characters are dropped and at most 8 are kept. One-letter or
+ * punctuation-only input yields no terms and cannot force a scan.
+ */
 export function searchTerms(q: string): string[] {
-  return q
-    .trim()
-    .toLowerCase()
-    .split(/\s+/)
-    .filter(Boolean)
+  return normalizeSearchText(q)
+    .split(" ")
+    .filter((term) => term.length >= MIN_SEARCH_TERM_LENGTH && term.length <= MAX_SEARCH_TERM_LENGTH)
     .slice(0, MAX_SEARCH_TERMS);
 }
 
@@ -347,6 +367,8 @@ export interface HistoryCursor {
   createdAt: string;
   /** Tie-breaker for rows sharing a timestamp; null for a legacy timestamp-only cursor. */
   id: string | null;
+  /** Relevance rank of the last row, for ranked text search pages (#450). */
+  rank?: number;
 }
 
 /**
@@ -355,16 +377,33 @@ export interface HistoryCursor {
  * `Date#toISOString()` would truncate them and make the next page repeat or
  * skip rows.
  */
-export function encodeHistoryCursor(createdAt: string, id: string): string {
-  return encodeCursor(createdAt, id);
+export function encodeHistoryCursor(createdAt: string, id: string, rank?: number): string {
+  return rank === undefined ? `${createdAt}|${id}` : `${rank}~${createdAt}|${id}`;
 }
 
 /** Accepts opaque cursors and the legacy `created_at|id` / bare-timestamp forms. */
 export function decodeHistoryCursor(raw: string | null): HistoryCursor | null {
-  try {
-    return decodeCursor(raw);
-  } catch (err) {
-    if (err instanceof CursorError) throw new HistoryFilterError(err.message);
-    throw err;
+  if (raw === null || raw.trim() === "") return null;
+  let value = raw.trim();
+  let rank: number | undefined;
+  const ranked = /^(\d{1,15})~/.exec(value);
+  if (ranked) {
+    rank = Number(ranked[1]);
+    value = value.slice(ranked[0].length);
   }
+  const separator = value.lastIndexOf("|");
+  const createdAt = separator === -1 ? value : value.slice(0, separator);
+  const id = separator === -1 ? null : value.slice(separator + 1);
+
+  if (Number.isNaN(new Date(createdAt).getTime()) || (id !== null && !UUID_RE.test(id))) {
+    throw new HistoryFilterError(
+      "Invalid cursor: must be an ISO 8601 date string or a cursor returned by a previous page.",
+    );
+  }
+  if (rank !== undefined && id === null) {
+    throw new HistoryFilterError(
+      "Invalid cursor: must be an ISO 8601 date string or a cursor returned by a previous page.",
+    );
+  }
+  return rank === undefined ? { createdAt, id } : { createdAt, id, rank };
 }

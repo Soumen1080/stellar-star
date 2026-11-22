@@ -416,13 +416,13 @@
     },
     {
       "sequence": 42,
-      "id": "0027_keyset_pagination_indexes",
-      "version": "0027",
-      "filename": "0027_keyset_pagination_indexes.sql",
-      "name": "0027_keyset_pagination_indexes",
-      "checksum": "6d8cc35d3d2499d4",
-      "sha256": "6d8cc35d3d2499d468711bf8346cf45a2ec8d8efe309c6ab2aa15e72996b41cf",
-      "description": "Composite (created_at DESC, id DESC) trips index for opaque keyset cursors"
+      "id": "0028_indexed_expense_search",
+      "version": "0028",
+      "filename": "0028_indexed_expense_search.sql",
+      "name": "0028_indexed_expense_search",
+      "checksum": "9feb416fd866e845",
+      "sha256": "9feb416fd866e845414e822ddf38e84e8f371c040c8e949e9f0e1b5973325b26",
+      "description": "RLS-scoped tsvector search documents, GIN indexes, minimum-query rules, ranked keyset search (search_expense_ids), index-backed search_expenses"
     }
   ]
 }

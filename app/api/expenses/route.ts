@@ -7,6 +7,7 @@ import {
 } from "@/lib/supabase/queries";
 import {
   decodeHistoryCursor,
+  HistoryFilterError,
   parseHistoryFilters,
   parseTimezoneOffset,
   parseTripIdFilter,
@@ -58,6 +59,9 @@ export async function GET(request: NextRequest) {
     const result = await searchExpenseHistory(query, client);
     return NextResponse.json(result);
   } catch (err) {
+    if (err instanceof HistoryFilterError) {
+      return NextResponse.json({ error: err.message }, { status: 400 });
+    }
     const message = err instanceof Error ? err.message : "Failed to load expenses.";
     return NextResponse.json({ error: message }, { status: 500 });
   }

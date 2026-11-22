@@ -54,7 +54,7 @@ import {
 import type { QueryCacheDomain } from "./cacheInvalidation";
 import { normalizeTags } from "@/lib/expense/tags";
 import { normalizeCategory } from "@/lib/expense/categories";
-import { searchTerms, dateRangeBounds, encodeHistoryCursor, type ExpenseHistoryFilters, type HistoryCursor } from "@/lib/expense/historyFilters";
+import { searchTerms, dateRangeBounds, encodeHistoryCursor, HistoryFilterError, type ExpenseHistoryFilters, type HistoryCursor } from "@/lib/expense/historyFilters";
 import { applyInstallment, markInstallmentProof, type NewInstallment } from "@/lib/settlement/installments";
 import { Money } from "@/lib/money";
 import {
@@ -773,6 +773,10 @@ export async function searchExpenseHistory(
   const terms = searchTerms(filters.q);
   const { fromIso, toIso } = dateRangeBounds(filters.from, filters.to, query.tzOffsetMinutes ?? 0);
 
+  if (terms.length > 0) {
+    return searchExpenseHistoryRanked(client, query, terms, limit, fromIso, toIso);
+  }
+
   const { data, error } = await client.rpc("search_expenses", {
     p_trip_id: query.tripId ?? null,
     p_terms: terms.length > 0 ? terms : null,
@@ -810,6 +814,80 @@ export async function searchExpenseHistory(
     pagination: {
       limit,
       nextCursor: hasMore && last ? encodeHistoryCursor(last.createdAt, last.id) : null,
+      hasMore,
+    },
+  };
+}
+
+/**
+ * Ranked full-text history (#450): search_expense_ids() matches through the
+ * RLS-scoped GIN index and orders by relevance, then recency. Rows are then
+ * loaded by primary key, still under RLS. Pages use a (rank, created_at, id)
+ * cursor.
+ */
+async function searchExpenseHistoryRanked(
+  client: StellarStarClient,
+  query: ExpenseHistoryQuery,
+  terms: string[],
+  limit: number,
+  fromIso: string | null,
+  toIso: string | null,
+): Promise<PaginatedResponse<Expense>> {
+  const { filters, cursor } = query;
+  if (cursor && (cursor.rank === undefined || cursor.id === null)) {
+    // A recency cursor cannot position a relevance-ordered result.
+    throw new HistoryFilterError("Invalid cursor: this search was restarted, request the first page again.");
+  }
+
+  const { data, error } = await client.rpc("search_expense_ids", {
+    p_terms: terms,
+    p_trip_id: query.tripId ?? null,
+    p_category: filters.category,
+    p_tags: filters.tags.length > 0 ? filters.tags : null,
+    p_payer: filters.payer,
+    p_status: filters.status === "all" ? null : filters.status,
+    p_asset: filters.asset,
+    p_from: fromIso,
+    p_to: toIso,
+    p_cursor_rank: cursor?.rank ?? null,
+    p_cursor_created_at: cursor?.createdAt ?? null,
+    p_cursor_id: cursor?.id ?? null,
+    p_limit: limit + 1,
+  });
+
+  if (error) {
+    if (error.code === PG_FUNCTION_MISSING) {
+      throw new DatabaseError(
+        "Indexed expense search is not set up yet. Apply migrations/0028_indexed_expense_search.sql (npm run db:migrate).",
+        error.code,
+        error
+      );
+    }
+    throw toDatabaseError(error, "search expenses");
+  }
+
+  const hits = (data ?? []) as Array<{ id: string; created_at: string; search_rank: number }>;
+  const hasMore = hits.length > limit;
+  const pageHits = hasMore ? hits.slice(0, limit) : hits;
+  if (pageHits.length === 0) {
+    return { data: [], pagination: { limit, nextCursor: null, hasMore: false } };
+  }
+
+  const rowsResult = await client
+    .from("expenses")
+    .select(EXPENSE_COLUMNS)
+    .in("id", pageHits.map((h) => h.id));
+  if (rowsResult.error) throw toDatabaseError(rowsResult.error, "search expenses");
+
+  const byId = new Map(((rowsResult.data ?? []) as ExpenseRow[]).map((row) => [row.id, rowToExpense(row)]));
+  const items = pageHits.map((h) => byId.get(h.id)).filter((e): e is Expense => e !== undefined);
+  const last = pageHits[pageHits.length - 1];
+
+  return {
+    data: items,
+    pagination: {
+      limit,
+      nextCursor: hasMore ? encodeHistoryCursor(last.created_at, last.id, Number(last.search_rank)) : null,
       hasMore,
     },
   };

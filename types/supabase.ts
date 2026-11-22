@@ -875,6 +875,18 @@ export type Database = {
         Update: Partial<DeletedAccountRow>;
         Relationships: [];
       };
+      expense_search_documents: {
+        Row: {
+          expense_id: string;
+          member_wallets: string[];
+          created_at: string;
+          search_vector: string;
+          updated_at: string;
+        };
+        Insert: never;
+        Update: never;
+        Relationships: [];
+      };
       reconciliation_worker_runs: {
         Row: ReconciliationWorkerRunRow;
         Insert: Omit<ReconciliationWorkerRunRow, "created_at" | "worker_id" | "dead_lettered" | "lease_lost"> & {
@@ -1169,6 +1181,13 @@ export type Database = {
       resolve_expense_dispute: {
         Args: { p_dispute_id: string; p_action: "upheld" | "dismissed" | "adjusted"; p_reason: string };
         Returns: undefined;
+      };
+      search_expense_ids: {
+        Args: { p_terms: string[]; p_trip_id?: string | null; p_category?: string | null;
+          p_tags?: string[] | null; p_payer?: string | null; p_status?: string | null; p_asset?: string | null;
+          p_from?: string | null; p_to?: string | null; p_cursor_rank?: number | null;
+          p_cursor_created_at?: string | null; p_cursor_id?: string | null; p_limit?: number };
+        Returns: { id: string; created_at: string; search_rank: number }[];
       };
       search_expenses: {
         Args: { p_trip_id: string | null; p_terms: string[] | null; p_category: string | null;

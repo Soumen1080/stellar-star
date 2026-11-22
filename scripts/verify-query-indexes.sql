@@ -55,20 +55,16 @@ SELECT nonce FROM public.auth_challenges
  ORDER BY created_at ASC
  LIMIT 1;
 
--- Keyset cursor pages (#449): the (created_at, id) tuple predicate must be an
--- index range scan on the composite sort-key index, never a sort over a scan.
+-- Indexed expense search (#450): text matches must come from the GIN index on
+-- expense_search_documents, tenant-scoped through the member_wallets GIN index.
 EXPLAIN (COSTS OFF)
-SELECT id FROM public.trips
- WHERE created_at < '2026-10-01T00:00:00Z'
-    OR (created_at = '2026-10-01T00:00:00Z' AND id < '00000000-0000-0000-0000-000000000001'::uuid)
- ORDER BY created_at DESC, id DESC
- LIMIT 101;
+SELECT expense_id FROM public.expense_search_documents
+ WHERE search_vector @@ public.expense_search_query(ARRAY['beach', 'goa'])
+   AND member_wallets @> ARRAY['GQUERYPLAN'];
 
+-- No usable term (minimum-query rules) folds to a NULL tsquery: no rows, no scan.
 EXPLAIN (COSTS OFF)
-SELECT id FROM public.expenses
- WHERE created_at < '2026-10-01T00:00:00Z'
-    OR (created_at = '2026-10-01T00:00:00Z' AND id < '00000000-0000-0000-0000-000000000001'::uuid)
- ORDER BY created_at DESC, id DESC
- LIMIT 101;
+SELECT expense_id FROM public.expense_search_documents
+ WHERE search_vector @@ public.expense_search_query(ARRAY['a', '%']);
 
 ROLLBACK;
