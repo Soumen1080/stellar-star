@@ -46,7 +46,7 @@ export const OPENAPI_SPEC = {
           {
             name: "cursor",
             in: "query",
-            description: "Pagination cursor (timestamp or trip ID)",
+            description: "Opaque keyset cursor: the nextCursor returned by the previous page",
             schema: { type: "string" },
           },
         ],

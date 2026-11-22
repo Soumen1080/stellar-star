@@ -55,4 +55,20 @@ SELECT nonce FROM public.auth_challenges
  ORDER BY created_at ASC
  LIMIT 1;
 
+-- Keyset cursor pages (#449): the (created_at, id) tuple predicate must be an
+-- index range scan on the composite sort-key index, never a sort over a scan.
+EXPLAIN (COSTS OFF)
+SELECT id FROM public.trips
+ WHERE created_at < '2026-10-01T00:00:00Z'
+    OR (created_at = '2026-10-01T00:00:00Z' AND id < '00000000-0000-0000-0000-000000000001'::uuid)
+ ORDER BY created_at DESC, id DESC
+ LIMIT 101;
+
+EXPLAIN (COSTS OFF)
+SELECT id FROM public.expenses
+ WHERE created_at < '2026-10-01T00:00:00Z'
+    OR (created_at = '2026-10-01T00:00:00Z' AND id < '00000000-0000-0000-0000-000000000001'::uuid)
+ ORDER BY created_at DESC, id DESC
+ LIMIT 101;
+
 ROLLBACK;
