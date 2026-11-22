@@ -12,6 +12,7 @@
  * in migrations/0008_expense_categories_tags_search.sql.
  */
 
+import { CursorError, decodeCursor, encodeCursor } from "@/lib/pagination/keyset";
 import type { Expense } from "@/types/expense";
 import { EXPENSE_CATEGORIES, UNCATEGORIZED } from "@/lib/expense/categories";
 import { MAX_TAGS_PER_EXPENSE, normalizeTag } from "@/lib/expense/tags";
@@ -371,14 +372,16 @@ export interface HistoryCursor {
 }
 
 /**
- * `created_at|id`. The timestamp is kept verbatim: Postgres stores
- * microseconds, and round-tripping through `Date#toISOString()` would truncate
- * them to milliseconds and make the next page repeat or skip rows.
+ * Opaque keyset cursor (#449, lib/pagination/keyset.ts). The timestamp is kept
+ * verbatim: Postgres stores microseconds, and round-tripping through
+ * `Date#toISOString()` would truncate them and make the next page repeat or
+ * skip rows.
  */
 export function encodeHistoryCursor(createdAt: string, id: string, rank?: number): string {
   return rank === undefined ? `${createdAt}|${id}` : `${rank}~${createdAt}|${id}`;
 }
 
+/** Accepts opaque cursors and the legacy `created_at|id` / bare-timestamp forms. */
 export function decodeHistoryCursor(raw: string | null): HistoryCursor | null {
   if (raw === null || raw.trim() === "") return null;
   let value = raw.trim();

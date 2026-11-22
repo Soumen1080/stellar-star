@@ -1,8 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { RealtimeChannel, RealtimePostgresChangesPayload } from "@supabase/supabase-js";
 import { isSupabaseConfigured, requireAuthenticatedClient } from "./client";
+import {
+  acquireRealtimeChannel,
+  type RealtimeClientLike,
+  type RealtimePayload,
+} from "./realtimeRegistry";
 import { DatabaseError } from "./queries";
 import { useAccessToken, useSessionWallet } from "./useSession";
 import {
@@ -80,7 +84,6 @@ export function useRealtimeCollection<T>({
 
   // Discards a response that arrives after the wallet or session changed.
   const loadIdRef = useRef(0);
-  const channelRef = useRef<RealtimeChannel | null>(null);
   const cacheDomain: QueryCacheDomain | null =
     table === "trips" || table === "expenses" ? table : null;
 
@@ -205,8 +208,76 @@ export function useRealtimeCollection<T>({
   // Realtime enforces the same RLS policies as a query, so this receives only
   // rows this wallet is allowed to see.
 
+  // Event handlers live in a ref so a new callback identity (an inline
+  // fromRow, a re-created writeCache) never re-subscribes. The channel itself
+  // comes from the shared registry: every consumer of this wallet's table
+  // shares one ref-counted channel, so remounting during navigation cannot
+  // open a second one (#448).
+  const handlersRef = useRef<{
+    onChange: (payload: RealtimePayload) => void;
+    onResync: () => void;
+  }>({ onChange: () => {}, onResync: () => {} });
+
+  handlersRef.current.onResync = () => {
+    void load();
+  };
+  handlersRef.current.onChange = (payload: RealtimePayload) => {
+    if (payload.eventType === "DELETE") {
+      const deletedId = (payload.old as any)?.id;
+      if (!deletedId) return;
+
+      setItems((previous) => {
+        if (!previous.some((existing) => getId(existing) === deletedId)) return previous;
+        const next = previous.filter((existing) => getId(existing) !== deletedId);
+        writeCache(next);
+        return next;
+      });
+      return;
+    }
+
+    const row = payload.new;
+    if (!row || !("id" in row)) return;
+    const item = fromRow(row);
+    const id = getId(item);
+
+    setItems((previous) => {
+      const index = previous.findIndex((existing) => getId(existing) === id);
+      if (index === -1) {
+        const next = [item, ...previous];
+        writeCache(next);
+        return next;
+      }
+
+      const existing = previous[index] as any;
+      const incoming = item as any;
+
+      // 1. Version-based monotonicity check
+      if (typeof existing.version === "number" && typeof incoming.version === "number") {
+        // Stale out-of-order event, self-echo or duplicate version: discard
+        if (incoming.version <= existing.version) {
+          return previous;
+        }
+      } else if (existing.updatedAt && incoming.updatedAt) {
+        // Timestamp-based monotonicity fallback
+        const existingTime = new Date(existing.updatedAt).getTime();
+        const incomingTime = new Date(incoming.updatedAt).getTime();
+        if (!isNaN(existingTime) && !isNaN(incomingTime)) {
+          if (incomingTime <= existingTime) {
+            return previous;
+          }
+        }
+      }
+
+      const next = previous.map((existingItem, i) => (i === index ? item : existingItem));
+      writeCache(next);
+      return next;
+    });
+  };
+
+  const hasToken = Boolean(token);
+
   useEffect(() => {
-    if (!wallet || !token) return;
+    if (!wallet || !hasToken) return;
 
     const client = (() => {
       try {
@@ -217,81 +288,28 @@ export function useRealtimeCollection<T>({
     })();
     if (!client) return;
 
-    const applyUpsert = (payload: RealtimePostgresChangesPayload<any>) => {
-      const row = payload.new;
-      if (!row || !("id" in row)) return;
-      const item = fromRow(row);
-      const id = getId(item);
-
-      setItems((previous) => {
-        const index = previous.findIndex((existing) => getId(existing) === id);
-        if (index === -1) {
-          const next = [item, ...previous];
-          writeCache(next);
-          return next;
-        }
-
-        const existing = previous[index] as any;
-        const incoming = item as any;
-
-        // 1. Version-based monotonicity check
-        if (typeof existing.version === "number" && typeof incoming.version === "number") {
-          // Stale out-of-order event: discard
-          if (incoming.version < existing.version) {
-            return previous;
-          }
-          // Self-echo or duplicate version: avoid unnecessary state churn
-          if (incoming.version === existing.version) {
-            return previous;
-          }
-        } else if (existing.updatedAt && incoming.updatedAt) {
-          // Timestamp-based monotonicity fallback
-          const existingTime = new Date(existing.updatedAt).getTime();
-          const incomingTime = new Date(incoming.updatedAt).getTime();
-          if (!isNaN(existingTime) && !isNaN(incomingTime)) {
-            if (incomingTime <= existingTime) {
-              return previous;
+    let release: () => void;
+    try {
+      release = acquireRealtimeChannel(
+        client as unknown as RealtimeClientLike,
+        { kind: "wallet", wallet },
+        [{ table }],
+        {
+          onChange: (payload) => handlersRef.current.onChange(payload),
+          onResync: () => handlersRef.current.onResync(),
+          onStatus: (status) => {
+            if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+              console.warn(`[StellarStar] Realtime channel for ${table} is ${status}.`);
             }
-          }
-        }
-
-        const next = previous.map((existingItem, i) => (i === index ? item : existingItem));
-        writeCache(next);
-        return next;
-      });
-    };
-
-    const applyDelete = (payload: RealtimePostgresChangesPayload<any>) => {
-      const deletedId = (payload.old as any)?.id;
-      if (!deletedId) return;
-
-      setItems((previous) => {
-        const next = previous.filter((existing) => getId(existing) !== deletedId);
-        writeCache(next);
-        return next;
-      });
-    };
-
-    // The channel name is scoped to the wallet so two wallets open in two tabs
-    // do not share (and stomp on) one subscription.
-    const channel = client
-      .channel(`${table}:${wallet}`)
-      .on("postgres_changes", { event: "INSERT", schema: "public", table }, applyUpsert)
-      .on("postgres_changes", { event: "UPDATE", schema: "public", table }, applyUpsert)
-      .on("postgres_changes", { event: "DELETE", schema: "public", table }, applyDelete)
-      .subscribe((status) => {
-        if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
-          console.warn(`[StellarStar] Realtime channel for ${table} is ${status}.`);
-        }
-      });
-
-    channelRef.current = channel;
-
-    return () => {
-      if (channelRef.current === channel) channelRef.current = null;
-      void client.removeChannel(channel);
-    };
-  }, [table, connectedWallet, wallet, token, fromRow, getId, writeCache]);
+          },
+        },
+      );
+    } catch (err) {
+      console.warn(`[StellarStar] Realtime unavailable for ${table}:`, err);
+      return;
+    }
+    return release;
+  }, [table, wallet, hasToken]);
 
   // Re-reads on tab focus, catching anything missed while the socket was idle.
   useEffect(() => {

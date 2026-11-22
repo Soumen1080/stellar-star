@@ -13,11 +13,16 @@
  *
  * Usage:
  *   node scripts/recovery-drill.mjs
+ *   node scripts/recovery-drill.mjs --evidence-out release/evidence/restore-drill.json
+ *
+ * With --evidence-out the drill also writes a release-readiness evidence
+ * envelope (#447) consumed by requirement BAK-01 of the release scorecard.
  */
 
 import assert from "node:assert";
 import path from "node:path";
 import crypto from "node:crypto";
+import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { encryptPayload, decryptPayload } from "./backup-supabase.mjs";
 
@@ -278,13 +283,41 @@ export async function executeRestoreDrill() {
   console.log(`Result: All acceptance criteria for Issue #308 validated.`);
   console.log("═".repeat(65) + "\n");
 
+  lastDrillResult = { passed: true, rtoMs: durationMs, tamperDetected: tamperCaught };
   return true;
+}
+
+let lastDrillResult = null;
+
+/** Writes the drill outcome as a release-readiness evidence envelope (#447). */
+export function writeDrillEvidence(outPath, result, now = new Date()) {
+  const envelope = {
+    name: "restore-drill",
+    collectedAt: now.toISOString(),
+    source: "scripts/recovery-drill.mjs",
+    ...(process.env.GITHUB_SHA ? { commit: process.env.GITHUB_SHA } : {}),
+    data: result,
+  };
+  fs.mkdirSync(path.dirname(path.resolve(outPath)), { recursive: true });
+  fs.writeFileSync(path.resolve(outPath), JSON.stringify(envelope, null, 2) + "\n");
+  return envelope;
 }
 
 const isDirectRun = process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
 
 if (isDirectRun) {
-  executeRestoreDrill().then((ok) => {
-    process.exit(ok ? 0 : 1);
-  });
+  const evidenceIdx = process.argv.indexOf("--evidence-out");
+  const evidenceOut = evidenceIdx >= 0 ? process.argv[evidenceIdx + 1] : null;
+  executeRestoreDrill()
+    .then((ok) => ok, (err) => {
+      console.error(`${RED}✗ Restore drill failed: ${err?.message ?? err}${RESET}`);
+      return false;
+    })
+    .then((ok) => {
+      if (evidenceOut) {
+        writeDrillEvidence(evidenceOut, ok && lastDrillResult ? lastDrillResult : { passed: false, tamperDetected: false, rtoMs: null });
+        console.log(`Evidence written to ${evidenceOut}.`);
+      }
+      process.exit(ok ? 0 : 1);
+    });
 }

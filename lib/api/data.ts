@@ -1,4 +1,11 @@
 import { isServerSupabaseConfigured, createServiceRoleClient } from "@/lib/supabase/server";
+import {
+  compareKeysetDesc,
+  decodeCursor,
+  isAfterCursor,
+  keysetOrFilter,
+  toKeysetPage,
+} from "@/lib/pagination/keyset";
 import type { Trip } from "@/types/trip";
 import type { Member } from "@/types/expense";
 import type { Expense } from "@/types/expense";
@@ -20,6 +27,8 @@ export async function fetchPermittedTrips(
   cursor?: string | null
 ): Promise<{ trips: Trip[]; hasMore: boolean; nextCursor: string | null }> {
   const normalized = walletAddress.trim().toUpperCase();
+  // Opaque (created_at, id) keyset cursor (#449); throws CursorError on garbage.
+  const keyset = decodeCursor(cursor);
 
   if (isServerSupabaseConfigured()) {
     try {
@@ -30,13 +39,13 @@ export async function fetchPermittedTrips(
           .select("*")
           .contains("member_wallets", [normalized])
           .order("created_at", { ascending: false })
-          .limit(limit + 1);
+          .order("id", { ascending: false });
 
-        if (cursor) {
-          query = query.lt("created_at", cursor);
+        if (keyset) {
+          query = query.or(keysetOrFilter(keyset));
         }
 
-        const { data, error } = await query;
+        const { data, error } = await query.limit(limit + 1);
         if (!error && Array.isArray(data)) {
           const hasMore = data.length > limit;
           const sliced = data.slice(0, limit);
@@ -53,8 +62,8 @@ export async function fetchPermittedTrips(
             createdByWallet: row.created_by_wallet,
           }));
 
-          const nextCursor = hasMore && mapped.length > 0 ? mapped[mapped.length - 1].createdAt : null;
-          return { trips: mapped, hasMore, nextCursor };
+          const page = toKeysetPage(mapped, limit, (t) => t);
+          return { trips: page.data, hasMore, nextCursor: page.pagination.nextCursor };
         }
       }
     } catch {}
@@ -67,17 +76,13 @@ export async function fetchPermittedTrips(
       t.members.some((m) => m.walletAddress?.toUpperCase() === normalized)
   );
 
-  if (cursor) {
-    const cursorTime = new Date(cursor).getTime();
-    filtered = filtered.filter((t) => new Date(t.createdAt).getTime() < cursorTime);
+  if (keyset) {
+    filtered = filtered.filter((t) => isAfterCursor(t, keyset));
   }
 
-  filtered.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-  const hasMore = filtered.length > limit;
-  const sliced = filtered.slice(0, limit);
-  const nextCursor = hasMore && sliced.length > 0 ? sliced[sliced.length - 1].createdAt : null;
-
-  return { trips: sliced, hasMore, nextCursor };
+  filtered.sort(compareKeysetDesc);
+  const page = toKeysetPage(filtered.slice(0, limit + 1), limit, (t) => t);
+  return { trips: page.data, hasMore: page.pagination.hasMore, nextCursor: page.pagination.nextCursor };
 }
 
 export async function fetchTripById(

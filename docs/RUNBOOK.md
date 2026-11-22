@@ -102,6 +102,7 @@ Before submission or mainnet promotion, verify:
 
 - README is up to date
 - `docs/MAINNET_READINESS.md` signed off and Go/No-Go gate evaluated
+- Release readiness scorecard (`npm run release:scorecard`) returns PROMOTE, see `docs/RELEASE_READINESS_SCORECARD.md`
 - `docs/RELEASE_CHECKLIST.md` current
 - `docs/REQUIREMENT_PROOF_MATRIX.md` current
 - `docs/ARCHITECTURE_AND_LIMITATIONS.md` current

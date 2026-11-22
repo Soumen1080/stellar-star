@@ -6,6 +6,17 @@
  * re-derived (and drifting) inside each React context.
  */
 
+import {
+  CursorError,
+  DEFAULT_PAGE_SIZE,
+  MAX_PAGE_SIZE,
+  decodeCursor,
+  keysetOrFilter,
+  parseLimit,
+  toKeysetPage,
+  type KeysetCursor,
+  type KeysetPage,
+} from "@/lib/pagination/keyset";
 import type { PostgrestError } from "@supabase/supabase-js";
 import type { Expense, Member, SplitShare, CorrectionType } from "@/types/expense";
 import type { Trip, TripPermission, TripRole, TripTemplate } from "@/types/trip";
@@ -73,64 +84,43 @@ export interface UserProfile {
 }
 
 // ─── Pagination ───────────────────────────────────────────────────────────────
+//
+// Every large list pages with an opaque (created_at, id) keyset cursor
+// (#449, lib/pagination/keyset.ts). Offset paging is not supported: it
+// re-counts skipped rows and duplicates or skips rows under concurrent inserts.
 
-export const DEFAULT_PAGE_SIZE = 20;
-export const MAX_PAGE_SIZE = 100;
+export { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE };
+
+/**
+ * Upper bound for "load the whole collection" callers (provider bootstrap,
+ * exports). They read in keyset pages of MAX_PAGE_SIZE and stop here instead
+ * of issuing one unbounded query.
+ */
+export const MAX_COLLECTION_ROWS = 1_000;
 
 export interface PaginationParams {
   /** Maximum number of records to return (capped by MAX_PAGE_SIZE, default 20). */
-  limit?: number;
-  /** ISO timestamp cursor for cursor-based pagination (fetches items created before cursor). */
-  cursor?: string | null;
-  /** Offset for offset-based pagination. */
-  offset?: number;
+  limit?: number | string | null;
+  /** Opaque cursor from a previous page's `nextCursor`, or an already-decoded one. */
+  cursor?: string | KeysetCursor | null;
 }
 
-export interface PaginatedResponse<T> {
-  data: T[];
-  pagination: {
-    limit: number;
-    nextCursor: string | null;
-    hasMore: boolean;
-  };
-}
+export type PaginatedResponse<T> = KeysetPage<T>;
 
 export function parsePaginationParams(params: {
   limit?: string | number | null;
-  cursor?: string | null;
+  cursor?: string | KeysetCursor | null;
   offset?: string | number | null;
-}): { limit: number; cursor: string | null; offset?: number } {
-  let limit = DEFAULT_PAGE_SIZE;
-  if (params.limit !== undefined && params.limit !== null && params.limit !== "") {
-    const parsed = typeof params.limit === "number" ? params.limit : Number(params.limit);
-    if (!Number.isInteger(parsed) || parsed < 1) {
-      throw new Error("Invalid limit: must be a positive integer.");
-    }
-    limit = Math.min(parsed, MAX_PAGE_SIZE);
-  }
-
-  let cursor: string | null = null;
-  if (params.cursor) {
-    const trimmed = params.cursor.trim();
-    if (trimmed) {
-      const parsedDate = new Date(trimmed);
-      if (isNaN(parsedDate.getTime())) {
-        throw new Error("Invalid cursor: must be a valid ISO 8601 date string.");
-      }
-      cursor = parsedDate.toISOString();
-    }
-  }
-
-  let offset: number | undefined = undefined;
+}): { limit: number; cursor: KeysetCursor | null } {
   if (params.offset !== undefined && params.offset !== null && params.offset !== "") {
-    const parsedOffset = typeof params.offset === "number" ? params.offset : Number(params.offset);
-    if (!Number.isInteger(parsedOffset) || parsedOffset < 0) {
-      throw new Error("Invalid offset: must be a non-negative integer.");
-    }
-    offset = parsedOffset;
+    throw new CursorError(
+      "Offset pagination is not supported: pass the nextCursor returned by the previous page.",
+    );
   }
-
-  return { limit, cursor, offset };
+  const limit = parseLimit(params.limit);
+  const cursor =
+    params.cursor && typeof params.cursor === "object" ? params.cursor : decodeCursor(params.cursor ?? null);
+  return { limit, cursor };
 }
 
 // ─── Error translation ────────────────────────────────────────────────────────
@@ -664,82 +654,93 @@ export async function updateUserDisplayName(
 
 // ─── Expenses ─────────────────────────────────────────────────────────────────
 
+// ─── Keyset reads (#449) ──────────────────────────────────────────────────────
+
 /**
- * Every expense the session's wallet participates in.
+ * One (created_at DESC, id DESC) keyset page. The tuple predicate and the
+ * matching composite index (idx_trips_created_at_id / idx_expenses_created_at_id)
+ * make every page an index range scan, however deep the reader pages.
+ */
+async function fetchKeysetPage<T extends { createdAt: string; id: string }>(
+  client: StellarStarClient,
+  table: "trips" | "expenses",
+  columns: string,
+  map: (row: any) => T,
+  action: string,
+  limit: number,
+  cursor: KeysetCursor | null,
+): Promise<KeysetPage<T>> {
+  let query = (client.from(table) as any)
+    .select(columns)
+    .order("created_at", { ascending: false })
+    .order("id", { ascending: false });
+  if (cursor) query = query.or(keysetOrFilter(cursor));
+
+  const { data, error } = await query.limit(limit + 1);
+  if (error) throw toDatabaseError(error, action);
+  return toKeysetPage(((data ?? []) as any[]).map(map), limit, (row) => row);
+}
+
+/**
+ * Reads a collection in MAX_PAGE_SIZE keyset pages, stopping at `maxRows`.
+ * Replaces the old unbounded whole-table select.
+ */
+async function fetchKeysetCollection<T extends { createdAt: string; id: string }>(
+  client: StellarStarClient,
+  table: "trips" | "expenses",
+  columns: string,
+  map: (row: any) => T,
+  action: string,
+  options?: PaginationParams,
+): Promise<T[]> {
+  const { limit, cursor } = parsePaginationParams({ limit: options?.limit, cursor: options?.cursor });
+  if (options?.limit !== undefined && options.limit !== null) {
+    return (await fetchKeysetPage(client, table, columns, map, action, limit, cursor)).data;
+  }
+
+  const rows: T[] = [];
+  let next = cursor;
+  while (rows.length < MAX_COLLECTION_ROWS) {
+    const page = await fetchKeysetPage(
+      client, table, columns, map, action,
+      Math.min(MAX_PAGE_SIZE, MAX_COLLECTION_ROWS - rows.length),
+      next,
+    );
+    rows.push(...page.data);
+    if (!page.pagination.hasMore || !page.pagination.nextCursor) break;
+    next = decodeCursor(page.pagination.nextCursor);
+  }
+  return rows;
+}
+
+/**
+ * Expenses the session's wallet participates in, newest first.
  *
  * There is no `.eq()` on the wallet here on purpose: the RLS SELECT policy
  * already restricts rows to `member_wallets @> ARRAY[current_wallet()]`, and
  * duplicating that filter in the client would be a second place to get wrong.
+ *
+ * With `limit` this reads one keyset page; without it, the collection is read
+ * in bounded keyset pages up to MAX_COLLECTION_ROWS.
  */
 export async function fetchExpenses(
   client: StellarStarClient = requireAuthenticatedClient(),
   options?: PaginationParams
 ): Promise<Expense[]> {
-  let query = client
-    .from("expenses")
-    .select(EXPENSE_COLUMNS)
-    .order("created_at", { ascending: false })
-    .order("id", { ascending: false });
-
-  if (options?.cursor) {
-    query = query.lt("created_at", options.cursor);
-  }
-
-  if (options?.offset !== undefined && options.offset > 0) {
-    const limit = options.limit ? Math.min(Math.max(1, options.limit), MAX_PAGE_SIZE) : DEFAULT_PAGE_SIZE;
-    query = query.range(options.offset, options.offset + limit - 1);
-  } else if (options?.limit) {
-    query = query.limit(Math.min(Math.max(1, options.limit), MAX_PAGE_SIZE));
-  }
-
-  const { data, error } = await query;
-  if (error) throw toDatabaseError(error, "load expenses");
-  return (data ?? []).map((row) => rowToExpense(row as ExpenseRow));
+  return fetchKeysetCollection(client, "expenses", EXPENSE_COLUMNS, (row) => rowToExpense(row as ExpenseRow), "load expenses", options);
 }
 
 /**
- * Fetches a paginated page of expenses with stable ordering and cursor tracking.
+ * One keyset page of expenses with an opaque `nextCursor`. Concurrent inserts
+ * never duplicate or skip rows across pages.
  */
 export async function fetchExpensesPaginated(
   params?: PaginationParams,
   client: StellarStarClient = requireAuthenticatedClient(),
-  filters?: { tripId?: string }
+  _filters?: { tripId?: string }
 ): Promise<PaginatedResponse<Expense>> {
-  const { limit, cursor, offset } = parsePaginationParams(params ?? {});
-
-  let query = client
-    .from("expenses")
-    .select(EXPENSE_COLUMNS)
-    .order("created_at", { ascending: false })
-    .order("id", { ascending: false });
-
-  if (cursor) {
-    query = query.lt("created_at", cursor);
-  }
-
-  if (offset !== undefined && offset > 0) {
-    query = query.range(offset, offset + limit);
-  } else {
-    // Read limit + 1 to detect if another page exists without count(*) overhead
-    query = query.limit(limit + 1);
-  }
-
-  const { data, error } = await query;
-  if (error) throw toDatabaseError(error, "load expenses");
-
-  const rows = (data ?? []).map((row) => rowToExpense(row as ExpenseRow));
-  const hasMore = rows.length > limit;
-  const items = hasMore ? rows.slice(0, limit) : rows;
-  const nextCursor = hasMore && items.length > 0 ? items[items.length - 1].createdAt : null;
-
-  return {
-    data: items,
-    pagination: {
-      limit,
-      nextCursor,
-      hasMore,
-    },
-  };
+  const { limit, cursor } = parsePaginationParams(params ?? {});
+  return fetchKeysetPage(client, "expenses", EXPENSE_COLUMNS, (row) => rowToExpense(row as ExpenseRow), "load expenses", limit, cursor);
 }
 
 /** PGRST202 — the RPC is not in the PostgREST schema cache (migration not applied). */
@@ -1520,74 +1521,21 @@ export async function deleteSettlementIntentRow(
 
 // ─── Trips ────────────────────────────────────────────────────────────────────
 
+/** Trips visible to the session's wallet, newest first; see fetchExpenses. */
 export async function fetchTrips(
   client: StellarStarClient = requireAuthenticatedClient(),
   options?: PaginationParams
 ): Promise<Trip[]> {
-  let query = client
-    .from("trips")
-    .select(TRIP_COLUMNS)
-    .order("created_at", { ascending: false })
-    .order("id", { ascending: false });
-
-  if (options?.cursor) {
-    query = query.lt("created_at", options.cursor);
-  }
-
-  if (options?.offset !== undefined && options.offset > 0) {
-    const limit = options.limit ? Math.min(Math.max(1, options.limit), MAX_PAGE_SIZE) : DEFAULT_PAGE_SIZE;
-    query = query.range(options.offset, options.offset + limit - 1);
-  } else if (options?.limit) {
-    query = query.limit(Math.min(Math.max(1, options.limit), MAX_PAGE_SIZE));
-  }
-
-  const { data, error } = await query;
-  if (error) throw toDatabaseError(error, "load trips");
-  return (data ?? []).map((row) => rowToTrip(row as TripRow));
+  return fetchKeysetCollection(client, "trips", TRIP_COLUMNS, (row) => rowToTrip(row as TripRow), "load trips", options);
 }
 
-/**
- * Fetches a paginated page of trips with stable ordering and cursor tracking.
- */
+/** One keyset page of trips with an opaque `nextCursor`. */
 export async function fetchTripsPaginated(
   params?: PaginationParams,
   client: StellarStarClient = requireAuthenticatedClient()
 ): Promise<PaginatedResponse<Trip>> {
-  const { limit, cursor, offset } = parsePaginationParams(params ?? {});
-
-  let query = client
-    .from("trips")
-    .select(TRIP_COLUMNS)
-    .order("created_at", { ascending: false })
-    .order("id", { ascending: false });
-
-  if (cursor) {
-    query = query.lt("created_at", cursor);
-  }
-
-  if (offset !== undefined && offset > 0) {
-    query = query.range(offset, offset + limit);
-  } else {
-    // Read limit + 1 to detect if another page exists without count(*) overhead
-    query = query.limit(limit + 1);
-  }
-
-  const { data, error } = await query;
-  if (error) throw toDatabaseError(error, "load trips");
-
-  const rows = (data ?? []).map((row) => rowToTrip(row as TripRow));
-  const hasMore = rows.length > limit;
-  const items = hasMore ? rows.slice(0, limit) : rows;
-  const nextCursor = hasMore && items.length > 0 ? items[items.length - 1].createdAt : null;
-
-  return {
-    data: items,
-    pagination: {
-      limit,
-      nextCursor,
-      hasMore,
-    },
-  };
+  const { limit, cursor } = parsePaginationParams(params ?? {});
+  return fetchKeysetPage(client, "trips", TRIP_COLUMNS, (row) => rowToTrip(row as TripRow), "load trips", limit, cursor);
 }
 
 export async function insertTrip(
