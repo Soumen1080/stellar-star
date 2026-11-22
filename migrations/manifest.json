@@ -2,7 +2,7 @@
   "$schema": "./manifest.schema.json",
   "formatVersion": "1.0.0",
   "description": "Canonical append-only migration manifest guaranteeing deterministic execution ordering and immutable identities",
-  "totalMigrations": 41,
+  "totalMigrations": 42,
   "migrations": [
     {
       "sequence": 1,
@@ -413,6 +413,16 @@
       "checksum": "b0fa1f8f3712141e",
       "sha256": "b0fa1f8f3712141e6ed3ac133e8f80201df4714efc780e29f51e63b16e0143d8",
       "description": "Leased reconciliation queue: SKIP LOCKED claims, fenced lease tokens, heartbeats, backoff and dead-letter handling"
+    },
+    {
+      "sequence": 42,
+      "id": "0028_indexed_expense_search",
+      "version": "0028",
+      "filename": "0028_indexed_expense_search.sql",
+      "name": "0028_indexed_expense_search",
+      "checksum": "9feb416fd866e845",
+      "sha256": "9feb416fd866e845414e822ddf38e84e8f371c040c8e949e9f0e1b5973325b26",
+      "description": "RLS-scoped tsvector search documents, GIN indexes, minimum-query rules, ranked keyset search (search_expense_ids), index-backed search_expenses"
     }
   ]
 }
