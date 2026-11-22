@@ -428,6 +428,7 @@ describe("Automated On-Chain Reconciliation Worker (#313)", () => {
         recorded: 7,
         escalated: 0,
         failed: 0,
+        deadLetter: 0,
         totalPending: 3,
         pendingAging: { under5m: 1, from5mTo15m: 1, over15m: 1 },
         failureRatePercent: 0,
@@ -446,6 +447,7 @@ describe("Automated On-Chain Reconciliation Worker (#313)", () => {
         recorded: 12,
         escalated: 0,
         failed: 0,
+        deadLetter: 0,
         totalPending: 13, // > 10
         pendingAging: { under5m: 13, from5mTo15m: 0, over15m: 0 },
         failureRatePercent: 0,
@@ -464,6 +466,7 @@ describe("Automated On-Chain Reconciliation Worker (#313)", () => {
         recorded: 8,
         escalated: 2, // Ambiguous payments flagged
         failed: 0,
+        deadLetter: 0,
         totalPending: 0,
         pendingAging: { under5m: 0, from5mTo15m: 0, over15m: 0 },
         failureRatePercent: 0,

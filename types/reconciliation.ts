@@ -11,7 +11,9 @@ export type ReconciliationJobStatus =
   | "confirmed_not_recorded"
   | "recorded"
   | "escalated"
-  | "failed";
+  | "failed"
+  /** Retries or lease recoveries exhausted; parked for an operator (#416). */
+  | "dead_letter";
 
 export interface ReconciliationJob {
   id: string;
@@ -40,6 +42,13 @@ export interface ReconciliationJob {
   recordedAt: string | null;
   createdAt: string;
   updatedAt: string;
+  /** Leased queue (#416). Absent on rows read before migration 0026. */
+  leaseOwner?: string | null;
+  leaseExpiresAt?: string | null;
+  claimCount?: number;
+  leaseRecoveries?: number;
+  deadLetteredAt?: string | null;
+  deadLetterReason?: string | null;
 }
 
 export interface VerificationCheckResult {
@@ -59,7 +68,12 @@ export interface VerificationCheckResult {
 }
 
 export interface ReconciliationAlert {
-  code: "PENDING_AGING_EXCEEDED" | "HIGH_PENDING_QUEUE" | "HIGH_FAILURE_RATE" | "AMBIGUOUS_PAYMENTS_ESCALATED";
+  code:
+    | "PENDING_AGING_EXCEEDED"
+    | "HIGH_PENDING_QUEUE"
+    | "HIGH_FAILURE_RATE"
+    | "AMBIGUOUS_PAYMENTS_ESCALATED"
+    | "DEAD_LETTERED_JOBS";
   level: "info" | "warning" | "critical";
   message: string;
   count: number;
@@ -80,6 +94,8 @@ export interface ReconciliationSummary {
   recorded: number;
   escalated: number;
   failed: number;
+  /** Jobs parked in the dead-letter state (#416). */
+  deadLetter: number;
   totalPending: number;
   pendingAging: ReconciliationAgingReport;
   failureRatePercent: number;
@@ -93,6 +109,7 @@ export interface ReconciliationReport {
     maxPendingQueue: number;
     maxFailureRatePercent: number;
     escalationThreshold: number;
+    deadLetterThreshold?: number;
   };
   jobs: ReconciliationJob[];
   totalFiltered: number;
@@ -106,4 +123,15 @@ export interface ReconciliationWorkerRunResult {
   failed: number;
   durationMs: number;
   errors: Array<{ jobId: string; error: string }>;
+  // Leased queue (#416). Optional so older worker stubs stay valid.
+  /** Jobs this batch leased; fewer than the batch size means the queue is drained. */
+  claimed?: number;
+  /** Jobs moved to dead_letter in this batch. */
+  deadLettered?: number;
+  /** Jobs whose lease passed to another worker mid-processing; their writes were discarded. */
+  leaseLost?: number;
+  /** Claimed jobs handed back unprocessed because the run's deadline arrived. */
+  released?: number;
+  /** Lease owner this batch claimed as. */
+  workerId?: string;
 }
