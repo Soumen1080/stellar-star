@@ -12,6 +12,7 @@
  * in migrations/0008_expense_categories_tags_search.sql.
  */
 
+import { CursorError, decodeCursor, encodeCursor } from "@/lib/pagination/keyset";
 import type { Expense } from "@/types/expense";
 import { EXPENSE_CATEGORIES, UNCATEGORIZED } from "@/lib/expense/categories";
 import { MAX_TAGS_PER_EXPENSE, normalizeTag } from "@/lib/expense/tags";
@@ -349,25 +350,21 @@ export interface HistoryCursor {
 }
 
 /**
- * `created_at|id`. The timestamp is kept verbatim: Postgres stores
- * microseconds, and round-tripping through `Date#toISOString()` would truncate
- * them to milliseconds and make the next page repeat or skip rows.
+ * Opaque keyset cursor (#449, lib/pagination/keyset.ts). The timestamp is kept
+ * verbatim: Postgres stores microseconds, and round-tripping through
+ * `Date#toISOString()` would truncate them and make the next page repeat or
+ * skip rows.
  */
 export function encodeHistoryCursor(createdAt: string, id: string): string {
-  return `${createdAt}|${id}`;
+  return encodeCursor(createdAt, id);
 }
 
+/** Accepts opaque cursors and the legacy `created_at|id` / bare-timestamp forms. */
 export function decodeHistoryCursor(raw: string | null): HistoryCursor | null {
-  if (raw === null || raw.trim() === "") return null;
-  const value = raw.trim();
-  const separator = value.lastIndexOf("|");
-  const createdAt = separator === -1 ? value : value.slice(0, separator);
-  const id = separator === -1 ? null : value.slice(separator + 1);
-
-  if (Number.isNaN(new Date(createdAt).getTime()) || (id !== null && !UUID_RE.test(id))) {
-    throw new HistoryFilterError(
-      "Invalid cursor: must be an ISO 8601 date string or a cursor returned by a previous page.",
-    );
+  try {
+    return decodeCursor(raw);
+  } catch (err) {
+    if (err instanceof CursorError) throw new HistoryFilterError(err.message);
+    throw err;
   }
-  return { createdAt, id };
 }

@@ -7,6 +7,7 @@ import {
 import { runIdempotentMutation } from "@/lib/idempotency/route";
 import { TRIP_REPLAY_FIELDS, replayFieldsUnder } from "@/lib/idempotency/replay";
 import { fetchPermittedTrips, insertTrip } from "@/lib/api/data";
+import { CursorError, parseLimit } from "@/lib/pagination/keyset";
 import { dispatchWebhookEvent } from "@/lib/api/webhooks";
 import type { Trip } from "@/types/trip";
 import { parseJsonBody, limitedJson, responseLimitFor } from "@/lib/api/bodyLimits";
@@ -30,14 +31,20 @@ export async function GET(request: NextRequest) {
 
   const { tokenPayload, ip, userAgent } = auth.context;
   const url = new URL(request.url);
-  const limit = Math.min(Math.max(parseInt(url.searchParams.get("limit") || "20", 10), 1), 100);
   const cursor = url.searchParams.get("cursor");
-
-  const { trips, hasMore, nextCursor } = await fetchPermittedTrips(
-    tokenPayload.walletAddress,
-    limit,
-    cursor
-  );
+  let limit: number;
+  let page: Awaited<ReturnType<typeof fetchPermittedTrips>>;
+  try {
+    // Finite limit and opaque keyset cursor (#449).
+    limit = parseLimit(url.searchParams.get("limit"));
+    page = await fetchPermittedTrips(tokenPayload.walletAddress, limit, cursor);
+  } catch (err) {
+    if (err instanceof CursorError) {
+      return respond({ error: { code: "INVALID_PAGINATION", message: err.message, status: 400 } }, { status: 400 });
+    }
+    throw err;
+  }
+  const { trips, hasMore, nextCursor } = page;
 
   recordAuditLog({
     timestamp: new Date().toISOString(),

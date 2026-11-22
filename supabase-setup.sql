@@ -7799,3 +7799,17 @@ NOTIFY pgrst, 'reload schema';
 INSERT INTO public.schema_migrations (version, name, checksum)
 VALUES ('0026', '0026_reconciliation_leased_queue', 'reconciliation_leased_queue_416_v1')
 ON CONFLICT (version) DO NOTHING;
+
+
+-- ============================================================================
+-- Cumulative Addition from 0027_keyset_pagination_indexes.sql (#449)
+-- ============================================================================
+-- Composite (created_at DESC, id DESC) index backing opaque keyset cursors on
+-- trips; expenses already has idx_expenses_created_at_id.
+
+CREATE INDEX IF NOT EXISTS idx_trips_created_at_id
+  ON public.trips (created_at DESC, id DESC);
+
+INSERT INTO public.schema_migrations (version, name, checksum)
+VALUES ('0027', '0027_keyset_pagination_indexes', 'keyset_pagination_indexes_449_v1')
+ON CONFLICT (version) DO NOTHING;
