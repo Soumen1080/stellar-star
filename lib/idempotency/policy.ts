@@ -127,7 +127,7 @@ export const IDEMPOTENCY_EXEMPT_ROUTES: Record<string, ExemptRoute> = {
     methods: ["POST"],
     kind: "scheduled-job",
     reason:
-      "Cron secret or explicit staff credentials only (#415); runs are bounded and recorded, and every intent it touches is keyed by the derived settlement idempotency key.",
+      "Cron secret or explicit staff credentials only (#415); runs are bounded and recorded, and every intent it touches is keyed by the derived settlement idempotency key. Jobs are leased (#416), so overlapping runs never process one job; enqueue dedupes per intent and requeue only moves a job out of dead_letter.",
   },
   "/api/developer/reconciliation": {
     methods: ["POST"],

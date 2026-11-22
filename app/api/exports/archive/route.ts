@@ -11,6 +11,11 @@
  *    RLS returns only trips and expenses that wallet can already see. A
  *    requested trip id outside that set is refused (403) — never silently
  *    dropped, never revealed.
+ *  - **Batched authorization (#417).** `exports.view` is resolved for every
+ *    trip in one query (`trips_with_permission`), so authorization costs one
+ *    round trip whether the archive holds 1 trip or 1,000. Any trip that is
+ *    missing, foreign or lacks the permission gets the same 403, so the
+ *    response never reveals which ids exist.
  *  - **Rate-limited** per wallet and per IP; exports are expensive.
  *  - **Audited.** Every request appends to `export_audit_events` (migration
  *    0011) with the caller's own session *before* data is returned. If the
@@ -26,7 +31,7 @@ import { ResponseTooLargeError, parseJsonBody, responseLimitFor, serializeBounde
 import { getOrCreateRequestId, REQUEST_ID_HEADER } from "@/lib/observability/requestId";
 import { verifyWalletSession } from "@/lib/supabase/serverAuth";
 import { createServerClientForToken, isServerSupabaseConfigured } from "@/lib/supabase/server";
-import { fetchExpenses, fetchTrips, hasTripPermission } from "@/lib/supabase/queries";
+import { fetchExpenses, fetchTripIdsWithPermission, fetchTrips } from "@/lib/supabase/queries";
 import type { StellarStarClient } from "@/lib/supabase/client";
 import type { ExportAuditEventRow } from "@/types/supabase";
 import { STELLAR_EXPLORER, STELLAR_NETWORK } from "@/lib/utils/constants";
@@ -37,7 +42,7 @@ export const dynamic = "force-dynamic";
 const ARCHIVE_LIMIT_PER_WALLET = 5;
 const ARCHIVE_LIMIT_PER_IP = 20;
 const ARCHIVE_WINDOW_MS = 60 * 60 * 1000;
-const MAX_REQUESTED_TRIPS = 100;
+const MAX_REQUESTED_TRIPS = 1000;
 
 type AuditRecord = Pick<ExportAuditEventRow, "status"> &
   Partial<Pick<ExportAuditEventRow, "trip_ids" | "trip_count" | "expense_count" | "byte_size" | "content_sha256">>;
@@ -136,15 +141,17 @@ export async function POST(request: NextRequest) {
       const visibleIds = new Set(visibleTrips.map((t) => t.id));
       if (requested.some((id) => !visibleIds.has(id))) {
         await audit(client, wallet, requestId, ip, { status: "forbidden", trip_ids: requested });
-        return json({ error: "One or more requested trips are not available to you." }, 403, requestId);
+        return json({ error: "You do not have permission to export one or more trips." }, 403, requestId);
       }
       trips = visibleTrips.filter((t) => requested.includes(t.id));
     }
 
-    const exportPermissions = await Promise.all(
-      trips.map((trip) => hasTripPermission(trip.id, "exports.view", client)),
+    const exportable = await fetchTripIdsWithPermission(
+      trips.map((trip) => trip.id),
+      "exports.view",
+      client,
     );
-    if (exportPermissions.some((allowed) => !allowed)) {
+    if (trips.some((trip) => !exportable.has(trip.id))) {
       await audit(client, wallet, requestId, ip, {
         status: "forbidden",
         trip_ids: trips.map((trip) => trip.id),

@@ -13,10 +13,17 @@
  *
  * Per-job error messages are returned to the trusted caller but never
  * persisted; the record keeps only the IDs of jobs that errored.
+ *
+ * Leased queue (#416): every batch of a run claims under one worker ID, and
+ * the run's time budget is passed down as a deadline, so a batch stops
+ * starting jobs once it is reached and releases the claims it has not begun.
+ * If the platform kills the invocation anyway, the leases it held expire and
+ * the next run recovers those jobs. Nothing is lost and nothing is done twice.
  */
 
 import type { ServerClient } from "@/lib/supabase/server";
 import { runReconciliationWorker } from "./reconciliationWorker";
+import { newReconciliationWorkerId } from "./reconciliationQueue";
 import type { ReconciliationActor } from "./reconciliationAuth";
 import type { ReconciliationWorkerRunResult } from "@/types/reconciliation";
 
@@ -49,6 +56,13 @@ export interface ReconciliationRunRecord {
   failed: number;
   errorCount: number;
   erroredJobIds: string[];
+  // Leased queue (#416). Optional: records made before it lack them.
+  /** Lease owner the run's claims were made under. */
+  workerId?: string;
+  /** Jobs moved to dead_letter during the run. */
+  deadLettered?: number;
+  /** Jobs another worker took over mid-processing; their writes were discarded. */
+  leaseLost?: number;
   /** Stable code only; the underlying cause goes to redacted telemetry. */
   failureCode: string | null;
 }
@@ -97,23 +111,37 @@ export async function executeReconciliationRun(options: ExecuteRunOptions): Prom
   const walletFilter = options.walletAddress?.trim() || null;
 
   const started = clock();
+  const workerId = newReconciliationWorkerId();
   const totals = { processed: 0, recorded: 0, escalated: 0, pending: 0, failed: 0 };
+  let deadLettered = 0;
+  let leaseLost = 0;
   const errors: ReconciliationWorkerRunResult["errors"] = [];
   let batches = 0;
   let failureCode: string | null = null;
 
   try {
     while (batches < maxBatches) {
-      const result = await worker({ batchSize, walletAddress: walletFilter ?? undefined }, options.client as never);
+      const result = await worker(
+        {
+          batchSize,
+          walletAddress: walletFilter ?? undefined,
+          workerId,
+          deadline: started + budget,
+          clock,
+        },
+        options.client as never,
+      );
       batches += 1;
       totals.processed += result.processed;
       totals.recorded += result.recorded;
       totals.escalated += result.escalated;
       totals.pending += result.pending;
       totals.failed += result.failed;
+      deadLettered += result.deadLettered ?? 0;
+      leaseLost += result.leaseLost ?? 0;
       errors.push(...result.errors);
-      // A short batch means the due queue is drained.
-      if (result.processed < batchSize) break;
+      // A short claim means no more jobs are due right now.
+      if ((result.claimed ?? result.processed) < batchSize) break;
       if (clock() - started >= budget) break;
     }
   } catch (err) {
@@ -145,6 +173,9 @@ export async function executeReconciliationRun(options: ExecuteRunOptions): Prom
     errorCount: errors.length,
     erroredJobIds: errors.slice(0, MAX_ERRORED_JOB_IDS).map((e) => e.jobId),
     failureCode,
+    workerId,
+    deadLettered,
+    leaseLost,
   };
 
   await recordReconciliationRun(record, options.client);
@@ -181,6 +212,9 @@ export async function recordReconciliationRun(record: ReconciliationRunRecord, c
       error_count: record.errorCount,
       errored_job_ids: record.erroredJobIds,
       failure_code: record.failureCode,
+      worker_id: record.workerId ?? null,
+      dead_lettered: record.deadLettered ?? 0,
+      lease_lost: record.leaseLost ?? 0,
     });
     if (error) {
       console.warn(`[reconciliation:run] ${JSON.stringify({ requestId: record.requestId, event: "record-insert-failed" })}`);

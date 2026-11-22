@@ -1708,6 +1708,40 @@ export async function hasTripPermission(
   return result.data === true;
 }
 
+/** Upper bound on ids per batched permission check (matches the SQL cap). */
+export const MAX_BATCH_PERMISSION_TRIPS = 1000;
+
+/**
+ * Resolves `permission` for many trips in one query (#417).
+ *
+ * Returns the subset of `tripIds` the caller holds `permission` on. An id
+ * that does not exist, belongs to a trip the caller is not in, or lacks the
+ * permission is simply absent, so the result never reveals which ids exist.
+ * One database round trip regardless of how many ids are passed.
+ */
+export async function fetchTripIdsWithPermission(
+  tripIds: readonly string[],
+  permission: TripPermission,
+  client: StellarStarClient = requireAuthenticatedClient(),
+): Promise<Set<string>> {
+  const unique = [...new Set(tripIds)];
+  if (unique.length === 0) return new Set();
+  if (unique.length > MAX_BATCH_PERMISSION_TRIPS) {
+    throw new DatabaseError(`At most ${MAX_BATCH_PERMISSION_TRIPS} trips can be checked at once.`);
+  }
+  const result = await client.rpc("trips_with_permission", {
+    p_trip_ids: unique,
+    p_permission: permission,
+  });
+  if (result.error) throw toDatabaseError(result.error, "check trip permissions");
+  const rows = Array.isArray(result.data) ? (result.data as unknown[]) : [];
+  return new Set(
+    rows
+      .map((row) => (typeof row === "string" ? row : (row as { trips_with_permission?: string })?.trips_with_permission))
+      .filter((id): id is string => typeof id === "string"),
+  );
+}
+
 export async function hasExpensePermission(
   expenseId: string,
   permission: TripPermission,
