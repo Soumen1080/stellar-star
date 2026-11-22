@@ -16,6 +16,7 @@ import {
 import { consumeChallenge, AuthStoreError } from "@/lib/auth/challengeStore";
 import { checkRateLimit, getClientIp, rateLimiterUnavailableResponse } from "@/lib/auth/rateLimiter";
 import type { UserUpdate } from "@/types/supabase";
+import { parseJsonBody } from "@/lib/api/bodyLimits";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -122,7 +123,9 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const body = await request.json();
+    const parsedBody = await parseJsonBody<any>(request, { route: "/api/auth/verify" });
+    if (!parsedBody.ok) return parsedBody.response;
+    const body = parsedBody.value;
     const { address, signedXdr, nonce, expiration, signature, displayName } = body ?? {};
 
     if (

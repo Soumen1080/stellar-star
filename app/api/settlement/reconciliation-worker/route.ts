@@ -11,7 +11,7 @@
  * The scheduled run is GET /api/settlement/reconciliation-worker/cron.
  */
 
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
 import { getReconciliationReport, type ReportFilter } from "@/lib/settlement/reconciliationWorker";
 import { authorizeReconciliationRun, resolveReconciliationActor } from "@/lib/settlement/reconciliationAuth";
 import {
@@ -27,6 +27,11 @@ import {
 import { createServerClientForToken, createServiceRoleClient } from "@/lib/supabase/server";
 import { getOrCreateRequestId, REQUEST_ID_HEADER } from "@/lib/observability/requestId";
 import type { ReconciliationJobStatus } from "@/types/reconciliation";
+import { parseJsonBody, limitedJson, responseLimitFor } from "@/lib/api/bodyLimits";
+
+/** Every JSON response here is size-capped (#418). */
+const respond = (body: unknown, init?: ResponseInit) =>
+  limitedJson(body, init, responseLimitFor("/api/settlement/reconciliation-worker"));
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -63,7 +68,7 @@ export async function GET(request: NextRequest) {
     }
 
     const report = await getReconciliationReport(filter, client);
-    return NextResponse.json(
+    return respond(
       {
         ok: true,
         requestId,
@@ -76,7 +81,7 @@ export async function GET(request: NextRequest) {
     console.error(
       `[reconciliation:report] ${JSON.stringify({ requestId, message: err instanceof Error ? err.message : String(err) })}`,
     );
-    return NextResponse.json(
+    return respond(
       { ok: false, error: "Failed to load the reconciliation report.", code: "RECONCILIATION_REPORT_FAILED", requestId },
       { status: 500, headers: responseHeaders(requestId) },
     );
@@ -89,11 +94,9 @@ export async function POST(request: NextRequest) {
   if (!auth.ok) return refusal(auth, requestId);
 
   let body: { batchSize?: unknown; walletAddress?: unknown } = {};
-  try {
-    body = (await request.json()) as typeof body;
-  } catch {
-    // An empty body runs a default-sized pass.
-  }
+  const parsedBody = await parseJsonBody(request, { route: "/api/settlement/reconciliation-worker", requestId, allowEmpty: true });
+  if (!parsedBody.ok) return parsedBody.response;
+  body = (parsedBody.value ?? {}) as typeof body;
 
   const client = createServiceRoleClient();
   if (!client) return serviceUnavailable(requestId);
@@ -107,7 +110,7 @@ export async function POST(request: NextRequest) {
     walletAddress: typeof body.walletAddress === "string" ? body.walletAddress : null,
   });
 
-  return NextResponse.json(
+  return respond(
     {
       ok: record.outcome === "succeeded",
       requestId,

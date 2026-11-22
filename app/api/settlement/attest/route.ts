@@ -44,6 +44,7 @@ import {
 } from "@/lib/observability/requestId";
 import { createServerClientForToken, isServerSupabaseConfigured } from "@/lib/supabase/server";
 import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
+import { parseJsonBody } from "@/lib/api/bodyLimits";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -106,11 +107,9 @@ export async function POST(request: NextRequest) {
   const requestId = getOrCreateRequestId(request.headers.get(REQUEST_ID_HEADER));
 
   let body: AttestRequestBody;
-  try {
-    body = (await request.json()) as AttestRequestBody;
-  } catch {
-    return jsonError("Request body must be JSON.", 400, requestId);
-  }
+  const parsedBody = await parseJsonBody(request, { route: "/api/settlement/attest", requestId });
+  if (!parsedBody.ok) return parsedBody.response;
+  body = (parsedBody.value) as typeof body;
 
   const { tripId, expenseId, payer, member, amountStroops, txHash } = body;
 

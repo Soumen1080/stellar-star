@@ -44,6 +44,7 @@ import {
 import { releaseInvite } from "@/lib/onboarding/abuseResistance";
 import { createServerClientForToken, isServerSupabaseConfigured } from "@/lib/supabase/server";
 import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
+import { parseJsonBody } from "@/lib/api/bodyLimits";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -93,11 +94,9 @@ export async function POST(request: NextRequest) {
   }
 
   let body: { account?: unknown; assetKey?: unknown; operatorSecret?: unknown };
-  try {
-    body = (await request.json()) as typeof body;
-  } catch {
-    return jsonError("Request body must be JSON.", 400);
-  }
+  const parsedBody = await parseJsonBody(request, { route: "/api/onboarding/revoke" });
+  if (!parsedBody.ok) return parsedBody.response;
+  body = (parsedBody.value) as typeof body;
 
   const { account, assetKey, operatorSecret } = body;
 

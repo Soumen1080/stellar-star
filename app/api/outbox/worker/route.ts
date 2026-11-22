@@ -14,6 +14,7 @@ import { runOutboxWorkerBatch } from "@/lib/outbox/worker";
 import { listOutboxEvents } from "@/lib/outbox/repository";
 import { createServerClientForToken, createServiceRoleClient } from "@/lib/supabase/server";
 import { getOrCreateRequestId, REQUEST_ID_HEADER } from "@/lib/observability/requestId";
+import { parseJsonBody } from "@/lib/api/bodyLimits";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -88,11 +89,9 @@ export async function POST(request: NextRequest) {
   }
 
   let body: { batchSize?: number; leaseDurationSeconds?: number; workerId?: string } = {};
-  try {
-    body = await request.json();
-  } catch {
-    // Empty body is valid
-  }
+  const parsedBody = await parseJsonBody(request, { route: "/api/outbox/worker", requestId, allowEmpty: true });
+  if (!parsedBody.ok) return parsedBody.response;
+  body = (parsedBody.value ?? {}) as typeof body;
 
   try {
     const authHeader = request.headers.get("authorization") ?? "";

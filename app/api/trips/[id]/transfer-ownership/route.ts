@@ -4,6 +4,7 @@ import { createServerClientForToken } from "@/lib/supabase/server";
 import { transferTripOwnership } from "@/lib/supabase/queries";
 import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
 import { TRIP_REPLAY_FIELDS } from "@/lib/idempotency/replay";
+import { parseJsonBody } from "@/lib/api/bodyLimits";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -23,11 +24,9 @@ export async function POST(
   if (!idempotency.ok) return idempotency.response;
 
   let body: { memberId?: unknown };
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "Request body must be valid JSON." }, { status: 400 });
-  }
+  const parsedBody = await parseJsonBody(request, { route: "/api/trips/[id]/transfer-ownership" });
+  if (!parsedBody.ok) return parsedBody.response;
+  body = (parsedBody.value) as typeof body;
   if (!body || typeof body.memberId !== "string" || !body.memberId.trim()) {
     return NextResponse.json({ error: "A new owner memberId is required." }, { status: 400 });
   }

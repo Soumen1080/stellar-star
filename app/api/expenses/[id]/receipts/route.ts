@@ -3,6 +3,7 @@ import type { NextRequest } from "next/server";
 import { hasExpensePermission } from "@/lib/supabase/queries";
 import { inspectReceiptUpload } from "@/lib/receipts/inspect";
 import { receiptMaxBytes } from "@/lib/receipts/policy";
+import { RequestBodyError, readLimitedFormData } from "@/lib/api/bodyLimits";
 import { listReceipts, loadExpenseAccess, storeReceipt } from "@/lib/receipts/store";
 import {
   errorResponse,
@@ -74,10 +75,18 @@ export async function POST(request: NextRequest, context: Context) {
       return receiptError("You do not have permission to attach a receipt to this expense.", 403);
     }
 
+    // Counted as it streams, so a lying or absent Content-Length cannot make
+    // formData() buffer an unbounded body (#418).
     let form: FormData;
     try {
-      form = await request.formData();
-    } catch {
+      form = await readLimitedFormData(request, maxBytes + MULTIPART_OVERHEAD_BYTES);
+    } catch (err) {
+      if (err instanceof RequestBodyError && err.status === 413) {
+        return receiptError("Receipts must be smaller than the upload limit.", 413);
+      }
+      if (err instanceof RequestBodyError && err.status === 415) {
+        return receiptError("Send the receipt as multipart/form-data.", 415);
+      }
       return receiptError("Send the receipt as multipart/form-data.", 400);
     }
     const file = form.get("file");

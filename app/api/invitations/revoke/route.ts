@@ -3,6 +3,7 @@ import { verifyWalletSession } from "@/lib/supabase/serverAuth";
 import { createServerClientForToken } from "@/lib/supabase/server";
 import { revokeTripInvite } from "@/lib/invitations/claim";
 import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
+import { parseJsonBody } from "@/lib/api/bodyLimits";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -27,11 +28,9 @@ export async function POST(request: NextRequest) {
     inviteId?: string;
   };
 
-  try {
-    body = (await request.json()) as typeof body;
-  } catch {
-    return NextResponse.json({ error: "Request body must be valid JSON." }, { status: 400 });
-  }
+  const parsedBody = await parseJsonBody(request, { route: "/api/invitations/revoke" });
+  if (!parsedBody.ok) return parsedBody.response;
+  body = (parsedBody.value) as typeof body;
 
   if (!body.inviteId || typeof body.inviteId !== "string") {
     return NextResponse.json({ error: "inviteId is required." }, { status: 400 });

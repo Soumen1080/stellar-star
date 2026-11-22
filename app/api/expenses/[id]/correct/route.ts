@@ -10,6 +10,7 @@ import {
 } from "@/lib/expense/corrections";
 import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
 import { EXPENSE_REPLAY_FIELDS, replayFieldsUnder } from "@/lib/idempotency/replay";
+import { parseJsonBody } from "@/lib/api/bodyLimits";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -35,11 +36,9 @@ export async function POST(
   if (!idempotency.ok) return idempotency.response;
 
   let body: any;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "Request body must be valid JSON." }, { status: 400 });
-  }
+  const parsedBody = await parseJsonBody(request, { route: "/api/expenses/[id]/correct" });
+  if (!parsedBody.ok) return parsedBody.response;
+  body = (parsedBody.value) as typeof body;
 
   const { correctionType, reason, adjustedTotalAmount, title, newSplitMode, customWeights, tripId } = body ?? {};
 

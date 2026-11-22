@@ -11,6 +11,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { stellarResilience } from "@/lib/stellar/resilience";
 import { getOrCreateRequestId, REQUEST_ID_HEADER } from "@/lib/observability/requestId";
+import { parseJsonBody } from "@/lib/api/bodyLimits";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -58,11 +59,9 @@ export async function POST(request: NextRequest) {
 
   try {
     let body: { action?: string; dependencyClass?: string } = {};
-    try {
-      body = await request.json();
-    } catch {
-      // Empty body
-    }
+    const parsedBody = await parseJsonBody(request, { route: "/api/developer/stellar-resilience", requestId, allowEmpty: true });
+    if (!parsedBody.ok) return parsedBody.response;
+    body = (parsedBody.value ?? {}) as typeof body;
 
     if (body.action === "reset") {
       stellarResilience.resetAll();

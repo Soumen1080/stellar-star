@@ -7,9 +7,14 @@
  * customer support lookups and data access events.
  */
 
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
 import { checkStaffAuthorization, fetchSupportAuditLogs } from "@/lib/support/service";
 import { createServiceRoleClient, createServerAnonClient, isServerSupabaseConfigured } from "@/lib/supabase/server";
+import { limitedJson, responseLimitFor } from "@/lib/api/bodyLimits";
+
+/** Every JSON response here is size-capped (#418). */
+const respond = (body: unknown, init?: ResponseInit) =>
+  limitedJson(body, init, responseLimitFor("/api/support/audit-logs"));
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -26,7 +31,7 @@ function getClient() {
 export async function GET(request: NextRequest) {
   const auth = checkStaffAuthorization(request);
   if (!auth.authorized) {
-    return NextResponse.json(
+    return respond(
       { error: "Unauthorized: Access restricted to authorized support staff.", code: "STAFF_AUTH_REQUIRED" },
       { status: 403 }
     );
@@ -38,7 +43,7 @@ export async function GET(request: NextRequest) {
   const client = getClient();
   const logs = await fetchSupportAuditLogs(limit, client as any);
 
-  return NextResponse.json(
+  return respond(
     { ok: true, data: logs },
     { headers: { "Cache-Control": "no-store" } }
   );
