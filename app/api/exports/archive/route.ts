@@ -29,12 +29,12 @@ import { checkRateLimit, getClientIp, rateLimiterUnavailableResponse } from "@/l
 import { buildArchive, exportFileStem } from "@/lib/export/tripExport";
 import { ResponseTooLargeError, parseJsonBody, responseLimitFor, serializeBounded } from "@/lib/api/bodyLimits";
 import { getOrCreateRequestId, REQUEST_ID_HEADER } from "@/lib/observability/requestId";
-import { verifyWalletSession } from "@/lib/supabase/serverAuth";
-import { createServerClientForToken, isServerSupabaseConfigured } from "@/lib/supabase/server";
-import { fetchExpenses, fetchTripIdsWithPermission, fetchTrips } from "@/lib/supabase/queries";
+import { isServerSupabaseConfigured } from "@/lib/supabase/server";
+import { fetchExpenses, fetchTrips, hasTripPermission } from "@/lib/supabase/queries";
 import type { StellarStarClient } from "@/lib/supabase/client";
 import type { ExportAuditEventRow } from "@/types/supabase";
 import { STELLAR_EXPLORER, STELLAR_NETWORK } from "@/lib/utils/constants";
+import { authenticateWalletRequest } from "@/lib/api/routeGuard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -93,12 +93,9 @@ function parseTripIds(body: unknown): string[] | null | "invalid" {
 
 export async function POST(request: NextRequest) {
   const requestId = getOrCreateRequestId(request.headers.get(REQUEST_ID_HEADER));
-  const authHeader = request.headers.get("authorization") ?? "";
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
-  const session = token ? verifyWalletSession(token) : null;
-  if (!session) {
-    return json({ error: "Sign in with your wallet to export your trips." }, 401, requestId);
-  }
+  const auth = authenticateWalletRequest(request, { message: "Sign in with your wallet to export your trips.", requestId });
+  if (!auth.ok) return auth.response;
+  const session = auth.ctx.claims;
   if (!isServerSupabaseConfigured()) {
     return json({ error: "Database service is not configured on the server." }, 503, requestId);
   }
@@ -114,7 +111,7 @@ export async function POST(request: NextRequest) {
 
   const wallet = session.wallet_address;
   const ip = getClientIp(request);
-  const client = createServerClientForToken(token);
+  const client = auth.ctx.db();
 
   const [walletLimit, ipLimit] = await Promise.all([
     checkRateLimit(`export-archive:wallet:${wallet}`, ARCHIVE_LIMIT_PER_WALLET, ARCHIVE_WINDOW_MS),

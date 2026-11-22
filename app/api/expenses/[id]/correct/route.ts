@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { verifyWalletSession } from "@/lib/supabase/serverAuth";
-import { createServerClientForToken, isServerSupabaseConfigured } from "@/lib/supabase/server";
+import { isServerSupabaseConfigured } from "@/lib/supabase/server";
 import { insertExpense, fetchExpenseById, addExpenseIdToTrip } from "@/lib/supabase/queries";
 import {
   canCorrectExpense,
@@ -10,7 +9,7 @@ import {
 } from "@/lib/expense/corrections";
 import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
 import { EXPENSE_REPLAY_FIELDS, replayFieldsUnder } from "@/lib/idempotency/replay";
-import { parseJsonBody } from "@/lib/api/bodyLimits";
+import { authenticateWalletRequest } from "@/lib/api/routeGuard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -20,16 +19,9 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  const authHeader = request.headers.get("authorization") ?? "";
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
-  const session = token ? verifyWalletSession(token) : null;
-
-  if (!session) {
-    return NextResponse.json(
-      { error: "Unauthorized: Sign in with your wallet to correct an expense." },
-      { status: 401 }
-    );
-  }
+  const auth = authenticateWalletRequest(request, { message: "Unauthorized: Sign in with your wallet to correct an expense." });
+  if (!auth.ok) return auth.response;
+  const session = auth.ctx.claims;
 
   // Issue #412: a valid key is required before any work.
   const idempotency = requireIdempotencyKey(request);
@@ -64,7 +56,7 @@ export async function POST(
   }
 
   try {
-    const client = createServerClientForToken(token);
+    const client = auth.ctx.db();
     // Eligibility is checked inside the claim, so a retry of a correction that
     // succeeded replays its 201 rather than creating a second linked record.
     return await runIdempotentMutation({

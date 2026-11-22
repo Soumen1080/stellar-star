@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { verifyWalletSession } from "@/lib/supabase/serverAuth";
-import { createServerClientForToken, isServerSupabaseConfigured } from "@/lib/supabase/server";
+import { isServerSupabaseConfigured } from "@/lib/supabase/server";
 import {
   fetchTripsPaginated,
   insertTrip,
@@ -11,22 +10,15 @@ import {
 import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
 import { TRIP_REPLAY_FIELDS } from "@/lib/idempotency/replay";
 import type { Trip } from "@/types/trip";
-import { parseJsonBody } from "@/lib/api/bodyLimits";
+import { authenticateWalletRequest } from "@/lib/api/routeGuard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
-  const authHeader = request.headers.get("authorization") ?? "";
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
-  const session = token ? verifyWalletSession(token) : null;
-
-  if (!session) {
-    return NextResponse.json(
-      { error: "Unauthorized: Sign in with your wallet to view trips." },
-      { status: 401 }
-    );
-  }
+  const auth = authenticateWalletRequest(request, { message: "Unauthorized: Sign in with your wallet to view trips." });
+  if (!auth.ok) return auth.response;
+  const session = auth.ctx.claims;
 
   const { searchParams } = request.nextUrl;
   const rawLimit = searchParams.get("limit");
@@ -53,7 +45,7 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const client = createServerClientForToken(token);
+    const client = auth.ctx.db();
     const result = await fetchTripsPaginated(parsed, client);
     return NextResponse.json(result);
   } catch (err) {
@@ -63,16 +55,9 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  const authHeader = request.headers.get("authorization") ?? "";
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
-  const session = token ? verifyWalletSession(token) : null;
-
-  if (!session) {
-    return NextResponse.json(
-      { error: "Unauthorized: Sign in with your wallet to create a trip." },
-      { status: 401 }
-    );
-  }
+  const auth = authenticateWalletRequest(request, { message: "Unauthorized: Sign in with your wallet to create a trip." });
+  if (!auth.ok) return auth.response;
+  const session = auth.ctx.claims;
 
   let body: any;
   const parsedBody = await parseJsonBody(request, { route: "/api/trips" });
@@ -103,7 +88,7 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const client = createServerClientForToken(token);
+    const client = auth.ctx.db();
 
     const tripToSave: Trip = {
       id: body.id || crypto.randomUUID(),

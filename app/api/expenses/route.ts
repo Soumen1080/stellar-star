@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { verifyWalletSession } from "@/lib/supabase/serverAuth";
-import { createServerClientForToken, isServerSupabaseConfigured } from "@/lib/supabase/server";
+import { isServerSupabaseConfigured } from "@/lib/supabase/server";
 import {
   searchExpenseHistory,
   insertExpense,
@@ -17,22 +16,15 @@ import { normalizeTags, validateTags } from "@/lib/expense/tags";
 import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
 import { EXPENSE_REPLAY_FIELDS } from "@/lib/idempotency/replay";
 import type { Expense } from "@/types/expense";
-import { parseJsonBody } from "@/lib/api/bodyLimits";
+import { authenticateWalletRequest } from "@/lib/api/routeGuard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
-  const authHeader = request.headers.get("authorization") ?? "";
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
-  const session = token ? verifyWalletSession(token) : null;
-
-  if (!session) {
-    return NextResponse.json(
-      { error: "Unauthorized: Sign in with your wallet to view expenses." },
-      { status: 401 }
-    );
-  }
+  const auth = authenticateWalletRequest(request, { message: "Unauthorized: Sign in with your wallet to view expenses." });
+  if (!auth.ok) return auth.response;
+  const session = auth.ctx.claims;
 
   // History is keyset-paginated and filtered in the database, so a trip with
   // thousands of expenses is still served one page at a time. See
@@ -62,7 +54,7 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const client = createServerClientForToken(token);
+    const client = auth.ctx.db();
     const result = await searchExpenseHistory(query, client);
     return NextResponse.json(result);
   } catch (err) {
@@ -72,16 +64,9 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  const authHeader = request.headers.get("authorization") ?? "";
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
-  const session = token ? verifyWalletSession(token) : null;
-
-  if (!session) {
-    return NextResponse.json(
-      { error: "Unauthorized: Sign in with your wallet to create an expense." },
-      { status: 401 }
-    );
-  }
+  const auth = authenticateWalletRequest(request, { message: "Unauthorized: Sign in with your wallet to create an expense." });
+  if (!auth.ok) return auth.response;
+  const session = auth.ctx.claims;
 
   let body: any;
   const parsedBody = await parseJsonBody(request, { route: "/api/expenses" });
@@ -136,7 +121,7 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const client = createServerClientForToken(token);
+    const client = auth.ctx.db();
 
     const expenseToSave: Expense = {
       id: body.id || crypto.randomUUID(),

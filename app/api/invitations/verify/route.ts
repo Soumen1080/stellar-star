@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createServerAnonClient } from "@/lib/supabase/server";
 import { verifyTripInvite } from "@/lib/invitations/claim";
 import { createServiceRoleClient } from "@/lib/supabase/server";
 

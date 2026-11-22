@@ -23,7 +23,6 @@ import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 import { StrKey, TransactionBuilder } from "@stellar/stellar-sdk";
 import { NETWORK_PASSPHRASE, HORIZON_URL } from "@/lib/utils/constants";
-import { verifyWalletSession } from "@/lib/supabase/serverAuth";
 import { parseAssetKey, type AssetRef } from "@/lib/stellar/assets";
 import {
   isSponsorConfigured,
@@ -42,9 +41,8 @@ import {
   SPONSORSHIP_IDLE_RECLAIM_MS,
 } from "@/lib/onboarding/sponsorshipLedger";
 import { releaseInvite } from "@/lib/onboarding/abuseResistance";
-import { createServerClientForToken, isServerSupabaseConfigured } from "@/lib/supabase/server";
 import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
-import { parseJsonBody } from "@/lib/api/bodyLimits";
+import { optionalWalletSession } from "@/lib/api/routeGuard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -116,9 +114,11 @@ export async function POST(request: NextRequest) {
   // ── Authorisation: the sponsored user, or the operator ─────────────────────
   // Checked before the sponsorship is looked up, so an unauthorised caller
   // learns nothing about which accounts are sponsored.
-  const authHeader = request.headers.get("authorization") ?? "";
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
-  const session = token ? verifyWalletSession(token) : null;
+  // The operator authenticates with a secret instead, so a session is
+  // optional here; a session that is present but invalid is still refused.
+  const auth = optionalWalletSession(request);
+  if (!auth.ok) return auth.response;
+  const session = auth.ctx?.claims ?? null;
 
   const isSponsoredUser = session?.wallet_address === account;
 
@@ -144,7 +144,7 @@ export async function POST(request: NextRequest) {
   // secret is deliberately left out of the fingerprint.
   return runIdempotentMutation({
     request,
-    client: isSponsoredUser && isServerSupabaseConfigured() ? createServerClientForToken(token) : null,
+    client: isSponsoredUser ? (auth.ctx?.dbIfConfigured() ?? null) : null,
     key: idempotency.key,
     replayFields: ["revoked", "hash", "releasedStroops", "message"],
     principal: isSponsoredUser ? account : "operator:sponsorship",

@@ -6,13 +6,18 @@
  * GET: Returns summary counts and health status of the outbox queue.
  * POST: Leases and processes a batch of due/failed outbox rows with deduplication,
  *       exponential backoff, and trace ID propagation.
+ *
+ * Both are cron-only (#419): `Authorization: Bearer $CRON_SECRET`, compared in
+ * constant time, and disabled (401) when CRON_SECRET is unset. The worker runs
+ * on the service-role client. The bearer is a secret, not a wallet session, so
+ * it is never turned into a database client.
  */
 
 import { timingSafeEqual } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { runOutboxWorkerBatch } from "@/lib/outbox/worker";
 import { listOutboxEvents } from "@/lib/outbox/repository";
-import { createServerClientForToken, createServiceRoleClient } from "@/lib/supabase/server";
+import { createServiceRoleClient } from "@/lib/supabase/server";
 import { getOrCreateRequestId, REQUEST_ID_HEADER } from "@/lib/observability/requestId";
 import { parseJsonBody } from "@/lib/api/bodyLimits";
 
@@ -21,7 +26,7 @@ export const dynamic = "force-dynamic";
 
 function isAuthorized(request: NextRequest): boolean {
   const secret = process.env.CRON_SECRET?.trim();
-  if (!secret) return true; // In dev/test allow requests
+  if (!secret) return false; // Disabled until a cron secret is configured.
 
   const authHeader = request.headers.get("authorization") ?? "";
   if (!authHeader.startsWith("Bearer ")) return false;
@@ -42,10 +47,15 @@ function responseHeaders(requestId: string): Record<string, string> {
 export async function GET(request: NextRequest) {
   const requestId = getOrCreateRequestId(request.headers.get(REQUEST_ID_HEADER));
 
+  if (!isAuthorized(request)) {
+    return NextResponse.json(
+      { error: "Unauthorized outbox worker request.", requestId },
+      { status: 401, headers: responseHeaders(requestId) }
+    );
+  }
+
   try {
-    const authHeader = request.headers.get("authorization") ?? "";
-    const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
-    const client = token ? createServerClientForToken(token) : createServiceRoleClient();
+    const client = createServiceRoleClient();
 
     const [pending, leased, delivered, failed, deadLetter] = await Promise.all([
       listOutboxEvents({ status: "pending", limit: 100 }, client ?? undefined),
@@ -94,9 +104,7 @@ export async function POST(request: NextRequest) {
   body = (parsedBody.value ?? {}) as typeof body;
 
   try {
-    const authHeader = request.headers.get("authorization") ?? "";
-    const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
-    const client = token ? createServerClientForToken(token) : createServiceRoleClient();
+    const client = createServiceRoleClient();
 
     const result = await runOutboxWorkerBatch(
       {

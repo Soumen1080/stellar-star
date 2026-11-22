@@ -11,8 +11,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { verifyWalletSession } from "@/lib/supabase/serverAuth";
-import { createServerClientForToken, createServiceRoleClient, isServerSupabaseConfigured } from "@/lib/supabase/server";
+import type { ServerClient } from "@/lib/supabase/server";
 import { fetchExpenseById, updateExpenseRow } from "@/lib/supabase/queries";
 import {
   mergeExpenseUpdates,
@@ -23,7 +22,7 @@ import { Money } from "@/lib/money";
 import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
 import { EXPENSE_REPLAY_FIELDS, replayFieldsUnder } from "@/lib/idempotency/replay";
 import type { Expense } from "@/types/expense";
-import { parseJsonBody } from "@/lib/api/bodyLimits";
+import { authenticateWalletRequest } from "@/lib/api/routeGuard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -37,17 +36,11 @@ export async function GET(
     return NextResponse.json({ error: "Expense ID is required." }, { status: 400 });
   }
 
-  const authHeader = request.headers.get("authorization") ?? "";
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
-  const session = token ? verifyWalletSession(token) : null;
+  const auth = authenticateWalletRequest(request, { message: "Unauthorized: Sign in with your wallet." });
+  if (!auth.ok) return auth.response;
+  const session = auth.ctx.claims;
 
-  if (!session) {
-    return NextResponse.json({ error: "Unauthorized: Sign in with your wallet." }, { status: 401 });
-  }
-
-  const client = isServerSupabaseConfigured()
-    ? createServerClientForToken(token)
-    : undefined;
+  const client = auth.ctx.dbIfConfigured() ?? undefined;
 
   const expense = await fetchExpenseById(id, client as any);
   if (!expense) {
@@ -79,13 +72,9 @@ export async function PATCH(
     return NextResponse.json({ error: "Expense ID is required." }, { status: 400 });
   }
 
-  const authHeader = request.headers.get("authorization") ?? "";
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
-  const session = token ? verifyWalletSession(token) : null;
-
-  if (!session) {
-    return NextResponse.json({ error: "Unauthorized: Sign in with your wallet." }, { status: 401 });
-  }
+  const auth = authenticateWalletRequest(request, { message: "Unauthorized: Sign in with your wallet." });
+  if (!auth.ok) return auth.response;
+  const session = auth.ctx.claims;
 
   // Issue #412: a valid key is required before any work.
   const idempotency = requireIdempotencyKey(request);
@@ -96,9 +85,7 @@ export async function PATCH(
   if (!parsedBody.ok) return parsedBody.response;
   body = (parsedBody.value) as typeof body;
 
-  const client = isServerSupabaseConfigured()
-    ? createServerClientForToken(token)
-    : undefined;
+  const client = auth.ctx.dbIfConfigured() ?? undefined;
 
   // The version check runs inside the claim on purpose: a retry of an edit
   // that already succeeded must replay that success, not trip the OCC check
@@ -118,7 +105,7 @@ async function applyExpenseUpdate(
   id: string,
   walletAddress: string,
   body: any,
-  client: ReturnType<typeof createServerClientForToken> | undefined,
+  client: ServerClient | undefined,
 ): Promise<NextResponse> {
   const existing = await fetchExpenseById(id, client as any);
   if (!existing) {

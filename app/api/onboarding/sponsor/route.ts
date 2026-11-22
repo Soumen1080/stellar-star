@@ -17,7 +17,6 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { StrKey } from "@stellar/stellar-sdk";
-import { verifyWalletSession } from "@/lib/supabase/serverAuth";
 import { getAccountState } from "@/lib/stellar/accountState";
 import { parseAssetKey, type AssetRef } from "@/lib/stellar/assets";
 import {
@@ -38,9 +37,8 @@ import {
   SPONSORSHIP_PER_ACCOUNT_STROOPS,
 } from "@/lib/onboarding/sponsorshipLedger";
 import { checkEligibility, recordInvite } from "@/lib/onboarding/abuseResistance";
-import { createServerClientForToken, isServerSupabaseConfigured } from "@/lib/supabase/server";
 import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
-import { parseJsonBody } from "@/lib/api/bodyLimits";
+import { authenticateWalletRequest } from "@/lib/api/routeGuard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -53,6 +51,9 @@ function jsonError(message: string, status: number, extra: Record<string, unknow
 }
 
 export async function POST(request: NextRequest) {
+  const auth = authenticateWalletRequest(request, { message: "Sign in with your wallet before inviting someone." });
+  if (!auth.ok) return auth.response;
+  const session = auth.ctx.claims;
   if (!isSponsorConfigured()) {
     return jsonError(
       "Sponsored onboarding is not configured on this deployment. The invitee will need to " +
@@ -88,13 +89,6 @@ export async function POST(request: NextRequest) {
   // The inviter is the authenticated caller, never a value from the body — the
   // whole abuse-resistance model keys on inviter identity, so letting the
   // client name it would make every limit voluntary.
-  const authHeader = request.headers.get("authorization") ?? "";
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
-  const session = token ? verifyWalletSession(token) : null;
-
-  if (!session) {
-    return jsonError("Sign in with your wallet before inviting someone.", 401);
-  }
   const inviter = session.wallet_address;
 
   if (inviter === invitee) {
@@ -110,7 +104,7 @@ export async function POST(request: NextRequest) {
   // second slot of sponsor capacity.
   return runIdempotentMutation({
     request,
-    client: isServerSupabaseConfigured() ? createServerClientForToken(token) : null,
+    client: auth.ctx.dbIfConfigured(),
     key: idempotency.key,
     replayFields: ["xdr", "sponsor", "requiresSignatureFrom", "lockedStroops", "partiallyFunded", "alreadyFunded", "message"],
     principal: inviter,
@@ -285,6 +279,9 @@ export async function GET() {
  * and returned as a partially signed envelope, mirroring the creation flow.
  */
 export async function DELETE(request: NextRequest) {
+  const auth = authenticateWalletRequest(request, { message: "Sign in with your wallet before revoking sponsorships." });
+  if (!auth.ok) return auth.response;
+  const session = auth.ctx.claims;
   if (!isSponsorConfigured()) {
     return jsonError(
       "Sponsored onboarding is not configured on this deployment.",
@@ -293,13 +290,6 @@ export async function DELETE(request: NextRequest) {
     );
   }
 
-  const authHeader = request.headers.get("authorization") ?? "";
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
-  const session = token ? verifyWalletSession(token) : null;
-
-  if (!session) {
-    return jsonError("Sign in with your wallet before revoking sponsorships.", 401);
-  }
 
   try {
     const reclaimable = await listSponsorshipsForInviter(session.wallet_address);

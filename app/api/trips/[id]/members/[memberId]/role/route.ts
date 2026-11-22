@@ -1,11 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { verifyWalletSession } from "@/lib/supabase/serverAuth";
-import { createServerClientForToken } from "@/lib/supabase/server";
 import { setTripMemberRole } from "@/lib/supabase/queries";
 import type { TripPermission, TripRole } from "@/types/trip";
 import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
 import { TRIP_REPLAY_FIELDS } from "@/lib/idempotency/replay";
-import { parseJsonBody } from "@/lib/api/bodyLimits";
+import { authenticateWalletRequest } from "@/lib/api/routeGuard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -16,11 +14,9 @@ export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ id: string; memberId: string }> },
 ) {
-  const token = (request.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "").trim();
-  const session = token ? verifyWalletSession(token) : null;
-  if (!session) {
-    return NextResponse.json({ error: "Unauthorized: sign in with your wallet." }, { status: 401 });
-  }
+  const auth = authenticateWalletRequest(request, { message: "Unauthorized: sign in with your wallet." });
+  if (!auth.ok) return auth.response;
+  const session = auth.ctx.claims;
 
   // Issue #412: a valid key is required before any work.
   const idempotency = requireIdempotencyKey(request);
@@ -38,7 +34,7 @@ export async function PATCH(
   const { id, memberId } = await params;
   const role = body.role;
   const customPermissions = body.customPermissions ?? [];
-  const client = createServerClientForToken(token);
+  const client = auth.ctx.db();
   return runIdempotentMutation({
     request,
     client,
