@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { providerRegistry } from "@/lib/routing";
+import { parseJsonBody } from "@/lib/api/bodyLimits";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -52,7 +53,9 @@ export async function GET() {
  */
 export async function POST(req: Request) {
   try {
-    const body = await req.json().catch(() => ({}));
+    const parsedBody = await parseJsonBody<Record<string, any>>(req, { route: "/api/developer/providers", allowEmpty: true });
+    if (!parsedBody.ok) return parsedBody.response;
+    const body = parsedBody.value ?? {};
     const { action, providerId, disabled } = body;
 
     if (action === "toggle") {

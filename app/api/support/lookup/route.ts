@@ -21,6 +21,7 @@ import {
 import { type SupportQueryType } from "@/lib/support/types";
 import { createServiceRoleClient, createServerAnonClient, isServerSupabaseConfigured } from "@/lib/supabase/server";
 import { getClientIp } from "@/lib/auth/rateLimiter";
+import { parseJsonBody } from "@/lib/api/bodyLimits";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -50,13 +51,13 @@ async function handleLookup(request: NextRequest) {
   let queryType: SupportQueryType | undefined;
 
   if (request.method === "POST") {
-    try {
-      const body = await request.json();
-      query = typeof body.query === "string" ? body.query.trim() : "";
-      if (body.queryType) queryType = body.queryType;
-    } catch {
-      return NextResponse.json({ error: "Invalid JSON request body." }, { status: 400 });
-    }
+    const parsedBody = await parseJsonBody<{ query?: unknown; queryType?: SupportQueryType }>(request, {
+      route: "/api/support/lookup",
+    });
+    if (!parsedBody.ok) return parsedBody.response;
+    const body = parsedBody.value;
+    query = typeof body.query === "string" ? body.query.trim() : "";
+    if (body.queryType) queryType = body.queryType;
   } else {
     const { searchParams } = new URL(request.url);
     query = (searchParams.get("query") || searchParams.get("q") || "").trim();

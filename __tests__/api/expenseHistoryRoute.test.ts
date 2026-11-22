@@ -22,6 +22,8 @@ function authed(url: string, init: { method?: string; body?: string } = {}) {
     ...init,
     headers: {
       Authorization: `Bearer ${signWalletSession(WALLET)}`,
+      // JSON bodies must declare their media type (#418).
+      ...(init.body !== undefined ? { "Content-Type": "application/json" } : {}),
       // Writes require an Idempotency-Key (#412).
       ...(isWrite ? { "Idempotency-Key": crypto.randomUUID() } : {}),
     },

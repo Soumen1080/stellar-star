@@ -44,8 +44,7 @@ import {
   getOrCreateRequestId,
 } from "@/lib/observability/requestId";
 import { enqueueOutboxEvent, buildSettlementRecordedOutboxEvent } from "@/lib/outbox";
-import { enqueueReconciliationJob } from "@/lib/settlement/reconciliationWorker";
-import type { StellarStarClient } from "@/lib/supabase/client";
+import { parseJsonBody } from "@/lib/api/bodyLimits";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -134,11 +133,9 @@ export async function POST(request: NextRequest) {
   const requestId = getOrCreateRequestId(request.headers.get(REQUEST_ID_HEADER));
 
   let body: ReconcileRequestBody;
-  try {
-    body = (await request.json()) as ReconcileRequestBody;
-  } catch {
-    return jsonError("Request body must be JSON.", 400, requestId);
-  }
+  const parsedBody = await parseJsonBody(request, { route: "/api/settlement/reconcile", requestId });
+  if (!parsedBody.ok) return parsedBody.response;
+  body = (parsedBody.value) as typeof body;
 
   const {
     txHash,

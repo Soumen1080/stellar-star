@@ -11,6 +11,7 @@ import {
 import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
 import { TRIP_REPLAY_FIELDS } from "@/lib/idempotency/replay";
 import type { Trip } from "@/types/trip";
+import { parseJsonBody } from "@/lib/api/bodyLimits";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -74,11 +75,9 @@ export async function POST(request: NextRequest) {
   }
 
   let body: any;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "Request body must be valid JSON." }, { status: 400 });
-  }
+  const parsedBody = await parseJsonBody(request, { route: "/api/trips" });
+  if (!parsedBody.ok) return parsedBody.response;
+  body = (parsedBody.value) as typeof body;
 
   // Issue #412: a valid key is required before any work.
   const idempotency = requireIdempotencyKey(request, { body });

@@ -13,6 +13,7 @@ import { proposeCorrectiveAction, DualControlError } from "@/lib/support/dualCon
 import { createServiceRoleClient, createServerAnonClient, isServerSupabaseConfigured } from "@/lib/supabase/server";
 import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
 import { SUPPORT_PROPOSAL_REPLAY_FIELDS, replayFieldsUnder } from "@/lib/idempotency/replay";
+import { parseJsonBody } from "@/lib/api/bodyLimits";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -40,11 +41,9 @@ export async function POST(request: NextRequest) {
   if (!idempotency.ok) return idempotency.response;
 
   let body: any;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "Invalid JSON request body." }, { status: 400 });
-  }
+  const parsedBody = await parseJsonBody(request, { route: "/api/support/actions/propose" });
+  if (!parsedBody.ok) return parsedBody.response;
+  body = (parsedBody.value) as typeof body;
 
   const { actionType, targetId, targetType, ticketRef, reason, details } = body;
 

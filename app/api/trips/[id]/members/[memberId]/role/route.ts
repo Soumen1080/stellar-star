@@ -5,6 +5,7 @@ import { setTripMemberRole } from "@/lib/supabase/queries";
 import type { TripPermission, TripRole } from "@/types/trip";
 import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
 import { TRIP_REPLAY_FIELDS } from "@/lib/idempotency/replay";
+import { parseJsonBody } from "@/lib/api/bodyLimits";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -26,11 +27,9 @@ export async function PATCH(
   if (!idempotency.ok) return idempotency.response;
 
   let body: { role?: TripRole; customPermissions?: TripPermission[] };
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "Request body must be valid JSON." }, { status: 400 });
-  }
+  const parsedBody = await parseJsonBody(request, { route: "/api/trips/[id]/members/[memberId]/role" });
+  if (!parsedBody.ok) return parsedBody.response;
+  body = (parsedBody.value) as typeof body;
   if (!body.role || !roles.has(body.role) ||
       (body.customPermissions !== undefined && !Array.isArray(body.customPermissions))) {
     return NextResponse.json({ error: "A valid role and optional permission list are required." }, { status: 400 });

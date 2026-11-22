@@ -27,6 +27,7 @@ import crypto from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { checkRateLimit, getClientIp, rateLimiterUnavailableResponse } from "@/lib/auth/rateLimiter";
 import { buildArchive, exportFileStem } from "@/lib/export/tripExport";
+import { ResponseTooLargeError, parseJsonBody, responseLimitFor, serializeBounded } from "@/lib/api/bodyLimits";
 import { getOrCreateRequestId, REQUEST_ID_HEADER } from "@/lib/observability/requestId";
 import { verifyWalletSession } from "@/lib/supabase/serverAuth";
 import { createServerClientForToken, isServerSupabaseConfigured } from "@/lib/supabase/server";
@@ -102,13 +103,10 @@ export async function POST(request: NextRequest) {
     return json({ error: "Database service is not configured on the server." }, 503, requestId);
   }
 
-  let body: unknown = null;
-  try {
-    const textBody = await request.text();
-    body = textBody ? JSON.parse(textBody) : null;
-  } catch {
-    return json({ error: "Request body must be valid JSON." }, 400, requestId);
-  }
+  // Byte-limited, media-type checked, streamed read (#418). Empty = all trips.
+  const parsedBody = await parseJsonBody(request, { route: "/api/exports/archive", allowEmpty: true, requestId });
+  if (!parsedBody.ok) return parsedBody.response;
+  const body: unknown = parsedBody.value ?? null;
   const requested = parseTripIds(body);
   if (requested === "invalid") {
     return json({ error: `tripIds must be 1–${MAX_REQUESTED_TRIPS} trip ids.` }, 400, requestId);
@@ -169,7 +167,18 @@ export async function POST(request: NextRequest) {
       expenses: visibleExpenses,
       includeUnassigned: !requested,
     });
-    const payload = JSON.stringify(archive, null, 2);
+    let payload: string;
+    try {
+      payload = serializeBounded(archive, responseLimitFor("/api/exports/archive"), 2);
+    } catch (err) {
+      if (!(err instanceof ResponseTooLargeError)) throw err;
+      await audit(client, wallet, requestId, ip, { status: "failed", trip_ids: trips.map((t) => t.id) });
+      return json(
+        { error: "This archive is too large to export at once. Export fewer trips per request.", code: err.code },
+        413,
+        requestId,
+      );
+    }
     const sha256 = crypto.createHash("sha256").update(payload).digest("hex");
 
     const audited = await audit(client, wallet, requestId, ip, {

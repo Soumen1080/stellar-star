@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
 import {
   apiIdempotencyClient,
   authenticateApiRequest,
@@ -11,6 +11,11 @@ import { memberHasPermission } from "@/lib/trip/roles";
 import { dispatchWebhookEvent } from "@/lib/api/webhooks";
 import { enqueueOutboxEvent, completeOutboxEvent } from "@/lib/outbox";
 import type { Expense } from "@/types/expense";
+import { parseJsonBody, limitedJson, responseLimitFor } from "@/lib/api/bodyLimits";
+
+/** Every JSON response here is size-capped (#418). */
+const respond = (body: unknown, init?: ResponseInit) =>
+  limitedJson(body, init, responseLimitFor("/api/v1/expenses"));
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -31,7 +36,7 @@ export async function GET(request: NextRequest) {
   const limit = Math.min(Math.max(parseInt(url.searchParams.get("limit") || "20", 10), 1), 100);
 
   if (!tripId) {
-    return NextResponse.json(
+    return respond(
       {
         error: {
           code: "MISSING_PARAMETER",
@@ -62,7 +67,7 @@ export async function GET(request: NextRequest) {
     idempotencyKey: null,
   });
 
-  return NextResponse.json({
+  return respond({
     data: expenses,
     pagination: {
       limit,
@@ -86,19 +91,14 @@ export async function POST(request: NextRequest) {
   const idempotencyKey = auth.context.idempotencyKey as string;
 
   let body: any;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json(
-      { error: { code: "BAD_REQUEST", message: "Invalid JSON body.", status: 400 } },
-      { status: 400 }
-    );
-  }
+  const parsedBody = await parseJsonBody(request, { route: "/api/v1/expenses", format: "v1" });
+  if (!parsedBody.ok) return parsedBody.response;
+  body = parsedBody.value;
 
   const { trip_id, title, total_amount, currency, split_mode } = body;
 
   if (!trip_id || !title || !total_amount) {
-    return NextResponse.json(
+    return respond(
       {
         error: {
           code: "VALIDATION_FAILED",
@@ -113,7 +113,7 @@ export async function POST(request: NextRequest) {
   // Authorization check on trip
   const trip = await fetchTripById(trip_id, tokenPayload.walletAddress);
   if (!trip) {
-    return NextResponse.json(
+    return respond(
       {
         error: {
           code: "NOT_FOUND",
@@ -128,7 +128,7 @@ export async function POST(request: NextRequest) {
     (member) => member.walletAddress?.trim().toUpperCase() === tokenPayload.walletAddress.trim().toUpperCase(),
   );
   if (!callerMember || !memberHasPermission(callerMember, "expenses.manage", trip)) {
-    return NextResponse.json(
+    return respond(
       {
         error: {
           code: "FORBIDDEN",
@@ -217,7 +217,7 @@ export async function POST(request: NextRequest) {
           // Post-commit failure safely retained in outbox table for worker retry
         });
 
-      return NextResponse.json({ data: created }, { status: 201 });
+      return respond({ data: created }, { status: 201 });
     },
   });
 

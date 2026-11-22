@@ -3,6 +3,7 @@ import { generateScopedToken, listTokensForWallet } from "@/lib/api/tokens";
 import { decodeClaims } from "@/lib/supabase/session";
 import type { ApiScope } from "@/lib/api/types";
 import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
+import { parseJsonBody } from "@/lib/api/bodyLimits";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -39,14 +40,9 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   let body: any;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json(
-      { error: { code: "BAD_REQUEST", message: "Invalid JSON body.", status: 400 } },
-      { status: 400 }
-    );
-  }
+  const parsedBody = await parseJsonBody(request, { route: "/api/v1/tokens", format: "v1" });
+  if (!parsedBody.ok) return parsedBody.response;
+  body = parsedBody.value;
 
   const wallet = getWalletFromRequest(request) || body.wallet_address;
   if (!wallet || typeof wallet !== "string") {
