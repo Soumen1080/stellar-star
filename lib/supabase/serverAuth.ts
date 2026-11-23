@@ -21,18 +21,31 @@ export const CHALLENGE_TTL_MS = 5 * 60 * 1000;
  * that is public in this repo's history — a shared fallback would let anyone
  * forge a session JWT with an arbitrary wallet_address claim.
  */
-function getJwtSecret(): string {
-  const secret = process.env.SUPABASE_JWT_SECRET || process.env.JWT_SECRET;
-  if (!secret) {
-    if (process.env.NODE_ENV === "development") {
-      return "dev-local-jwt-secret-not-for-production-use";
-    }
-    throw new Error(
-      "SUPABASE_JWT_SECRET (or JWT_SECRET) is not configured. Set it to the Supabase project's JWT signing secret (Dashboard → Project Settings → API → JWT Settings)."
-    );
+type JwtKey = { id: string; secret: string; verifyUntil?: number };
+
+/** Keys are JSON `{ "key-id": "secret" }`; retired keys are removed after
+ * their configured overlap. No ambient/static secret fallback is accepted. */
+function getJwtKeys(): { active: JwtKey; verify: JwtKey[] } {
+  const activeId = process.env.JWT_ACTIVE_KEY_ID?.trim();
+  const configured = process.env.JWT_SIGNING_KEYS?.trim();
+  const legacy = process.env.SUPABASE_JWT_SECRET || process.env.JWT_SECRET;
+  if (!activeId && legacy && process.env.NODE_ENV !== "production") {
+    return { active: { id: "legacy", secret: legacy }, verify: [{ id: "legacy", secret: legacy }] };
   }
-  return secret;
+  if (!activeId || !configured) {
+    throw new Error("JWT_ACTIVE_KEY_ID and JWT_SIGNING_KEYS must be configured (SUPABASE_JWT_SECRET is not a production fallback).");
+  }
+  let map: Record<string, string>;
+  try { map = JSON.parse(configured); } catch { throw new Error("JWT_SIGNING_KEYS must be a JSON object of key IDs to secrets."); }
+  const keys = Object.entries(map).map(([id, secret]) => ({ id, secret }));
+  const active = keys.find((key) => key.id === activeId);
+  if (!active || !active.secret || active.id.length > 128) throw new Error("The active JWT key ID must identify a configured signing key.");
+  const overlapUntil = Number(process.env.JWT_PREVIOUS_KEYS_UNTIL);
+  const verify = keys.filter((key) => key.id === activeId || (Number.isFinite(overlapUntil) && overlapUntil > Date.now()));
+  return { active, verify: verify.map((key) => key.id === activeId ? key : { ...key, verifyUntil: overlapUntil }) };
 }
+
+function getJwtSecret(): string { return getJwtKeys().active.secret; }
 
 /** The Supabase project ref, parsed from the project URL. Used as the `ref` claim. */
 function getProjectRef(): string | null {
@@ -67,7 +80,8 @@ export function signSupabaseJwt(
   payload: object,
   expiresInSeconds: number = 3600
 ): string {
-  const header = { alg: "HS256", typ: "JWT" };
+  const { active } = getJwtKeys();
+  const header = { alg: "HS256", typ: "JWT", kid: active.id };
 
   const now = Math.floor(Date.now() / 1000);
   const ref = getProjectRef();
@@ -88,7 +102,7 @@ export function signSupabaseJwt(
   const encodedPayload = base64url(Buffer.from(JSON.stringify(fullPayload)));
 
   const signatureInput = `${encodedHeader}.${encodedPayload}`;
-  const signature = crypto.createHmac("sha256", getJwtSecret()).update(signatureInput).digest();
+  const signature = crypto.createHmac("sha256", active.secret).update(signatureInput).digest();
 
   return `${signatureInput}.${base64url(signature)}`;
 }
@@ -110,7 +124,7 @@ export function verifyWalletSession(token: string): WalletSessionClaims | null {
 
   const [encodedHeader, encodedPayload, encodedSignature] = parts;
 
-  let header: { alg?: string };
+  let header: { alg?: string; kid?: string };
   let payload: WalletSessionClaims & { exp?: number };
   try {
     header = JSON.parse(Buffer.from(encodedHeader, "base64url").toString("utf8"));
@@ -119,16 +133,13 @@ export function verifyWalletSession(token: string): WalletSessionClaims | null {
     return null;
   }
 
-  if (header.alg !== "HS256") return null;
+  if (header.alg !== "HS256" || typeof header.kid !== "string") return null;
 
-  const expected = crypto
-    .createHmac("sha256", getJwtSecret())
-    .update(`${encodedHeader}.${encodedPayload}`)
-    .digest();
   const provided = Buffer.from(encodedSignature, "base64url");
-
-  if (provided.length !== expected.length) return null;
-  if (!crypto.timingSafeEqual(provided, expected)) return null;
+  const key = getJwtKeys().verify.find((candidate) => candidate.id === header.kid);
+  if (!key || (key.verifyUntil !== undefined && key.verifyUntil <= Date.now())) return null;
+  const expected = crypto.createHmac("sha256", key.secret).update(`${encodedHeader}.${encodedPayload}`).digest();
+  if (provided.length !== expected.length || !crypto.timingSafeEqual(provided, expected)) return null;
 
   if (typeof payload.exp !== "number" || payload.exp * 1000 <= Date.now()) return null;
   if (typeof payload.wallet_address !== "string" || !payload.wallet_address) return null;
