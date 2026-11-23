@@ -4381,6 +4381,9 @@ BEGIN
 END;
 $rls$;
 
+INSERT INTO public.schema_migrations (version, name, checksum)
+VALUES ('0019', '0019_force_row_level_security', 'force_rls_all_public_tables_v1')
+ON CONFLICT (version) DO NOTHING;
 
 -- Issue #462 tenant quotas; mirrors migrations/0020_tenant_quotas.sql.
 CREATE TABLE IF NOT EXISTS public.tenant_quota_limits (
