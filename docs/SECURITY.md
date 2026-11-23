@@ -143,3 +143,25 @@ The server-side signature check in `POST /api/auth/verify` was never bypassed by
 the old seam: it still requires a real signature over the server challenge, so
 the seam could only impersonate *UI state*, not authenticate. That impersonation
 primitive is what is now absent from production.
+# PostgreSQL tenant isolation checks
+
+The CI quality job starts a disposable PostgreSQL 16 instance, provisions the
+current schema from `supabase-setup.sql`, applies the forced-RLS migration, and
+runs `scripts/postgres-rls-check.sql`. The check inspects every public table,
+view, and `SECURITY DEFINER` function, then exercises trip and expense reads,
+writes, and the settlement RPC under two distinct wallet claim sets.
+
+To run the database check locally, use an existing PostgreSQL 16 database and
+the installed `psql` client; no project package is needed:
+
+```sh
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE ROLE anon NOLOGIN; CREATE ROLE authenticated NOLOGIN; CREATE ROLE service_role NOLOGIN BYPASSRLS;"
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase-setup.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0019_force_row_level_security.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/postgres-rls-check.sql
+```
+
+When adding a public table, give it a deliberate RLS policy or leave client
+roles without table grants. The catalog checks fail if a client-granted table
+has no policy, if RLS is not forced, if a view is not `security_invoker`, or if
+a definer function is unpinned or anonymously executable.

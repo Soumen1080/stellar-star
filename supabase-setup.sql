@@ -4349,3 +4349,34 @@ NOTIFY pgrst, 'reload schema';
 INSERT INTO public.schema_migrations (version, name, checksum)
 VALUES ('0016', '0016_trip_roles_and_permissions', 'trip_roles_permissions_v2')
 ON CONFLICT (version) DO NOTHING;
+
+-- Issue #461: force row security for every public table and harden all
+-- SECURITY DEFINER routines against search_path and anonymous execution.
+DO $rls$
+DECLARE
+  relation RECORD;
+  routine RECORD;
+BEGIN
+  FOR relation IN
+    SELECT n.nspname AS schema_name, c.relname AS table_name
+      FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p')
+  LOOP
+    EXECUTE format('ALTER TABLE %I.%I ENABLE ROW LEVEL SECURITY', relation.schema_name, relation.table_name);
+    EXECUTE format('ALTER TABLE %I.%I FORCE ROW LEVEL SECURITY', relation.schema_name, relation.table_name);
+  END LOOP;
+  FOR routine IN
+    SELECT p.oid, p.proname FROM pg_proc p
+      JOIN pg_namespace n ON n.oid = p.pronamespace
+     WHERE n.nspname = 'public' AND p.prosecdef
+  LOOP
+    EXECUTE format('ALTER FUNCTION %s SET search_path = public, pg_temp', routine.oid::regprocedure);
+    IF routine.proname NOT IN (
+      'verify_trip_invite', 'claim_trip_invite', 'record_auth_challenge',
+      'consume_auth_challenge', 'check_auth_rate_limit'
+    ) THEN
+      EXECUTE format('REVOKE EXECUTE ON FUNCTION %s FROM PUBLIC, anon', routine.oid::regprocedure);
+    END IF;
+  END LOOP;
+END;
+$rls$;
