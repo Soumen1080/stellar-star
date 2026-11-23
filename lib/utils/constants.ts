@@ -1,6 +1,7 @@
 export type StellarNetwork = "TESTNET" | "PUBLIC";
+import { publicEnv } from "@/lib/config/publicEnv";
 
-export const STELLAR_NETWORK = (process.env.NEXT_PUBLIC_STELLAR_NETWORK as StellarNetwork) ?? "TESTNET";
+export const STELLAR_NETWORK = (publicEnv.stellarNetwork as StellarNetwork) ?? "TESTNET";
 
 /**
  * Canonical, network-correct endpoints.
@@ -36,17 +37,17 @@ const override = (value: string | undefined, fallback: string): string =>
 
 /** Resolves to the canonical endpoint for the configured network by default. */
 export const HORIZON_URL = override(
-  process.env.NEXT_PUBLIC_HORIZON_URL,
+  publicEnv.horizonUrl,
   CANONICAL_ENDPOINTS[STELLAR_NETWORK].horizon
 );
 
 export const STELLAR_EXPLORER = override(
-  process.env.NEXT_PUBLIC_STELLAR_EXPLORER,
+  publicEnv.stellarExplorer,
   CANONICAL_ENDPOINTS[STELLAR_NETWORK].explorer
 );
 
 export const SOROBAN_RPC_URL = override(
-  process.env.NEXT_PUBLIC_SOROBAN_RPC_URL,
+  publicEnv.sorobanRpcUrl,
   CANONICAL_ENDPOINTS[STELLAR_NETWORK].sorobanRpc
 );
 
@@ -95,11 +96,11 @@ export const LS_PENDING_ON_CHAIN   = "StellarStar:pendingOnChain";
 
 // ── App metadata ───────────────────────────────────────────────────────────────
 
-export const APP_NAME    = process.env.NEXT_PUBLIC_APP_NAME    ?? "Stellar-star";
-export const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION ?? "1.0.0";
+export const APP_NAME    = publicEnv.appName    ?? "Stellar-star";
+export const APP_VERSION = publicEnv.appVersion ?? "1.0.0";
 
 export const CONTRACT_ID =
-  process.env.NEXT_PUBLIC_CONTRACT_ID ?? "";
+  publicEnv.contractId ?? "";
 
 /**
  * The attestation oracle's *public* key (G...), used client-side only to check
@@ -110,7 +111,7 @@ export const CONTRACT_ID =
  * refuses to sign if it finds one, since such a key is already published.
  */
 export const ORACLE_PUBLIC_KEY =
-  process.env.NEXT_PUBLIC_SETTLEMENT_ORACLE_PUBLIC_KEY ?? "";
+  publicEnv.settlementOraclePublicKey ?? "";
 
 /**
  * Contract address of the single asset this deployment settles in.
@@ -120,8 +121,8 @@ export const ORACLE_PUBLIC_KEY =
  * routing is issue #43.
  */
 export const SETTLEMENT_ASSET_ID =
-  process.env.NEXT_PUBLIC_SETTLEMENT_ASSET_ID ??
-  process.env.NEXT_PUBLIC_POOL_TOKEN_ID ??
+  publicEnv.settlementAssetId ??
+  publicEnv.poolTokenId ??
   "";
 
 // ── Network configuration validation ───────────────────────────────────────────
@@ -193,7 +194,7 @@ export function getNetworkConfigErrors(): string[] {
   const errors: string[] = [];
 
   // Check valid network string
-  const rawNetwork = process.env.NEXT_PUBLIC_STELLAR_NETWORK?.trim();
+  const rawNetwork = publicEnv.stellarNetwork?.trim();
   if (rawNetwork && rawNetwork !== "TESTNET" && rawNetwork !== "PUBLIC") {
     errors.push(
       `NEXT_PUBLIC_STELLAR_NETWORK must be "TESTNET" or "PUBLIC" (found "${rawNetwork}").`
@@ -249,7 +250,7 @@ export function getNetworkConfigErrors(): string[] {
   // Check Circle USDC issuer cross-network matching
   const CIRCLE_USDC_TESTNET = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
   const CIRCLE_USDC_PUBLIC = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";
-  const rawUsdcIssuer = process.env.NEXT_PUBLIC_USDC_ISSUER?.trim();
+  const rawUsdcIssuer = publicEnv.usdcIssuer?.trim();
   const isPublicKey = (val: string) => /^G[A-Z0-9]{55}$/.test(val);
 
   if (rawUsdcIssuer) {
@@ -269,7 +270,7 @@ export function getNetworkConfigErrors(): string[] {
   }
 
   // Check public app URL
-  const rawSiteUrl = process.env.NEXT_PUBLIC_SITE_URL?.trim();
+  const rawSiteUrl = publicEnv.siteUrl?.trim();
   if (rawSiteUrl) {
     try {
       const parsed = new URL(rawSiteUrl);
