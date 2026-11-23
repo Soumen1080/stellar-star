@@ -7,6 +7,7 @@ import {
   generateChallengeSignature,
   signSupabaseJwt,
   signWalletSession,
+  verifyWalletSession,
   refreshWalletSession,
   SESSION_REFRESH_WINDOW_SECONDS,
 } from "@/lib/supabase/serverAuth";
@@ -294,6 +295,46 @@ describe("serverAuth secret handling", () => {
 
     // Same signature, attacker-modified payload: must no longer verify.
     expect(verify(encodedHeader, tamperedPayload, encodedSignature)).toBe(false);
+  });
+});
+
+describe("wallet JWT key rotation by key ID (#459)", () => {
+  const previous = {
+    active: process.env.JWT_ACTIVE_KEY_ID,
+    keys: process.env.JWT_SIGNING_KEYS,
+    overlap: process.env.JWT_PREVIOUS_KEYS_UNTIL,
+  };
+  afterEach(() => {
+    if (previous.active === undefined) delete process.env.JWT_ACTIVE_KEY_ID;
+    else process.env.JWT_ACTIVE_KEY_ID = previous.active;
+    if (previous.keys === undefined) delete process.env.JWT_SIGNING_KEYS;
+    else process.env.JWT_SIGNING_KEYS = previous.keys;
+    if (previous.overlap === undefined) delete process.env.JWT_PREVIOUS_KEYS_UNTIL;
+    else process.env.JWT_PREVIOUS_KEYS_UNTIL = previous.overlap;
+  });
+
+  function token(kid: string, secret: string) {
+    const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
+    const input = `${encode({ alg: "HS256", typ: "JWT", kid })}.${encode({ wallet_address: "GROTATION", exp: Math.floor(Date.now() / 1000) + 3600 })}`;
+    const signature = crypto.createHmac("sha256", secret).update(input).digest("base64url");
+    return `${input}.${signature}`;
+  }
+
+  it("accepts active and previous keys only during the configured overlap", () => {
+    const keys = { current: "current-signing-secret-with-32-chars", previous: "previous-signing-secret-with-32chars" };
+    process.env.JWT_ACTIVE_KEY_ID = "current";
+    process.env.JWT_SIGNING_KEYS = JSON.stringify(keys);
+    process.env.JWT_PREVIOUS_KEYS_UNTIL = String(Date.now() + 60_000);
+
+    const active = signSupabaseJwt({ wallet_address: "GROTATION" });
+    expect(JSON.parse(Buffer.from(active.split(".")[0], "base64url").toString()).kid).toBe("current");
+    expect(verifyWalletSession(active)?.wallet_address).toBe("GROTATION");
+    expect(verifyWalletSession(token("previous", keys.previous))?.wallet_address).toBe("GROTATION");
+    expect(verifyWalletSession(token("unknown", "unknown-signing-secret-with-32chars"))).toBeNull();
+
+    process.env.JWT_PREVIOUS_KEYS_UNTIL = String(Date.now() - 1);
+    expect(verifyWalletSession(token("previous", keys.previous))).toBeNull();
+    expect(verifyWalletSession(active)?.wallet_address).toBe("GROTATION");
   });
 });
 

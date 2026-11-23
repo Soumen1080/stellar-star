@@ -59,7 +59,16 @@ jobs:
           psql -h localhost -U postgres -d stellar_star_test -v ON_ERROR_STOP=1 -c "CREATE ROLE anon NOLOGIN; CREATE ROLE authenticated NOLOGIN; CREATE ROLE service_role NOLOGIN BYPASSRLS;"
           psql -h localhost -U postgres -d stellar_star_test -v ON_ERROR_STOP=1 -f supabase-setup.sql
           psql -h localhost -U postgres -d stellar_star_test -v ON_ERROR_STOP=1 -f migrations/0019_force_row_level_security.sql
+          psql -h localhost -U postgres -d stellar_star_test -v ON_ERROR_STOP=1 -f migrations/0020_tenant_quotas.sql
           psql -h localhost -U postgres -d stellar_star_test -v ON_ERROR_STOP=1 -f scripts/postgres-rls-check.sql
+
+      - name: Verify concurrent tenants cannot exceed quotas
+        env:
+          PGPASSWORD: postgres
+          PGHOST: localhost
+          PGUSER: postgres
+          PGDATABASE: stellar_star_test
+        run: bash scripts/test-tenant-quota-concurrency.sh
 
       - name: Type check
         run: npx tsc --noEmit

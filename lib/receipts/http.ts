@@ -28,6 +28,11 @@ export function receiptError(message: string, status: number) {
 
 export function errorResponse(err: unknown) {
   if (err instanceof ReceiptValidationError || err instanceof ReceiptStoreError) {
+    if (err instanceof ReceiptStoreError && err.status === 429 && err.retryAfterMs > 0) {
+      const response = receiptError(err.message, err.status);
+      response.headers.set("Retry-After", String(Math.max(1, Math.ceil(err.retryAfterMs / 1000))));
+      return response;
+    }
     return receiptError(err.message, err.status);
   }
   return receiptError("Something went wrong with this receipt. Please try again.", 500);

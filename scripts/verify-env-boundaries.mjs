@@ -15,9 +15,21 @@ function walk(dir) {
 }
 sourceRoots.forEach((dir) => walk(path.join(root, dir)));
 const sources = new Map(files.map((file) => [file, fs.readFileSync(file, "utf8")]));
+const publicConfig = sources.get(path.join(root, "lib", "config", "publicEnv.ts")) ?? "";
+const serverConfig = sources.get(path.join(root, "lib", "config", "serverEnv.ts")) ?? "";
+const publicNames = new Set([...publicConfig.matchAll(/process\.env\.([A-Z0-9_]+)/g)].map((match) => match[1]));
+const serverNames = new Set([...serverConfig.matchAll(/process\.env\.([A-Z0-9_]+)/g)].map((match) => match[1]));
 const clients = [...sources].filter(([, text]) => /^\s*["']use client["'];/m.test(text)).map(([file]) => file);
 const violations = [];
 const secretReference = /process\.env\.(?!NEXT_PUBLIC_|NODE_ENV|VALIDATE_PRODUCTION)[A-Z0-9_]+/g;
+for (const [file, text] of sources) {
+  for (const match of text.matchAll(/process\.env\.([A-Z0-9_]+)/g)) {
+    const name = match[1];
+    if (name.startsWith("NEXT_PUBLIC_") ? !publicNames.has(name) : !serverNames.has(name)) {
+      violations.push(`${path.relative(root, file)} uses ${name} outside its typed environment allowlist.`);
+    }
+  }
+}
 const importPattern = /(?:import|export)\s+(?:[^"']*?\s+from\s+)?["']([^"']+)["']/g;
 function resolveImport(from, specifier) {
   if (!specifier.startsWith(".") && !specifier.startsWith("@/")) return null;

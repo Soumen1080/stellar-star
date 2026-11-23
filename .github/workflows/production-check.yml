@@ -64,6 +64,7 @@ jobs:
       JWT_ACTIVE_KEY_ID: ${{ secrets.JWT_ACTIVE_KEY_ID }}
       JWT_SIGNING_KEYS: ${{ secrets.JWT_SIGNING_KEYS }}
       JWT_PREVIOUS_KEYS_UNTIL: ${{ secrets.JWT_PREVIOUS_KEYS_UNTIL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
       NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
 
@@ -92,6 +93,11 @@ jobs:
 
           if [ -z "$NEXT_PUBLIC_SUPABASE_ANON_KEY" ]; then
             echo "::error::Missing secret NEXT_PUBLIC_SUPABASE_ANON_KEY"
+            missing=1
+          fi
+
+          if [ -z "$SUPABASE_SERVICE_ROLE_KEY" ]; then
+            echo "::error::Missing secret SUPABASE_SERVICE_ROLE_KEY"
             missing=1
           fi
 

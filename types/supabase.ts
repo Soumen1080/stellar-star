@@ -782,6 +782,22 @@ export type Database = {
         };
         Returns: Json;
       };
+      consume_tenant_quotas: {
+        Args: {
+          p_wallet_address: string;
+          p_objects?: number;
+          p_bytes?: number;
+          p_jobs?: number;
+          p_events?: number;
+          p_requests?: number;
+          p_resource_id?: string | null;
+        };
+        Returns: Json;
+      };
+      release_tenant_storage_quota: {
+        Args: { p_resource_id: string };
+        Returns: boolean;
+      };
       claim_trip_invite: {
         Args: {
           p_token_hash: string;

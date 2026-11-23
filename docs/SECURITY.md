@@ -15,7 +15,7 @@ challenge and never through a value the client merely asserts.
 1. **Challenge issuance** - `GET /api/auth/challenge?address=<wallet>`
    (`app/api/auth/challenge/route.ts`) generates a random `nonce` and a 5
    minute `expiration`, then computes `signature = HMAC-SHA256(address:nonce:expiration)`
-   keyed by `SUPABASE_JWT_SECRET`. This HMAC lets the verify step later
+     keyed by the active server JWT signing key. This HMAC lets the verify step later
    confirm the nonce/expiration pair actually came from this server and was
    not forged or paired with a different address. The endpoint also builds
    an unsigned Stellar transaction (source = the claimed address, a single
@@ -53,16 +53,20 @@ challenge and never through a value the client merely asserts.
 
 
 4. **Session token** - once verified, the server mints a standards-compliant
-   HS256 JWT (`lib/supabase/serverAuth.ts#signSupabaseJwt`) with
+   HS256 JWT (`lib/supabase/serverAuth.ts#signSupabaseJwt`) with a `kid` header
+   selected by `JWT_ACTIVE_KEY_ID` from the server-only `JWT_SIGNING_KEYS` map,
+   plus
    `aud: "authenticated"`, `role: "authenticated"`, `sub` (the user's row id,
    or the wallet address itself pre-signup), and a `wallet_address` claim,
-   signed with `SUPABASE_JWT_SECRET` and expiring after 24 hours. The client
+   signed with the active key and expiring after 24 hours. Previous keys may
+   verify until `JWT_PREVIOUS_KEYS_UNTIL`; the verifier key set must be kept in
+   sync with Supabase/PostgREST during that window. The client
    stores it (`StellarStar:authToken` in localStorage) and sends it as
    `Authorization: Bearer <token>` on every Supabase request
    (`lib/supabase/client.ts#createAuthenticatedClient`).
 
 5. **Database enforcement** - because the token is a genuine JWT signed with
-   the same secret configured in the Supabase project's Auth settings,
+   the matching signing key configured in the Supabase project's JWT verifier,
    **PostgREST verifies the JWT signature itself** before RLS ever runs, and
    exposes the verified claims via `request.jwt.claims`. Every RLS policy in
    `supabase-setup.sql` reads identity as
@@ -165,3 +169,15 @@ When adding a public table, give it a deliberate RLS policy or leave client
 roles without table grants. The catalog checks fail if a client-granted table
 has no policy, if RLS is not forced, if a view is not `security_invoker`, or if
 a definer function is unpinned or anonymously executable.
+
+# Tenant quotas
+
+Migration `0020_tenant_quotas.sql` installs atomic per-wallet limits for stored
+objects, stored bytes, scheduled jobs, realtime events, and API requests. The
+initial caps are 500 objects, 1 GiB, 60 jobs per minute, 600 realtime events
+per minute, and 600 API requests per minute. Operators can set per-wallet
+limits in `tenant_quota_limits` using a privileged database connection; client
+roles have no read access to limits, allocations, or usage. Storage usage is
+released idempotently when a receipt is deleted. Realtime writes fail with
+HTTP 429 when a wallet reaches its event cap; API and upload routes return
+generic 429 responses with `Retry-After` where a retry window applies.

@@ -3,6 +3,7 @@
  */
 
 import { NextResponse, type NextRequest } from "next/server";
+import { publicEnv } from "@/lib/config/publicEnv";
 import { checkRateLimit } from "@/lib/auth/rateLimiter";
 import { getOrCreateRequestId, REQUEST_ID_HEADER } from "@/lib/observability/requestId";
 import { verifyWalletSession } from "@/lib/supabase/serverAuth";
@@ -29,7 +30,7 @@ export function json(body: unknown, status: number, requestId: string, headers: 
 
 /** Absolute origin for links that leave the app. */
 export function appOrigin(request: NextRequest): string {
-  const configured = process.env.NEXT_PUBLIC_SITE_URL?.trim().replace(/\/+$/, "");
+  const configured = publicEnv.siteUrl?.trim().replace(/\/+$/, "");
   return configured || request.nextUrl.origin;
 }
 
