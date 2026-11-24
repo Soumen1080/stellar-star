@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyTripInvite } from "@/lib/invitations/claim";
 import { createServiceRoleClient } from "@/lib/supabase/server";
+import { toPublicErrorResponse, classifyApiError } from "@/lib/api/errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -18,6 +19,13 @@ export async function GET(request: NextRequest) {
     const summary = await verifyTripInvite(token.trim(), serviceClient ?? undefined);
     return NextResponse.json(summary, { headers: { "Cache-Control": "no-store" } });
   } catch (err) {
+    if (classifyApiError(err).isInternal) {
+      return toPublicErrorResponse(err, {
+        fallbackMessage: "Failed to verify invitation.",
+        route: "/api/invitations/verify",
+        method: "GET",
+      });
+    }
     const message = err instanceof Error ? err.message : "Invalid or unrecognized invitation.";
     if (message.includes("TRIP_MISMATCH")) {
       return NextResponse.json(

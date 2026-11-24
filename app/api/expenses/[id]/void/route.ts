@@ -5,6 +5,8 @@ import { canVoidExpense, validateAuditReason } from "@/lib/expense/corrections";
 import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
 import { EXPENSE_REPLAY_FIELDS, replayFieldsUnder } from "@/lib/idempotency/replay";
 import { authenticateWalletRequest } from "@/lib/api/routeGuard";
+import { parseJsonBody } from "@/lib/api/bodyLimits";
+import { toPublicErrorResponse } from "@/lib/api/errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -71,7 +73,11 @@ export async function POST(
       },
     });
   } catch (err: any) {
-    const message = err instanceof Error ? err.message : "Failed to void expense.";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return toPublicErrorResponse(err, {
+      requestId: request.headers.get("x-request-id"),
+      fallbackMessage: "Failed to void expense.",
+      route: "/api/expenses/[id]/void",
+      method: "POST",
+    });
   }
 }

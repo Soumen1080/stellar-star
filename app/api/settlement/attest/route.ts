@@ -43,6 +43,7 @@ import {
 } from "@/lib/observability/requestId";
 import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
 import { authenticateWalletRequest } from "@/lib/api/routeGuard";
+import { toPublicErrorResponse } from "@/lib/api/errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -293,11 +294,12 @@ export async function POST(request: NextRequest) {
         signatures = JSON.parse(stored.signature) as Array<{ signer: string; signature: string }>;
         if (signatures.length < oracleThreshold()) throw new Error("Stored signature quorum is incomplete.");
       } catch (err) {
-        return jsonError(
-          err instanceof Error ? err.message : "Oracle key unavailable.",
-          503,
+        return toPublicErrorResponse(err, {
           requestId,
-        );
+          fallbackMessage: "Oracle attestation service is temporarily unavailable.",
+          route: "/api/settlement/attest",
+          method: "POST",
+        });
       }
 
       const finalClaim: SettlementClaim = {

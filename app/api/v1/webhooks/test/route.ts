@@ -3,6 +3,7 @@ import { authenticateApiRequest, recordAuditLog } from "@/lib/api/middleware";
 import { sendTestWebhookPing } from "@/lib/api/webhooks";
 import { runIdempotentMutation } from "@/lib/idempotency/route";
 import { parseJsonBody } from "@/lib/api/bodyLimits";
+import { toPublicErrorResponse } from "@/lib/api/errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -69,11 +70,14 @@ export async function POST(request: NextRequest) {
 
         return NextResponse.json({ data: delivery });
       } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : "Failed to execute webhook test.";
-        return NextResponse.json(
-          { error: { code: "TEST_FAILED", message, status: 400 } },
-          { status: 400 }
-        );
+        return toPublicErrorResponse(err, {
+          format: "v1",
+          fallbackMessage: "Failed to execute webhook test.",
+          route: "/api/v1/webhooks/test",
+          method: "POST",
+          status: 400,
+          code: "TEST_FAILED",
+        });
       }
     },
   });

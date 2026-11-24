@@ -3,6 +3,8 @@ import { transferTripOwnership } from "@/lib/supabase/queries";
 import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
 import { TRIP_REPLAY_FIELDS } from "@/lib/idempotency/replay";
 import { authenticateWalletRequest } from "@/lib/api/routeGuard";
+import { parseJsonBody } from "@/lib/api/bodyLimits";
+import { toPublicErrorResponse, classifyApiError } from "@/lib/api/errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -44,6 +46,14 @@ export async function POST(
         const trip = await transferTripOwnership(id, memberId, client);
         return NextResponse.json(trip, { headers: { "Cache-Control": "no-store" } });
       } catch (error) {
+        if (classifyApiError(error).isInternal) {
+          return toPublicErrorResponse(error, {
+            requestId: request.headers.get("x-request-id"),
+            fallbackMessage: "Unable to transfer trip ownership.",
+            route: "/api/trips/[id]/transfer-ownership",
+            method: "POST",
+          });
+        }
         const message = error instanceof Error ? error.message : "Unable to transfer trip ownership.";
         const status = /FORBIDDEN/.test(message)
           ? 403

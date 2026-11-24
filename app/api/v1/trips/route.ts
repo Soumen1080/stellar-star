@@ -11,6 +11,7 @@ import { CursorError, parseLimit } from "@/lib/pagination/keyset";
 import { dispatchWebhookEvent } from "@/lib/api/webhooks";
 import type { Trip } from "@/types/trip";
 import { parseJsonBody, limitedJson, responseLimitFor } from "@/lib/api/bodyLimits";
+import { toPublicErrorResponse } from "@/lib/api/errors";
 
 /** Every JSON response here is size-capped (#418). */
 const respond = (body: unknown, init?: ResponseInit) =>
@@ -42,7 +43,12 @@ export async function GET(request: NextRequest) {
     if (err instanceof CursorError) {
       return respond({ error: { code: "INVALID_PAGINATION", message: err.message, status: 400 } }, { status: 400 });
     }
-    throw err;
+    return toPublicErrorResponse(err, {
+      format: "v1",
+      fallbackMessage: "Failed to load trips.",
+      route: "/api/v1/trips",
+      method: "GET",
+    });
   }
   const { trips, hasMore, nextCursor } = page;
 

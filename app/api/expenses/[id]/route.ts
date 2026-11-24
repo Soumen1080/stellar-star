@@ -23,6 +23,7 @@ import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/
 import { EXPENSE_REPLAY_FIELDS, replayFieldsUnder } from "@/lib/idempotency/replay";
 import type { Expense } from "@/types/expense";
 import { authenticateWalletRequest } from "@/lib/api/routeGuard";
+import { toPublicErrorResponse } from "@/lib/api/errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -193,9 +194,11 @@ async function applyExpenseUpdate(
         { status: 409 }
       );
     }
-    return NextResponse.json(
-      { error: err?.message || "Failed to update expense." },
-      { status: 500 }
-    );
+    return toPublicErrorResponse(err, {
+      requestId: auth.ctx.requestId,
+      fallbackMessage: "Failed to update expense.",
+      route: "/api/expenses/[id]",
+      method: "PATCH",
+    });
   }
 }

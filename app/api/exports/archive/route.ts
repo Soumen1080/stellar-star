@@ -28,6 +28,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { checkRateLimit, getClientIp, rateLimiterUnavailableResponse } from "@/lib/auth/rateLimiter";
 import { buildArchive, exportFileStem } from "@/lib/export/tripExport";
 import { ResponseTooLargeError, parseJsonBody, responseLimitFor, serializeBounded } from "@/lib/api/bodyLimits";
+import { toPublicErrorResponse } from "@/lib/api/errors";
 import { getOrCreateRequestId, REQUEST_ID_HEADER } from "@/lib/observability/requestId";
 import { isServerSupabaseConfigured } from "@/lib/supabase/server";
 import { fetchExpenses, fetchTrips, hasTripPermission } from "@/lib/supabase/queries";
@@ -208,7 +209,11 @@ export async function POST(request: NextRequest) {
     });
   } catch (err) {
     await audit(client, wallet, requestId, ip, { status: "failed", trip_ids: requested ?? [] });
-    const message = err instanceof Error ? err.message : "Failed to build the archive.";
-    return json({ error: message }, 500, requestId);
+    return toPublicErrorResponse(err, {
+      requestId,
+      fallbackMessage: "Failed to build the archive.",
+      route: "/api/exports/archive",
+      method: "POST",
+    });
   }
 }

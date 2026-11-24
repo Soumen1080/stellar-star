@@ -18,6 +18,7 @@ import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/
 import { EXPENSE_REPLAY_FIELDS } from "@/lib/idempotency/replay";
 import type { Expense } from "@/types/expense";
 import { authenticateWalletRequest } from "@/lib/api/routeGuard";
+import { toPublicErrorResponse } from "@/lib/api/errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -60,10 +61,14 @@ export async function GET(request: NextRequest) {
     return NextResponse.json(result);
   } catch (err) {
     if (err instanceof HistoryFilterError) {
-      return NextResponse.json({ error: err.message }, { status: 400 });
+      return NextResponse.json({ error: err.message, code: "INVALID_FILTER", requestId: auth.ctx.requestId }, { status: 400 });
     }
-    const message = err instanceof Error ? err.message : "Failed to load expenses.";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return toPublicErrorResponse(err, {
+      requestId: auth.ctx.requestId,
+      fallbackMessage: "Failed to load expenses.",
+      route: "/api/expenses",
+      method: "GET",
+    });
   }
 }
 
@@ -164,7 +169,11 @@ export async function POST(request: NextRequest) {
       },
     });
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Failed to create expense.";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return toPublicErrorResponse(err, {
+      requestId: auth.ctx.requestId,
+      fallbackMessage: "Failed to create expense.",
+      route: "/api/expenses",
+      method: "POST",
+    });
   }
 }

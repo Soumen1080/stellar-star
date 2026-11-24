@@ -3,6 +3,8 @@ import { createTripInvite } from "@/lib/invitations/claim";
 import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
 import { enforceAbuseProtection, enforceIdempotencyKeyLimit } from "@/lib/security/abuseProtection";
 import { authenticateWalletRequest } from "@/lib/api/routeGuard";
+import { parseJsonBody } from "@/lib/api/bodyLimits";
+import { toPublicErrorResponse } from "@/lib/api/errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -68,7 +70,11 @@ export async function POST(request: NextRequest) {
       },
     });
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Failed to create invitation.";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return toPublicErrorResponse(err, {
+      requestId: request.headers.get("x-request-id"),
+      fallbackMessage: "Failed to create invitation.",
+      route: "/api/invitations/create",
+      method: "POST",
+    });
   }
 }

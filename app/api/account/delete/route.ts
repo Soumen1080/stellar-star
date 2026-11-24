@@ -3,6 +3,7 @@ import { createServiceRoleClient, isServerSupabaseConfigured } from "@/lib/supab
 import { executeAccountDeletion } from "@/lib/privacy/accountDeletion";
 import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
 import { authenticateWalletRequest } from "@/lib/api/routeGuard";
+import { toPublicErrorResponse } from "@/lib/api/errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -41,12 +42,13 @@ export async function POST(request: NextRequest) {
         return NextResponse.json(result, { headers: { "Cache-Control": "no-store" } });
       },
     });
-  } catch (err: any) {
-    console.error("[account/delete] Failed to delete account:", err);
-    return NextResponse.json(
-      { error: err.message || "Failed to execute account deletion." },
-      { status: 500 }
-    );
+  } catch (err) {
+    return toPublicErrorResponse(err, {
+      requestId: auth.ctx.requestId,
+      fallbackMessage: "Failed to execute account deletion.",
+      route: "/api/account/delete",
+      method: "POST",
+    });
   }
 }
 

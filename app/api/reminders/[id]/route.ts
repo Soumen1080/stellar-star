@@ -18,6 +18,7 @@ import {
 import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
 import { REMINDER_PREFERENCE_REPLAY_FIELDS, REMINDER_REPLAY_FIELDS, replayFieldsUnder } from "@/lib/idempotency/replay";
 import { REQUEST_ID_HEADER } from "@/lib/observability/requestId";
+import { toPublicErrorResponse } from "@/lib/api/errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -35,7 +36,12 @@ export async function GET(request: NextRequest, { params }: Params) {
     if (!result.ok) return json({ error: result.message }, result.status, auth.requestId);
     return json({ data: result.context }, 200, auth.requestId);
   } catch (err) {
-    return json({ error: err instanceof Error ? err.message : "Failed to load the request." }, 500, auth.requestId);
+    return toPublicErrorResponse(err, {
+      requestId: auth.requestId,
+      fallbackMessage: "Failed to load the request.",
+      route: "/api/reminders/[id]",
+      method: "GET",
+    });
   }
 }
 
@@ -74,6 +80,11 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       },
     });
   } catch (err) {
-    return json({ error: err instanceof Error ? err.message : "Failed to update the request." }, 500, auth.requestId);
+    return toPublicErrorResponse(err, {
+      requestId: auth.requestId,
+      fallbackMessage: "Failed to update the request.",
+      route: "/api/reminders/[id]",
+      method: "PATCH",
+    });
   }
 }

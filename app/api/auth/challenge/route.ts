@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { toPublicErrorResponse } from "@/lib/api/errors";
 import { Account, TransactionBuilder, Memo, Operation, Keypair } from "@stellar/stellar-sdk";
 import { NETWORK_PASSPHRASE, TX_BASE_FEE } from "@/lib/utils/constants";
 import { generateChallengeSignature, CHALLENGE_TTL_MS } from "@/lib/supabase/serverAuth";
@@ -59,6 +60,10 @@ export async function GET(request: NextRequest) {
     );
   } catch (error: any) {
     console.error("Challenge generation error:", error);
-    return NextResponse.json({ error: error.message || "Failed to generate challenge" }, { status: 500 });
+    return toPublicErrorResponse(error, {
+      fallbackMessage: "Failed to generate challenge",
+      route: "/api/auth/challenge",
+      method: "POST",
+    });
   }
 }

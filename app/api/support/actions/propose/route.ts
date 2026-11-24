@@ -14,6 +14,7 @@ import { createServiceRoleClient, createServerAnonClient, isServerSupabaseConfig
 import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
 import { SUPPORT_PROPOSAL_REPLAY_FIELDS, replayFieldsUnder } from "@/lib/idempotency/replay";
 import { parseJsonBody } from "@/lib/api/bodyLimits";
+import { toPublicErrorResponse } from "@/lib/api/errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -88,10 +89,12 @@ export async function POST(request: NextRequest) {
         if (err instanceof DualControlError) {
           return NextResponse.json({ error: err.message, code: err.code }, { status: err.status });
         }
-        return NextResponse.json(
-          { error: err?.message || "Failed to submit proposal." },
-          { status: 500 }
-        );
+        return toPublicErrorResponse(err, {
+          requestId: request.headers.get("x-request-id"),
+          fallbackMessage: "Failed to submit proposal.",
+          route: "/api/support/actions/propose",
+          method: "POST",
+        });
       }
     },
   });

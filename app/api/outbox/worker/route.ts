@@ -20,6 +20,7 @@ import { listOutboxEvents } from "@/lib/outbox/repository";
 import { createServiceRoleClient } from "@/lib/supabase/server";
 import { getOrCreateRequestId, REQUEST_ID_HEADER } from "@/lib/observability/requestId";
 import { parseJsonBody } from "@/lib/api/bodyLimits";
+import { toPublicErrorResponse } from "@/lib/api/errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -80,11 +81,12 @@ export async function GET(request: NextRequest) {
       { headers: responseHeaders(requestId) }
     );
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Failed to query outbox queue.";
-    return NextResponse.json(
-      { error: message, requestId },
-      { status: 500, headers: responseHeaders(requestId) }
-    );
+    return toPublicErrorResponse(err, {
+      requestId,
+      fallbackMessage: "Failed to query outbox queue.",
+      route: "/api/outbox/worker",
+      method: "GET",
+    });
   }
 }
 
@@ -124,10 +126,11 @@ export async function POST(request: NextRequest) {
       { headers: responseHeaders(requestId) }
     );
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Outbox worker execution failed.";
-    return NextResponse.json(
-      { error: message, requestId },
-      { status: 500, headers: responseHeaders(requestId) }
-    );
+    return toPublicErrorResponse(err, {
+      requestId,
+      fallbackMessage: "Outbox worker execution failed.",
+      route: "/api/outbox/worker",
+      method: "POST",
+    });
   }
 }
