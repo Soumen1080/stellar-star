@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { type ApiScope, type AuditLogEntry, type ScopedTokenPayload } from "./types";
 import { verifyScopedToken } from "./tokens";
 import { checkRateLimit, getClientIp } from "@/lib/auth/rateLimiter";
+import { createServiceRoleClient } from "@/lib/supabase/server";
 
 export interface AuthenticatedContext {
   tokenPayload: ScopedTokenPayload;
@@ -57,6 +58,23 @@ export function getAuditLogsForWallet(
 export function clearAuditLogs(): void {
   auditLogs.length = 0;
   idempotencyCache.clear();
+}
+
+/** Keep the count and outcome of process-local diagnostics while stripping identity data. */
+export function anonymizeApiAuditLogsForWallet(walletAddress: string): number {
+  const wallet = walletAddress.trim().toUpperCase();
+  let redacted = 0;
+  for (const entry of auditLogs) {
+    if (entry.walletAddress !== wallet) continue;
+    entry.walletAddress = "FORMER_ACCOUNT";
+    entry.tokenId = null;
+    entry.ip = "redacted";
+    entry.userAgent = "redacted";
+    entry.idempotencyKey = null;
+    redacted++;
+  }
+  for (const key of idempotencyCache.keys()) if (key.startsWith(`${wallet}:`)) idempotencyCache.delete(key);
+  return redacted;
 }
 
 /**
@@ -115,6 +133,18 @@ export async function authenticateApiRequest(
   }
 
   const payload = verification.payload;
+
+  const serviceClient = createServiceRoleClient();
+  if (serviceClient) {
+    const { data: deleted, error } = await (serviceClient as any)
+      .from("deleted_accounts").select("wallet_address").eq("wallet_address", payload.walletAddress.trim().toUpperCase()).maybeSingle();
+    if (error) {
+      return { success: false, response: NextResponse.json({ error: { code: "ACCOUNT_STATUS_UNAVAILABLE", message: "Unable to verify account status.", status: 503 } }, { status: 503 }) };
+    }
+    if (deleted) {
+      return { success: false, response: NextResponse.json({ error: { code: "ACCOUNT_DELETED", message: "This account has been deleted.", status: 401 } }, { status: 401 }) };
+    }
+  }
 
   // 2. Enforce scope authorization
   if (options.requiredScopes && options.requiredScopes.length > 0) {

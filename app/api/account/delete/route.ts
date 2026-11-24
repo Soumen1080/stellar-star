@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyWalletSession } from "@/lib/supabase/serverAuth";
-import { createServerClientForToken, createServiceRoleClient, isServerSupabaseConfigured } from "@/lib/supabase/server";
-import { executeAccountDeletion } from "@/lib/privacy/accountDeletion";
+import { createServiceRoleClient, isServerSupabaseConfigured } from "@/lib/supabase/server";
+import { executeAccountDeletionStateMachine } from "@/lib/privacy/accountDeletionStateMachine";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -33,9 +33,10 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const client = createServiceRoleClient() ?? createServerClientForToken(token);
-    const result = await executeAccountDeletion(session.wallet_address, client);
-    return NextResponse.json(result, { headers: { "Cache-Control": "no-store" } });
+    const client = createServiceRoleClient();
+    if (!client) return NextResponse.json({ error: "Account deletion service is not configured." }, { status: 503 });
+    const result = await executeAccountDeletionStateMachine(session.wallet_address, client);
+    return NextResponse.json(result, { status: result.state === "held" ? 202 : 200, headers: { "Cache-Control": "no-store" } });
   } catch (err: any) {
     console.error("[account/delete] Failed to delete account:", err);
     return NextResponse.json(

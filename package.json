@@ -21,6 +21,7 @@
     "test:coverage": "jest --coverage",
     "test:error-reporting": "node scripts/smoke-error-reporting.js",
     "openapi:check": "node scripts/check-openapi-compat.mjs",
+    "privacy:verify-deletion": "node scripts/verify-account-deletion.mjs",
     "proof:links": "node scripts/proof-link-check.js",
     "config:validate": "node scripts/validate-config.js",
     "db:check": "node scripts/check-supabase.mjs",

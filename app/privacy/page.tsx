@@ -22,6 +22,7 @@ import Footer from "@/components/layout/Footer";
 import { useAuth } from "@/context/AuthContext";
 import { useWallet } from "@/hooks/useWallet";
 import { useToast } from "@/components/ui/Toast";
+import { clearAllPendingOnChainForWallet } from "@/lib/utils/pendingOnChain";
 
 export default function PrivacyPage() {
   const { user, token, signOut } = useAuth();
@@ -80,6 +81,24 @@ export default function PrivacyPage() {
       const result = await res.json();
       if (!res.ok) {
         throw new Error(result.error || "Failed to delete account.");
+      }
+      if (result.state === "held") {
+        toastError("Deletion Paused", "A legal hold requires the account data to be retained. Access is revoked while the hold is active.");
+        return;
+      }
+      if (publicKey) {
+        clearAllPendingOnChainForWallet(publicKey);
+        try {
+          for (let i = localStorage.length - 1; i >= 0; i--) {
+            const key = localStorage.key(i);
+            if (!key) continue;
+            if (key.toUpperCase().includes(publicKey.toUpperCase()) || key.startsWith("stellar_star_workspace_")) {
+              localStorage.removeItem(key);
+            }
+          }
+        } catch {
+          // The durable server workflow already completed; restricted storage cannot block sign-out.
+        }
       }
       success(
         "Account Deleted",
