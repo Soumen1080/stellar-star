@@ -95,6 +95,7 @@ export async function POST(request: NextRequest, context: Context) {
     const bytes = new Uint8Array(await file.arrayBuffer());
     const fileName = "name" in file ? (file as File).name : null;
     const caption = form.get("caption");
+    const intentId = form.get("intent_id")?.toString();
     const inspected = inspectReceiptUpload({
       bytes,
       declaredType: file.type,
@@ -125,6 +126,7 @@ export async function POST(request: NextRequest, context: Context) {
           wallet: clients.wallet,
           inspected,
           bytes,
+          intentId: intentId ?? undefined,
         });
         return receiptJson({ data: receipt }, 201);
       },

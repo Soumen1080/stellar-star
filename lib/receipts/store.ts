@@ -22,6 +22,7 @@ import {
   receiptRetentionDays,
   type ReceiptContentType,
 } from "./policy";
+import { cleanupAbandonedUploads, recordPromotedIntent, recordQuarantinedIntent } from "./intent";
 
 type Client = SupabaseClient<Database>;
 
@@ -128,7 +129,15 @@ export async function storeReceipt(
     inspected,
     bytes,
     now = new Date(),
-  }: { expenseId: string; wallet: string; inspected: InspectedReceipt; bytes: Uint8Array; now?: Date },
+    intentId,
+  }: {
+    expenseId: string;
+    wallet: string;
+    inspected: InspectedReceipt;
+    bytes: Uint8Array;
+    now?: Date;
+    intentId?: string;
+  },
 ): Promise<ExpenseReceipt> {
   const { count, error: countError } = await serviceClient
     .from("expense_receipts")
@@ -199,6 +208,37 @@ export async function storeReceipt(
     }
     throw new ReceiptStoreError("Could not save the receipt details. Please try again.");
   }
+
+  // Update upload intent if intentId was passed
+  if (intentId) {
+    if (quarantined) {
+      await recordQuarantinedIntent(serviceClient, {
+        intentId,
+        storagePath,
+        fileName: inspected.fileName,
+        contentType: inspected.contentType,
+        sizeBytes: inspected.sizeBytes,
+        checksum: inspected.checksum,
+        caption: inspected.caption,
+        scanResult: { ...inspected.scan },
+        now,
+      }).catch(() => {});
+    } else {
+      await recordPromotedIntent(serviceClient, {
+        intentId,
+        receiptId: id,
+        promotedPath: storagePath,
+        fileName: inspected.fileName,
+        contentType: inspected.contentType,
+        sizeBytes: inspected.sizeBytes,
+        checksum: inspected.checksum,
+        caption: inspected.caption,
+        scanResult: { ...inspected.scan },
+        now,
+      }).catch(() => {});
+    }
+  }
+
   return rowToReceipt(data as ExpenseReceiptRow);
 }
 
@@ -276,7 +316,7 @@ export async function removeReceipt(
 export async function purgeExpiredReceipts(
   serviceClient: Client,
   { now = new Date(), batchSize = 100 }: { now?: Date; batchSize?: number } = {},
-): Promise<{ purged: number; failed: number }> {
+): Promise<{ purged: number; failed: number; abandonedCleaned: number }> {
   const { data, error } = await serviceClient
     .from("expense_receipts")
     .select("id, storage_path, expense_id, retain_until")
@@ -301,5 +341,12 @@ export async function purgeExpiredReceipts(
       failed += 1;
     }
   }
-  return { purged, failed };
+
+  // Clean up abandoned upload intents and orphaned quarantine objects (#451)
+  const { failed: abandonedFailed } = await cleanupAbandonedUploads(serviceClient, {
+    now,
+    batchSize,
+  }).catch(() => ({ cleaned: 0, failed: 0 }));
+
+  return { purged, failed: failed + abandonedFailed };
 }

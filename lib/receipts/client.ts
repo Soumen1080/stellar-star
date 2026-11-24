@@ -6,7 +6,7 @@
  */
 
 import { getAccessToken } from "@/lib/supabase/session";
-import type { ExpenseReceipt, ReceiptLink } from "@/types/receipt";
+import type { ExpenseReceipt, ReceiptLink, ReceiptUploadIntent } from "@/types/receipt";
 import { DEFAULT_RECEIPT_MAX_BYTES, RECEIPT_TYPES } from "./policy";
 import { idempotencyHeaders, newIdempotencyKey } from "@/lib/idempotency/client";
 
@@ -43,6 +43,21 @@ export async function checkReceiptStorage(file: File, fetchImpl?: typeof fetch):
 }
 
 /**
+ * Creates a short-lived upload intent before uploading large receipt attachments (#451).
+ */
+export function createReceiptUploadIntent(
+  expenseId: string,
+  fetchImpl?: typeof fetch,
+  idempotencyKey: string = newIdempotencyKey(),
+) {
+  return call<ReceiptUploadIntent & { maxBytes: number; allowedTypes: string[] }>(
+    `/api/expenses/${encodeURIComponent(expenseId)}/receipts/intent`,
+    { method: "POST", headers: idempotencyHeaders(idempotencyKey) },
+    fetchImpl,
+  );
+}
+
+/**
  * Pass the same `idempotencyKey` when retrying one upload so the server
  * stores it once (#412); a fresh key is generated when omitted.
  */
@@ -53,10 +68,12 @@ export function uploadExpenseReceipt(
   caption: string,
   fetchImpl?: typeof fetch,
   idempotencyKey: string = newIdempotencyKey(),
+  intentId?: string,
 ) {
   const form = new FormData();
   form.append("file", file, fileName);
   if (caption.trim()) form.append("caption", caption.trim());
+  if (intentId) form.append("intent_id", intentId);
   return call<ExpenseReceipt>(
     `/api/expenses/${encodeURIComponent(expenseId)}/receipts`,
     { method: "POST", body: form, headers: idempotencyHeaders(idempotencyKey) },
