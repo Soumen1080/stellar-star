@@ -45,6 +45,9 @@ describe("Travel Workspace Privacy, Chain Isolation, and Data Portability", () =
   ];
 
   const mockWorkspace: TravelWorkspace = {
+    chores: [],
+    choreOptOutWallets: [],
+    choresEnabled: true,
     itinerary: [
       {
         id: "itin-1",

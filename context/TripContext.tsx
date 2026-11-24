@@ -8,6 +8,7 @@ import {
   insertTrip,
   createTripFromCopyRow,
   updateTripRow,
+  appendTripChoreCompletionRow,
   deleteTripRow,
   addExpenseIdToTrip,
   cacheDomainsForMutation,
@@ -25,6 +26,7 @@ interface TripContextType {
   /** Creates a trip from a template or past trip. Safe to retry with the same key. */
   copyTrip: (request: TripCopyRequest) => Promise<Trip>;
   updateTrip: (id: string, updates: Partial<Trip>) => Promise<void>;
+  appendChoreCompletion: (tripId: string, choreId: string) => Promise<Trip>;
   deleteTrip: (id: string) => Promise<void>;
   addExpenseToTrip: (tripId: string, expenseId: string) => Promise<void>;
   settleTrip: (id: string) => Promise<void>;
@@ -154,6 +156,22 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
     [mutate, wallet]
   );
 
+  const appendChoreCompletion = useCallback(
+    async (tripId: string, choreId: string) => {
+      const saved = await appendTripChoreCompletionRow(tripId, choreId);
+      mutate((previous) => previous.map((trip) => (trip.id === tripId ? saved : trip)));
+      if (wallet) {
+        invalidateQueryCaches({
+          wallet,
+          domains: cacheDomainsForMutation("trip_write"),
+          tripId,
+        });
+      }
+      return saved;
+    },
+    [mutate, wallet]
+  );
+
   const deleteTrip = useCallback(
     async (id: string) => {
       cancelTripWatcher(id);
@@ -216,6 +234,7 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
       addTrip,
       copyTrip,
       updateTrip,
+      appendChoreCompletion,
       deleteTrip,
       addExpenseToTrip,
       settleTrip,
@@ -234,6 +253,7 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
       addTrip,
       copyTrip,
       updateTrip,
+      appendChoreCompletion,
       deleteTrip,
       addExpenseToTrip,
       settleTrip,

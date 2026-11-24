@@ -1684,6 +1684,10 @@ export type Database = {
         };
         Returns: string;
       };
+      append_trip_chore_completion: {
+        Args: { p_trip_id: string; p_chore_id: string };
+        Returns: TripRow[];
+      };
     };
     Enums: { [_ in never]: never };
     CompositeTypes: { [_ in never]: never };

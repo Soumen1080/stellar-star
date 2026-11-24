@@ -317,6 +317,7 @@ async function main() {
         remote.checksum === "reconcile_drifted_schema_v1" ||
         remote.checksum === "settlement_intents_v1" ||
         remote.checksum === "verify_trip_invite_v1" ||
+        remote.checksum === "trip_chore_coordination_v1" ||
         remote.checksum === "immutable_migration_identity_v1";
 
       if (checksumOk) {
