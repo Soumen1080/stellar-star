@@ -184,7 +184,7 @@ function classifyExplorer(url: string): StellarNetwork | null {
  *  - Catches server secrets accidentally published via client-prefixed env vars.
  */
 export function getNetworkConfigErrors(): string[] {
-  const rawNetwork = process.env.NEXT_PUBLIC_STELLAR_NETWORK?.trim();
+  const rawNetwork = (publicEnv.stellarNetwork ?? process.env.NEXT_PUBLIC_STELLAR_NETWORK)?.trim();
   const expected: StellarNetwork = rawNetwork === "PUBLIC" ? "PUBLIC" : "TESTNET";
   const horizonUrl = process.env.NEXT_PUBLIC_HORIZON_URL?.trim() || (expected === "PUBLIC" ? "https://horizon.stellar.org" : "https://horizon-testnet.stellar.org");
   const sorobanRpcUrl = process.env.NEXT_PUBLIC_SOROBAN_RPC_URL?.trim() || (expected === "PUBLIC" ? "https://soroban-rpc.mainnet.stellar.org" : "https://soroban-testnet.stellar.org");
@@ -199,7 +199,6 @@ export function getNetworkConfigErrors(): string[] {
   const errors: string[] = [];
 
   // Check valid network string
-  const rawNetwork = publicEnv.stellarNetwork?.trim();
   if (rawNetwork && rawNetwork !== "TESTNET" && rawNetwork !== "PUBLIC") {
     errors.push(
       `NEXT_PUBLIC_STELLAR_NETWORK must be "TESTNET" or "PUBLIC" (found "${rawNetwork}").`

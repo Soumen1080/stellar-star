@@ -2,7 +2,7 @@
   "$schema": "./manifest.schema.json",
   "formatVersion": "1.0.0",
   "description": "Canonical append-only migration manifest guaranteeing deterministic execution ordering and immutable identities",
-  "totalMigrations": 48,
+  "totalMigrations": 50,
   "migrations": [
     {
       "sequence": 1,
@@ -483,6 +483,26 @@
       "checksum": "76f30c071b089fe5",
       "sha256": "76f30c071b089fe54c22bf85a5a2d67c8402b323baff449f1bc50845ef70bb3e",
       "description": "Tenant quota limits, usage tracking, backpressure and meter triggers (#462)"
+    },
+    {
+      "sequence": 49,
+      "id": "0019_durable_webhook_delivery",
+      "version": "0019",
+      "filename": "0019_durable_webhook_delivery.sql",
+      "name": "0019_durable_webhook_delivery",
+      "checksum": "4ffb1d24e9bbed2c",
+      "sha256": "4ffb1d24e9bbed2c83ccc5bcdf2bb8f0bd22d764fb1ed2e9b2c511d739812587",
+      "description": "Durable, bounded webhook delivery and retry outbox"
+    },
+    {
+      "sequence": 50,
+      "id": "0031_private_object_encryption_and_rotation",
+      "version": "0031",
+      "filename": "0031_private_object_encryption_and_rotation.sql",
+      "name": "0031_private_object_encryption_and_rotation",
+      "checksum": "90d931fda983b5f4",
+      "sha256": "90d931fda983b5f420d78890bfec92f5c5bf089dd21af2dd707346fb6986f675",
+      "description": "Private object managed encryption, access logging, key rotation, and crypto-erasure (#453)"
     }
   ]
 }

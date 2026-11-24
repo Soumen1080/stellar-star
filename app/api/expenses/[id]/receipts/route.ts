@@ -127,6 +127,8 @@ export async function POST(request: NextRequest, context: Context) {
           inspected,
           bytes,
           intentId: intentId ?? undefined,
+          encrypted: true,
+          requestId: request.headers.get("x-request-id") ?? crypto.randomUUID(),
         });
         return receiptJson({ data: receipt }, 201);
       },

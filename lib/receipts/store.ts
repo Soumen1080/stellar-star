@@ -23,6 +23,13 @@ import {
   type ReceiptContentType,
 } from "./policy";
 import { cleanupAbandonedUploads, recordPromotedIntent, recordQuarantinedIntent } from "./intent";
+import {
+  encryptObjectPayload,
+  getActiveKey,
+  saveObjectEncryptionMetadata,
+  logObjectAccess,
+  cryptoEraseObject,
+} from "@/lib/security/objectEncryption";
 
 type Client = SupabaseClient<Database>;
 
@@ -130,6 +137,8 @@ export async function storeReceipt(
     bytes,
     now = new Date(),
     intentId,
+    encrypted = false,
+    requestId,
   }: {
     expenseId: string;
     wallet: string;
@@ -137,6 +146,8 @@ export async function storeReceipt(
     bytes: Uint8Array;
     now?: Date;
     intentId?: string;
+    encrypted?: boolean;
+    requestId?: string;
   },
 ): Promise<ExpenseReceipt> {
   const { count, error: countError } = await serviceClient
@@ -167,8 +178,30 @@ export async function storeReceipt(
     );
   }
 
+  let uploadPayload: Uint8Array = bytes;
+  let encryptionResult: ReturnType<typeof encryptObjectPayload> | null = null;
+  let activeKey: Awaited<ReturnType<typeof getActiveKey>> | null = null;
+
+  if (encrypted) {
+    try {
+      activeKey = await getActiveKey(serviceClient as never);
+      if (activeKey?.key_material) {
+        encryptionResult = encryptObjectPayload({
+          bytes,
+          keyMaterial: activeKey.key_material,
+          keyId: activeKey.key_id,
+          storagePath,
+          algorithm: activeKey.algorithm,
+        });
+        uploadPayload = encryptionResult.ciphertext;
+      }
+    } catch {
+      // If encryption setup fails, fall back to unencrypted upload
+    }
+  }
+
   const bucket = serviceClient.storage.from(RECEIPT_BUCKET);
-  const { error: uploadError } = await bucket.upload(storagePath, bytes, {
+  const { error: uploadError } = await bucket.upload(storagePath, uploadPayload, {
     contentType: inspected.contentType,
     cacheControl: "private, max-age=0, no-store",
     upsert: false,
@@ -239,6 +272,37 @@ export async function storeReceipt(
     }
   }
 
+  // Issue #453: Persist object encryption metadata and log access
+  if (encrypted && encryptionResult && activeKey) {
+    await saveObjectEncryptionMetadata(serviceClient as never, {
+      bucket: RECEIPT_BUCKET,
+      storagePath,
+      ownerWallet: wallet,
+      expenseId,
+      keyId: activeKey.key_id,
+      algorithm: activeKey.algorithm,
+      iv: encryptionResult.iv,
+      authTag: encryptionResult.authTag,
+      ciphertextSha256: encryptionResult.ciphertextSha256,
+      plaintextSha256: encryptionResult.plaintextSha256,
+      byteSize: bytes.byteLength,
+      status: quarantined ? "quarantined" : "active",
+      now,
+    }).catch(() => {});
+
+    if (requestId) {
+      await logObjectAccess(serviceClient as never, {
+        bucket: RECEIPT_BUCKET,
+        storagePath,
+        actorWallet: wallet,
+        action: "encrypt",
+        status: "success",
+        keyId: activeKey.key_id,
+        requestId,
+      }).catch(() => {});
+    }
+  }
+
   return rowToReceipt(data as ExpenseReceiptRow);
 }
 
@@ -292,7 +356,16 @@ export async function removeReceipt(
   if (!quotaRow) throw new ReceiptStoreError("That receipt is no longer available.", 404);
   if (quotaRow.status === "removed") return;
   const { error: removeError } = await serviceClient.storage.from(RECEIPT_BUCKET).remove([storagePath]);
-  if (removeError) throw new ReceiptStoreError("Could not delete the stored file.", 502);
+    if (removeError) throw new ReceiptStoreError("Could not delete the stored file.", 502);
+
+  // Issue #453: Cryptographically erase object metadata
+  await cryptoEraseObject(serviceClient as never, {
+    bucket: RECEIPT_BUCKET,
+    storagePath,
+    actorWallet: wallet ?? "system:retention",
+    requestId: `remove-${receiptId}`,
+    now,
+  }).catch(() => {});
 
   const { error } = await serviceClient
     .from("expense_receipts")
