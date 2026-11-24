@@ -65,6 +65,17 @@ stops working within a minute. Quarantined receipts return `403`, removed ones
   example from Vercel Cron) purges expired receipts and receipts whose expense
   was deleted. Without `CRON_SECRET` the endpoint is disabled.
 
+## Managed Object Encryption, Access Logs, Key Rotation, and Crypto-Erasure (#453)
+
+Bucket privacy alone is not a sufficient key policy for sensitive receipts and exports:
+1. **Managed Encryption at Rest**: Object payloads are encrypted using AES-256-GCM. An Authenticated Additional Data (AAD) binding (`<storage_path>:<key_id>`) guarantees ciphertext cannot be replanted or tampered across different object paths or keys.
+2. **Key Lifecycle & Staging Rotation**: Key states transition through `active`, `retiring`, `revoked`, and `erased`. `rotateObjectKey` and `POST /api/admin/objects/rotate` allow online, staging re-encryption of existing objects from old keys to target keys without service interruption.
+3. **Object Access Audit Logging**: Every `encrypt`, `decrypt`, `read_metadata`, `rotate`, `delete`, and `crypto_erase` action is recorded in `public.object_access_logs`. Every log entry strictly correlates the incoming `request_id` (via `X-Request-Id`).
+4. **Crypto-Erasure & Deletion Procedures**:
+   - Object-level: `cryptoEraseObject` zeros out the stored initialization vector (IV) and authentication tag in `public.private_object_metadata`, rendering any lingering storage or backup copies cryptographically unrecoverable.
+   - Key-level: `cryptoEraseKey` erases master key material in `public.object_encryption_keys`, providing instant crypto-erasure for all associated objects.
+5. **Unauthorized Access Denial**: Metadata queries for unauthorized wallets fail closed with `403 Forbidden`, and access denials are recorded in the audit log.
+
 ## Tests
 
 - `__tests__/receipts/inspect.test.ts`: type sniffing, allowlist, size, mobile

@@ -1,5 +1,9 @@
 -- Durable, bounded webhook delivery. Endpoint secrets stay server-side and
 -- delivery rows are unique per endpoint/event so re-enqueueing is harmless.
+--
+-- Rollback: forward-only and non-destructive. To revert:
+--   DROP TABLE IF EXISTS public.webhook_outbox;
+--   DROP TABLE IF EXISTS public.webhook_endpoints;
 CREATE TABLE IF NOT EXISTS public.webhook_endpoints (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   wallet_address TEXT NOT NULL,

@@ -16,6 +16,13 @@
 --   5. OCR-suggested data **never** writes to `expenses` without an explicit
 --      human review step (the existing ReceiptDraftReview UI enforces this, and
 --      the API double-checks `reviewed: true` on every field).
+--
+-- Rollback: forward-only and non-destructive. To revert:
+--   DROP FUNCTION IF EXISTS public.claim_ocr_job(TEXT, INT, INT);
+--   DROP FUNCTION IF EXISTS public.complete_ocr_job(UUID, TEXT, JSONB, NUMERIC, JSONB, TEXT, TEXT);
+--   DROP TABLE IF EXISTS public.ocr_quota_config;
+--   DROP TABLE IF EXISTS public.ocr_results;
+--   DROP TABLE IF EXISTS public.ocr_jobs;
 
 -- ─── OCR job queue ──────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS public.ocr_jobs (

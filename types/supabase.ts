@@ -518,6 +518,54 @@ export type ReceiptUploadIntentRow = {
   updated_at: string;
 };
 
+/** Issue #453: Managed object encryption key row. */
+export type ObjectEncryptionKeyRow = {
+  key_id: string;
+  algorithm: "aes-256-gcm" | "chacha20-poly1305";
+  status: "active" | "retiring" | "revoked" | "erased";
+  key_material: string | null;
+  created_at: string;
+  activated_at: string;
+  revoked_at: string | null;
+  erased_at: string | null;
+};
+
+/** Issue #453: Private object encryption metadata row. */
+export type PrivateObjectMetadataRow = {
+  id: string;
+  bucket: string;
+  storage_path: string;
+  owner_wallet: string;
+  expense_id: string | null;
+  key_id: string;
+  algorithm: "aes-256-gcm" | "chacha20-poly1305";
+  iv: string;
+  auth_tag: string;
+  ciphertext_sha256: string;
+  plaintext_sha256: string;
+  byte_size: number;
+  status: "active" | "quarantined" | "erased" | "deleted";
+  created_at: string;
+  updated_at: string;
+  last_rotated_at: string | null;
+};
+
+/** Issue #453: Object access log row. */
+export type ObjectAccessLogRow = {
+  id: string;
+  bucket: string;
+  storage_path: string;
+  actor_wallet: string;
+  action: "encrypt" | "decrypt" | "read_metadata" | "rotate" | "delete" | "crypto_erase";
+  status: "success" | "forbidden" | "failed" | "erased";
+  key_id: string | null;
+  old_key_id: string | null;
+  request_id: string;
+  client_ip_hash: string | null;
+  error_message: string | null;
+  created_at: string;
+};
+
 export type RecurringTemplateRow = {
   id: string;
   trip_id: string | null;
@@ -1164,6 +1212,24 @@ export type Database = {
           promoted_path?: string | null;
         };
         Update: Partial<Pick<ReceiptUploadIntentRow, "status" | "file_name" | "content_type" | "size_bytes" | "checksum_sha256" | "caption" | "storage_path" | "promoted_path" | "scan_result" | "receipt_id" | "updated_at">>;
+        Relationships: [];
+      };
+      object_encryption_keys: {
+        Row: ObjectEncryptionKeyRow;
+        Insert: ObjectEncryptionKeyRow;
+        Update: Partial<ObjectEncryptionKeyRow>;
+        Relationships: [];
+      };
+      private_object_metadata: {
+        Row: PrivateObjectMetadataRow;
+        Insert: Omit<PrivateObjectMetadataRow, "id" | "created_at" | "updated_at"> & { id?: string };
+        Update: Partial<Omit<PrivateObjectMetadataRow, "id" | "created_at">>;
+        Relationships: [];
+      };
+      object_access_logs: {
+        Row: ObjectAccessLogRow;
+        Insert: Omit<ObjectAccessLogRow, "id" | "created_at"> & { id?: string };
+        Update: Partial<ObjectAccessLogRow>;
         Relationships: [];
       };
       recurring_expense_templates: {

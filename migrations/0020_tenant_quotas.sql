@@ -1,3 +1,16 @@
+-- ============================================================================
+-- Migration 0020: Tenant Quota Limits and Usage Tracking (#462)
+-- ============================================================================
+--
+-- Rollback: forward-only and non-destructive. To revert:
+--   DROP FUNCTION IF EXISTS public.meter_tenant_realtime_event() CASCADE;
+--   DROP FUNCTION IF EXISTS public.consume_tenant_quotas CASCADE;
+--   DROP FUNCTION IF EXISTS public.check_tenant_quotas CASCADE;
+--   DROP TABLE IF EXISTS public.tenant_quota_objects;
+--   DROP TABLE IF EXISTS public.tenant_quota_usage;
+--   DROP TABLE IF EXISTS public.tenant_quota_limits;
+-- ============================================================================
+
 CREATE TABLE IF NOT EXISTS public.tenant_quota_limits (
   wallet_address TEXT PRIMARY KEY,
   objects_limit BIGINT NOT NULL DEFAULT 500 CHECK (objects_limit >= 0),

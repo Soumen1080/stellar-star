@@ -1,6 +1,12 @@
 -- ============================================================================
 -- Migration 0019: Atomic chore completion and owner-only chore configuration
 -- ============================================================================
+--
+-- Rollback: forward-only and non-destructive. To revert:
+--   DROP TRIGGER IF EXISTS trg_trips_guard_chore_configuration ON public.trips;
+--   DROP FUNCTION IF EXISTS public.guard_trip_chore_configuration();
+--   DROP FUNCTION IF EXISTS public.append_trip_chore_completion(UUID, TEXT);
+-- ============================================================================
 
 CREATE OR REPLACE FUNCTION public.guard_trip_chore_configuration()
 RETURNS TRIGGER

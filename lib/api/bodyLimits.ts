@@ -75,6 +75,8 @@ export const ROUTE_BODY_LIMITS: Readonly<Record<string, number>> = Object.freeze
   "/api/v1/expenses": 64 * KiB,
   "/api/v1/webhooks": 8 * KiB,
   "/api/v1/webhooks/test": 8 * KiB,
+  "/api/admin/objects/rotate": 8 * KiB,
+  "/api/admin/objects/crypto-erase": 8 * KiB,
 });
 
 /** Per-route response caps for routes that can return large collections. */

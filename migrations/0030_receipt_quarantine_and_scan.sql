@@ -8,6 +8,10 @@
 --   2. Explicit status tracking: pending -> quarantined -> promoted/rejected/abandoned.
 --   3. RPC for atomic promotion of quarantined uploads to active receipts.
 --   4. RLS policies ensuring upload intents are tenant-isolated and owner-scoped.
+--
+-- Rollback: forward-only and non-destructive. To revert:
+--   DROP FUNCTION IF EXISTS public.promote_receipt_intent(UUID, UUID, TEXT, TEXT, TEXT, INT, TEXT, TEXT, JSONB);
+--   DROP TABLE IF EXISTS public.receipt_upload_intents;
 
 -- ─── Receipt upload intents ─────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS public.receipt_upload_intents (
