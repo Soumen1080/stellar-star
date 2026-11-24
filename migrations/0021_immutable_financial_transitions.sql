@@ -1,3 +1,8 @@
+-- ============================================================================
+-- Stellar-Star Migration 0021: Immutable Financial Transitions (#479)
+-- ============================================================================
+-- Rollback: forward-only: Financial audit trail and balance transitions.
+--
 -- Issue #479: one database enforced path for changes to expense balances.
 -- The legacy RPC bodies are retained privately; public wrappers set a
 -- transaction-local capability which direct REST/RLS writes cannot set.

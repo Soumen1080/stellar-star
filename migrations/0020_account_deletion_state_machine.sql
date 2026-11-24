@@ -1,3 +1,8 @@
+-- ============================================================================
+-- Stellar-Star Migration 0020: Resumable Account Erasure State Machine (#478)
+-- ============================================================================
+-- Rollback: forward-only: State machine and tombstones for GDPR compliance.
+--
 -- Durable and resumable account erasure (#478). Only opaque operational
 -- evidence is retained; user content is purged and financial history stays intact.
 CREATE TABLE IF NOT EXISTS public.account_legal_holds (
