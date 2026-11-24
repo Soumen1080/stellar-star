@@ -4,6 +4,8 @@ import type { TripPermission, TripRole } from "@/types/trip";
 import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
 import { TRIP_REPLAY_FIELDS } from "@/lib/idempotency/replay";
 import { authenticateWalletRequest } from "@/lib/api/routeGuard";
+import { parseJsonBody } from "@/lib/api/bodyLimits";
+import { toPublicErrorResponse, classifyApiError } from "@/lib/api/errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -47,6 +49,14 @@ export async function PATCH(
         const trip = await setTripMemberRole(id, memberId, role, customPermissions, client);
         return NextResponse.json(trip, { headers: { "Cache-Control": "no-store" } });
       } catch (error) {
+        if (classifyApiError(error).isInternal) {
+          return toPublicErrorResponse(error, {
+            requestId: request.headers.get("x-request-id"),
+            fallbackMessage: "Unable to change the member role.",
+            route: "/api/trips/[id]/members/[memberId]/role",
+            method: "PATCH",
+          });
+        }
         const message = error instanceof Error ? error.message : "Unable to change the member role.";
         const status = /FORBIDDEN|LAST_OWNER|MEMBER_NOT_FOUND|TRIP_NOT_FOUND/.test(message) ? 403 : 400;
         return NextResponse.json({ error: message }, { status });

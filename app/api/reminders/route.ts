@@ -15,6 +15,7 @@ import { authenticate, ID_PATTERN, json, readJson } from "@/lib/reminders/server
 import { sendReminder } from "@/lib/reminders/service";
 import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
 import { REMINDER_REPLAY_FIELDS, replayFieldsUnder } from "@/lib/idempotency/replay";
+import { toPublicErrorResponse } from "@/lib/api/errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -29,7 +30,12 @@ export async function GET(request: NextRequest) {
     const visible = role === "recipient" ? reminders.filter((r) => r.state !== "muted") : reminders;
     return json({ data: visible }, 200, auth.requestId);
   } catch (err) {
-    return json({ error: err instanceof Error ? err.message : "Failed to load reminders." }, 500, auth.requestId);
+    return toPublicErrorResponse(err, {
+      requestId: auth.requestId,
+      fallbackMessage: "Failed to load reminders.",
+      route: "/api/reminders",
+      method: "GET",
+    });
   }
 }
 
@@ -79,6 +85,11 @@ export async function POST(request: NextRequest) {
       },
     });
   } catch (err) {
-    return json({ error: err instanceof Error ? err.message : "Failed to send the reminder." }, 500, auth.requestId);
+    return toPublicErrorResponse(err, {
+      requestId: auth.requestId,
+      fallbackMessage: "Failed to send the reminder.",
+      route: "/api/reminders",
+      method: "POST",
+    });
   }
 }

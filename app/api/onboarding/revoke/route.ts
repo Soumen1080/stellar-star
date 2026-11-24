@@ -20,6 +20,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
+import { toPublicErrorResponse, classifyApiError } from "@/lib/api/errors";
 import crypto from "crypto";
 import { StrKey, TransactionBuilder } from "@stellar/stellar-sdk";
 import { NETWORK_PASSPHRASE, HORIZON_URL } from "@/lib/utils/constants";
@@ -205,6 +206,14 @@ export async function POST(request: NextRequest) {
           { headers: { "Cache-Control": "no-store" } },
         );
       } catch (err) {
+        if (classifyApiError(err).isInternal) {
+          return toPublicErrorResponse(err, {
+            requestId: request.headers.get("x-request-id"),
+            fallbackMessage: "Revocation failed.",
+            route: "/api/onboarding/revoke",
+            method: "POST",
+          });
+        }
         const message = err instanceof Error ? err.message : "Revocation failed.";
         // The most common cause: the account cannot yet cover its own reserve. That
         // is not an error state for the user — the sponsorship simply continues.

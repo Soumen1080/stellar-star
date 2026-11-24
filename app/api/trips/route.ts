@@ -11,6 +11,7 @@ import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/
 import { TRIP_REPLAY_FIELDS } from "@/lib/idempotency/replay";
 import type { Trip } from "@/types/trip";
 import { authenticateWalletRequest } from "@/lib/api/routeGuard";
+import { toPublicErrorResponse } from "@/lib/api/errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -49,8 +50,12 @@ export async function GET(request: NextRequest) {
     const result = await fetchTripsPaginated(parsed, client);
     return NextResponse.json(result);
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Failed to load trips.";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return toPublicErrorResponse(err, {
+      requestId: auth.ctx.requestId,
+      fallbackMessage: "Failed to load trips.",
+      route: "/api/trips",
+      method: "GET",
+    });
   }
 }
 
@@ -116,7 +121,11 @@ export async function POST(request: NextRequest) {
       },
     });
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Failed to create trip.";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return toPublicErrorResponse(err, {
+      requestId: auth.ctx.requestId,
+      fallbackMessage: "Failed to create trip.",
+      route: "/api/trips",
+      method: "POST",
+    });
   }
 }

@@ -3,6 +3,8 @@ import { claimTripInvite } from "@/lib/invitations/claim";
 import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
 import { enforceAbuseProtection, enforceIdempotencyKeyLimit } from "@/lib/security/abuseProtection";
 import { authenticateWalletRequest } from "@/lib/api/routeGuard";
+import { parseJsonBody } from "@/lib/api/bodyLimits";
+import { toPublicErrorResponse, classifyApiError } from "@/lib/api/errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -58,6 +60,14 @@ export async function POST(request: NextRequest) {
       },
     });
   } catch (err) {
+    if (classifyApiError(err).isInternal) {
+      return toPublicErrorResponse(err, {
+        requestId: request.headers.get("x-request-id"),
+        fallbackMessage: "Failed to claim invitation.",
+        route: "/api/invitations/claim",
+        method: "POST",
+      });
+    }
     const message = err instanceof Error ? err.message : "Failed to claim invitation.";
     let status = 400;
     if (message.includes("SLOT_ALREADY_CLAIMED") || message.includes("WALLET_ALREADY_MEMBER")) {

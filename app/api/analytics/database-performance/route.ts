@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { toPublicErrorResponse } from "@/lib/api/errors";
 import {
   getDatabaseObservabilityReport,
   simulateDatabaseQuery,
@@ -100,7 +101,10 @@ export async function POST(request: NextRequest) {
       { status: 400 }
     );
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Failed to process database performance request.";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return toPublicErrorResponse(err, {
+      fallbackMessage: "Failed to process database performance request.",
+      route: "/api/analytics/database-performance",
+      method: "POST",
+    });
   }
 }

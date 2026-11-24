@@ -4,6 +4,7 @@ import { decodeClaims } from "@/lib/supabase/session";
 import type { ApiScope } from "@/lib/api/types";
 import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
 import { parseJsonBody } from "@/lib/api/bodyLimits";
+import { toPublicErrorResponse } from "@/lib/api/errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -103,11 +104,14 @@ export async function POST(request: NextRequest) {
           { status: 201, headers: { "Cache-Control": "no-store" } }
         );
       } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : "Failed to create scoped token.";
-        return NextResponse.json(
-          { error: { code: "TOKEN_CREATION_FAILED", message, status: 400 } },
-          { status: 400 }
-        );
+        return toPublicErrorResponse(err, {
+          format: "v1",
+          fallbackMessage: "Failed to create scoped token.",
+          route: "/api/v1/tokens",
+          method: "POST",
+          status: 400,
+          code: "TOKEN_CREATION_FAILED",
+        });
       }
     },
   });

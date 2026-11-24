@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { chainMetadataCache } from "@/lib/stellar/cache";
 import { parseJsonBody } from "@/lib/api/bodyLimits";
+import { toPublicErrorResponse } from "@/lib/api/errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -67,7 +68,10 @@ export async function POST(req: Request) {
       { status: 400 },
     );
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : "Cache operation failed";
-    return NextResponse.json({ success: false, error: message }, { status: 500 });
+    return toPublicErrorResponse(err, {
+      fallbackMessage: "Cache operation failed",
+      route: "/api/developer/stellar-cache",
+      method: "POST",
+    });
   }
 }

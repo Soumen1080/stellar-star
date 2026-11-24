@@ -15,6 +15,7 @@ import { createSchedule, disableSchedule } from "@/lib/reminders/service";
 import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
 import { REMINDER_SCHEDULE_REPLAY_FIELDS, replayFieldsUnder } from "@/lib/idempotency/replay";
 import { REQUEST_ID_HEADER } from "@/lib/observability/requestId";
+import { toPublicErrorResponse } from "@/lib/api/errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -25,7 +26,12 @@ export async function GET(request: NextRequest) {
   try {
     return json({ data: await auth.deps.repo.listSchedules(auth.wallet) }, 200, auth.requestId);
   } catch (err) {
-    return json({ error: err instanceof Error ? err.message : "Failed to load schedules." }, 500, auth.requestId);
+    return toPublicErrorResponse(err, {
+      requestId: auth.requestId,
+      fallbackMessage: "Failed to load schedules.",
+      route: "/api/reminders/schedules",
+      method: "GET",
+    });
   }
 }
 
@@ -54,7 +60,12 @@ export async function POST(request: NextRequest) {
       },
     });
   } catch (err) {
-    return json({ error: err instanceof Error ? err.message : "Failed to create the schedule." }, 500, auth.requestId);
+    return toPublicErrorResponse(err, {
+      requestId: auth.requestId,
+      fallbackMessage: "Failed to create the schedule.",
+      route: "/api/reminders/schedules",
+      method: "POST",
+    });
   }
 }
 
@@ -83,6 +94,11 @@ export async function DELETE(request: NextRequest) {
       },
     });
   } catch (err) {
-    return json({ error: err instanceof Error ? err.message : "Failed to disable the schedule." }, 500, auth.requestId);
+    return toPublicErrorResponse(err, {
+      requestId: auth.requestId,
+      fallbackMessage: "Failed to disable the schedule.",
+      route: "/api/reminders/schedules",
+      method: "DELETE",
+    });
   }
 }

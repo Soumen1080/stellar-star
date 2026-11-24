@@ -3,6 +3,7 @@ import { authenticateApiRequest, recordAuditLog } from "@/lib/api/middleware";
 import { registerWebhookEndpoint, listWebhooksForWallet } from "@/lib/api/webhooks";
 import { runIdempotentMutation } from "@/lib/idempotency/route";
 import { parseJsonBody } from "@/lib/api/bodyLimits";
+import { toPublicErrorResponse } from "@/lib/api/errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -92,11 +93,14 @@ export async function POST(request: NextRequest) {
 
         return NextResponse.json({ data: endpoint }, { status: 201, headers: { "Cache-Control": "no-store" } });
       } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : "Failed to register webhook.";
-        return NextResponse.json(
-          { error: { code: "WEBHOOK_REGISTRATION_FAILED", message, status: 400 } },
-          { status: 400 }
-        );
+        return toPublicErrorResponse(err, {
+          format: "v1",
+          fallbackMessage: "Failed to register webhook.",
+          route: "/api/v1/webhooks",
+          method: "POST",
+          status: 400,
+          code: "WEBHOOK_REGISTRATION_FAILED",
+        });
       }
     },
   });

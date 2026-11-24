@@ -12,6 +12,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { stellarResilience } from "@/lib/stellar/resilience";
 import { getOrCreateRequestId, REQUEST_ID_HEADER } from "@/lib/observability/requestId";
 import { parseJsonBody } from "@/lib/api/bodyLimits";
+import { toPublicErrorResponse } from "@/lib/api/errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -45,12 +46,12 @@ export async function GET(request: NextRequest) {
       }
     );
   } catch (err) {
-    const message =
-      err instanceof Error ? err.message : "Failed to load resilience metrics";
-    return NextResponse.json(
-      { error: message, requestId },
-      { status: 500, headers: responseHeaders(requestId) }
-    );
+    return toPublicErrorResponse(err, {
+      requestId,
+      fallbackMessage: "Failed to load resilience metrics",
+      route: "/api/developer/stellar-resilience",
+      method: "GET",
+    });
   }
 }
 
@@ -77,11 +78,11 @@ export async function POST(request: NextRequest) {
       { headers: responseHeaders(requestId) }
     );
   } catch (err) {
-    const message =
-      err instanceof Error ? err.message : "Failed to reset resilience managers";
-    return NextResponse.json(
-      { error: message, requestId },
-      { status: 500, headers: responseHeaders(requestId) }
-    );
+    return toPublicErrorResponse(err, {
+      requestId,
+      fallbackMessage: "Failed to reset resilience managers",
+      route: "/api/developer/stellar-resilience",
+      method: "POST",
+    });
   }
 }

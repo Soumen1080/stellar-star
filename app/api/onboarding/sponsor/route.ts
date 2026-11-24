@@ -39,6 +39,7 @@ import {
 import { checkEligibility, recordInvite } from "@/lib/onboarding/abuseResistance";
 import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
 import { authenticateWalletRequest } from "@/lib/api/routeGuard";
+import { toPublicErrorResponse } from "@/lib/api/errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -123,11 +124,12 @@ export async function POST(request: NextRequest) {
       try {
         inviteeState = await getAccountState(invitee);
       } catch (err) {
-        return jsonError(
-          err instanceof Error ? err.message : "Could not check the invitee's account.",
-          503,
-          { reason: "horizon_unavailable" },
-        );
+        return toPublicErrorResponse(err, {
+          requestId: request.headers.get("x-request-id"),
+          fallbackMessage: "Could not check the invitee's account.",
+          route: "/api/onboarding/sponsor",
+          method: "POST",
+        });
       }
 
       if (inviteeState.status === "funded" && inviteeState.subentryCount === 0) {
@@ -149,10 +151,12 @@ export async function POST(request: NextRequest) {
       try {
         eligibility = await checkEligibility(inviter, invitee);
       } catch (err) {
-        return jsonError(
-          err instanceof Error ? err.message : "Could not check invite eligibility.",
-          503,
-        );
+        return toPublicErrorResponse(err, {
+          requestId: request.headers.get("x-request-id"),
+          fallbackMessage: "Could not check invite eligibility.",
+          route: "/api/onboarding/sponsor",
+          method: "POST",
+        });
       }
 
       if (!eligibility.allowed) {
@@ -169,10 +173,12 @@ export async function POST(request: NextRequest) {
       try {
         reservation = await reserveCapacity(invitee, inviter);
       } catch (err) {
-        return jsonError(
-          err instanceof Error ? err.message : "Could not reserve sponsorship capacity.",
-          503,
-        );
+        return toPublicErrorResponse(err, {
+          requestId: request.headers.get("x-request-id"),
+          fallbackMessage: "Could not reserve sponsorship capacity.",
+          route: "/api/onboarding/sponsor",
+          method: "POST",
+        });
       }
 
       if (!reservation) {

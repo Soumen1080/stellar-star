@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { toPublicErrorResponse } from "@/lib/api/errors";
 import {
   isAllowedEventName,
   containsSensitiveData,
@@ -44,7 +45,10 @@ export async function POST(req: NextRequest) {
       schemaVersion: ANALYTICS_SCHEMA_VERSION,
     });
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : "Internal error";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return toPublicErrorResponse(err, {
+      fallbackMessage: "Internal error",
+      route: "/api/analytics/events",
+      method: "POST",
+    });
   }
 }

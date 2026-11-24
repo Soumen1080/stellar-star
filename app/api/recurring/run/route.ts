@@ -4,6 +4,7 @@ import { createServiceRoleClient } from "@/lib/supabase/server";
 import { fetchActiveTemplates, fetchExceptions } from "@/lib/recurring/queries";
 import { generateDueDrafts } from "@/lib/recurring/generate";
 import { utcToday } from "@/lib/recurring/schedule";
+import { toPublicErrorResponse } from "@/lib/api/errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -56,8 +57,11 @@ async function run(request: NextRequest) {
       if (page.length < PAGE) break;
     }
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Draft generation failed.";
-    return NextResponse.json({ error: message, created }, { status: 500 });
+    return toPublicErrorResponse(err, {
+      fallbackMessage: "Draft generation failed.",
+      route: "/api/recurring/run",
+      context: { created },
+    });
   }
 
   return NextResponse.json(

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isServerSupabaseConfigured } from "@/lib/supabase/server";
 import { authenticateWalletRequest } from "@/lib/api/routeGuard";
+import { toPublicErrorResponse } from "@/lib/api/errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -64,11 +65,12 @@ export async function GET(request: NextRequest) {
     return respond(exportPayload, {
       headers: { "Cache-Control": "no-store" },
     });
-  } catch (err: any) {
-    console.error("[account/export] Export failed:", err);
-    return respond(
-      { error: err.message || "Failed to generate account export." },
-      { status: 500 }
-    );
+  } catch (err) {
+    return toPublicErrorResponse(err, {
+      requestId: auth.ctx.requestId,
+      fallbackMessage: "Failed to generate account export.",
+      route: "/api/account/export",
+      method: "GET",
+    });
   }
 }
