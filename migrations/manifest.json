@@ -2,7 +2,7 @@
   "$schema": "./manifest.schema.json",
   "formatVersion": "1.0.0",
   "description": "Canonical append-only migration manifest guaranteeing deterministic execution ordering and immutable identities",
-  "totalMigrations": 43,
+  "totalMigrations": 45,
   "migrations": [
     {
       "sequence": 1,
@@ -416,6 +416,16 @@
     },
     {
       "sequence": 42,
+      "id": "0027_keyset_pagination_indexes",
+      "version": "0027",
+      "filename": "0027_keyset_pagination_indexes.sql",
+      "name": "0027_keyset_pagination_indexes",
+      "checksum": "6d8cc35d3d2499d4",
+      "sha256": "6d8cc35d3d2499d468711bf8346cf45a2ec8d8efe309c6ab2aa15e72996b41cf",
+      "description": "Composite index on trips (created_at DESC, id DESC) for keyset pagination (#449)"
+    },
+    {
+      "sequence": 43,
       "id": "0028_indexed_expense_search",
       "version": "0028",
       "filename": "0028_indexed_expense_search.sql",
@@ -425,14 +435,24 @@
       "description": "RLS-scoped tsvector search documents, GIN indexes, minimum-query rules, ranked keyset search (search_expense_ids), index-backed search_expenses"
     },
     {
-      "sequence": 43,
+      "sequence": 44,
       "id": "0029_ocr_queue_and_quotas",
       "version": "0029",
       "filename": "0029_ocr_queue_and_quotas.sql",
       "name": "0029_ocr_queue_and_quotas",
-      "checksum": "ocr_queue_quotas_v1",
-      "sha256": "ocr_queue_quotas_v1",
+      "checksum": "ef34fd4904ee04c8",
+      "sha256": "ef34fd4904ee04c8140d67de72e9b8ebeb8e970657ed407ae5c250bedaca525f",
       "description": "OCR background worker queue with per-user/trip quotas, results persistence, and review gate (#452)"
+    },
+    {
+      "sequence": 45,
+      "id": "0030_receipt_quarantine_and_scan",
+      "version": "0030",
+      "filename": "0030_receipt_quarantine_and_scan.sql",
+      "name": "0030_receipt_quarantine_and_scan",
+      "checksum": "0825bb1bc962f777",
+      "sha256": "0825bb1bc962f777e43c78fee30994552de22a98d582245e35b447fd03c71a69",
+      "description": "Receipt upload intents, quarantine staging, malware scan, and atomic promote (#451)"
     }
   ]
 }

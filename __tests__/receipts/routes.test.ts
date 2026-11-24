@@ -13,7 +13,10 @@ jest.mock("@/lib/supabase/queries", () => ({
 jest.mock("@/lib/supabase/server", () => ({
   isServerSupabaseConfigured: () => true,
   createServerClientForToken: (token: string) => ({ kind: "user", wallet: jest.requireActual("@/lib/supabase/serverAuth").verifyWalletSession(token)?.wallet_address }),
-  createServiceRoleClient: () => ({ kind: "service" }),
+  createServiceRoleClient: () => ({
+    kind: "service",
+    rpc: jest.fn().mockResolvedValue({ data: { allowed: true, remaining: 10, reset_ms: 60000 }, error: null }),
+  }),
 }));
 
 jest.mock("@/lib/receipts/store", () => {

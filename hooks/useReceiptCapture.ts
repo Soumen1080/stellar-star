@@ -147,11 +147,19 @@ export function useReceiptCapture() {
     }
   };
 
+  const extract = async (uploadedReceiptId?: string) => {
+    const rid = uploadedReceiptId ?? receiptId;
+    if (rid) {
+      return extractServer(rid);
+    }
+    return extractDevice();
+  };
+
   return {
     file, draft, setDraft, busy, progress, error, ocrMode, receiptId,
     setReceiptId,
     reset, select,
-    extract: extractServer,
+    extract,
     extractDevice,
     extractServer,
     manual: () => { if (file && !busy) setDraft(parseReceiptText("", 0)); },

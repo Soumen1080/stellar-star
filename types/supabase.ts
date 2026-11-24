@@ -497,6 +497,27 @@ export type OcrQuotaConfigRow = {
   updated_at: string;
 };
 
+/** Issue #451: Receipt upload intent row. */
+export type ReceiptUploadIntentRow = {
+  id: string;
+  expense_id: string;
+  wallet: string;
+  idempotency_key: string;
+  status: "pending" | "quarantined" | "promoted" | "rejected" | "abandoned";
+  file_name: string | null;
+  content_type: string | null;
+  size_bytes: number | null;
+  checksum_sha256: string | null;
+  caption: string | null;
+  storage_path: string | null;
+  promoted_path: string | null;
+  scan_result: Json;
+  receipt_id: string | null;
+  expires_at: string;
+  created_at: string;
+  updated_at: string;
+};
+
 export type RecurringTemplateRow = {
   id: string;
   trip_id: string | null;
@@ -1132,6 +1153,17 @@ export type Database = {
         Row: OcrQuotaConfigRow;
         Insert: Omit<OcrQuotaConfigRow, "id" | "created_at" | "updated_at"> & { id?: string };
         Update: Partial<Omit<OcrQuotaConfigRow, "id" | "created_at">>;
+        Relationships: [];
+      };
+      receipt_upload_intents: {
+        Row: ReceiptUploadIntentRow;
+        Insert: Omit<ReceiptUploadIntentRow, "id" | "created_at" | "updated_at" | "status" | "receipt_id" | "promoted_path"> & {
+          id?: string;
+          status?: ReceiptUploadIntentRow["status"];
+          receipt_id?: string | null;
+          promoted_path?: string | null;
+        };
+        Update: Partial<Pick<ReceiptUploadIntentRow, "status" | "file_name" | "content_type" | "size_bytes" | "checksum_sha256" | "caption" | "storage_path" | "promoted_path" | "scan_result" | "receipt_id" | "updated_at">>;
         Relationships: [];
       };
       recurring_expense_templates: {
