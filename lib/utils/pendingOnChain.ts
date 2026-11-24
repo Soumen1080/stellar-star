@@ -107,6 +107,16 @@ export function clearPendingOnChain(
   writeStoredMap(map);
 }
 
+/** Erase every locally persisted payment retry for an account deletion. */
+export function clearAllPendingOnChainForWallet(publicKey: string): void {
+  const map = readStoredMap();
+  delete map[publicKey];
+  writeStoredMap(map);
+  const netMap = readStoredNetMap();
+  delete netMap[publicKey];
+  writeStoredNetMap(netMap);
+}
+
 // ---------------------------------------------------------------------------
 // Net Settlement Helpers
 // ---------------------------------------------------------------------------

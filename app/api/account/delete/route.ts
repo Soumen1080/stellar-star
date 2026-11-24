@@ -1,9 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
+import { verifyWalletSession } from "@/lib/supabase/serverAuth";
 import { createServiceRoleClient, isServerSupabaseConfigured } from "@/lib/supabase/server";
-import { executeAccountDeletion } from "@/lib/privacy/accountDeletion";
-import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
-import { authenticateWalletRequest } from "@/lib/api/routeGuard";
-import { toPublicErrorResponse } from "@/lib/api/errors";
+import { executeAccountDeletionStateMachine } from "@/lib/privacy/accountDeletionStateMachine";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -25,30 +23,16 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const client = createServiceRoleClient() ?? auth.ctx.db();
-    return await runIdempotentMutation({
-      request,
-      key: idempotency.key,
-      replayFields: ["success", "deletedAt", "summary"],
-      principal: session.wallet_address,
-      // Both verbs are the same operation, so they share one fingerprint.
-      endpoint: "/api/account/delete",
-      payload: {},
-      // Process-local only: persisting the result would write a new row keyed
-      // to the wallet that was just erased.
-      persist: false,
-      execute: async () => {
-        const result = await executeAccountDeletion(session.wallet_address, client);
-        return NextResponse.json(result, { headers: { "Cache-Control": "no-store" } });
-      },
-    });
-  } catch (err) {
-    return toPublicErrorResponse(err, {
-      requestId: auth.ctx.requestId,
-      fallbackMessage: "Failed to execute account deletion.",
-      route: "/api/account/delete",
-      method: "POST",
-    });
+    const client = createServiceRoleClient();
+    if (!client) return NextResponse.json({ error: "Account deletion service is not configured." }, { status: 503 });
+    const result = await executeAccountDeletionStateMachine(session.wallet_address, client);
+    return NextResponse.json(result, { status: result.state === "held" ? 202 : 200, headers: { "Cache-Control": "no-store" } });
+  } catch (err: any) {
+    console.error("[account/delete] Failed to delete account:", err);
+    return NextResponse.json(
+      { error: err.message || "Failed to execute account deletion." },
+      { status: 500 }
+    );
   }
 }
 

@@ -247,7 +247,14 @@ export async function POST(request: NextRequest) {
     }
 
     // 7. Create or refresh the profile in the same round trip.
-    const client = createServiceRoleClient() ?? createServerClientForToken(token);
+    const serviceClient = createServiceRoleClient();
+    if (serviceClient) {
+      const { data: deleted, error: deletionCheckError } = await (serviceClient as any)
+        .from("deleted_accounts").select("wallet_address").eq("wallet_address", address.toUpperCase()).maybeSingle();
+      if (deletionCheckError) return jsonError("Account status is temporarily unavailable.", 503, "ACCOUNT_STATUS_UNAVAILABLE");
+      if (deleted) return jsonError("This account has been deleted.", 401, "ACCOUNT_DELETED");
+    }
+    const client = serviceClient ?? createServerClientForToken(token);
     const { user, error } = await provisionProfile(client, address, trimmedName || null);
 
     if (error) {

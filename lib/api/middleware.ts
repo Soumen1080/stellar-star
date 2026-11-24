@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { type ApiScope, type AuditLogEntry, type ScopedTokenPayload } from "./types";
 import { verifyScopedToken } from "./tokens";
 import { checkRateLimit, getClientIp } from "@/lib/auth/rateLimiter";
-import { consumeTenantQuota } from "@/lib/quotas/server";
+import { createServiceRoleClient } from "@/lib/supabase/server";
 
 export interface AuthenticatedContext {
   tokenPayload: ScopedTokenPayload;
@@ -59,6 +59,23 @@ export function getAuditLogsForWallet(
 export function clearAuditLogs(): void {
   auditLogs.length = 0;
   idempotencyCache.clear();
+}
+
+/** Keep the count and outcome of process-local diagnostics while stripping identity data. */
+export function anonymizeApiAuditLogsForWallet(walletAddress: string): number {
+  const wallet = walletAddress.trim().toUpperCase();
+  let redacted = 0;
+  for (const entry of auditLogs) {
+    if (entry.walletAddress !== wallet) continue;
+    entry.walletAddress = "FORMER_ACCOUNT";
+    entry.tokenId = null;
+    entry.ip = "redacted";
+    entry.userAgent = "redacted";
+    entry.idempotencyKey = null;
+    redacted++;
+  }
+  for (const key of idempotencyCache.keys()) if (key.startsWith(`${wallet}:`)) idempotencyCache.delete(key);
+  return redacted;
 }
 
 /**
@@ -124,24 +141,16 @@ export async function authenticateApiRequest(
 
   const payload = verification.payload;
 
-  const tenantQuota = await consumeTenantQuota(payload.walletAddress, { requests: 1 });
-  if (!tenantQuota.available) {
-    return {
-      success: false,
-      response: NextResponse.json(
-        { error: { code: "QUOTA_UNAVAILABLE", message: "Request capacity is temporarily unavailable.", status: 503 } },
-        { status: 503, headers: { "Cache-Control": "no-store" } }
-      ),
-    };
-  }
-  if (!tenantQuota.allowed) {
-    return {
-      success: false,
-      response: NextResponse.json(
-        { error: { code: "TENANT_QUOTA_EXCEEDED", message: "Tenant request limit reached. Please retry shortly.", status: 429 } },
-        { status: 429, headers: { "Retry-After": String(Math.max(1, Math.ceil(tenantQuota.resetMs / 1000))), "Cache-Control": "no-store" } }
-      ),
-    };
+  const serviceClient = createServiceRoleClient();
+  if (serviceClient) {
+    const { data: deleted, error } = await (serviceClient as any)
+      .from("deleted_accounts").select("wallet_address").eq("wallet_address", payload.walletAddress.trim().toUpperCase()).maybeSingle();
+    if (error) {
+      return { success: false, response: NextResponse.json({ error: { code: "ACCOUNT_STATUS_UNAVAILABLE", message: "Unable to verify account status.", status: 503 } }, { status: 503 }) };
+    }
+    if (deleted) {
+      return { success: false, response: NextResponse.json({ error: { code: "ACCOUNT_DELETED", message: "This account has been deleted.", status: 401 } }, { status: 401 }) };
+    }
   }
 
   // 2. Enforce scope authorization

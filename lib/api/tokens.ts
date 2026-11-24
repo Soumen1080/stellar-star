@@ -193,6 +193,20 @@ export function revokeToken(tokenId: string, walletAddress: string): boolean {
   return true;
 }
 
+/** Immediate process-local revocation; the durable deleted-account marker also blocks tokens on other instances. */
+export function revokeTokensForWallet(walletAddress: string): number {
+  const normalized = walletAddress.trim().toUpperCase();
+  const now = new Date().toISOString();
+  let revoked = 0;
+  for (const record of tokenStore.values()) {
+    if (record.walletAddress === normalized && !record.revokedAt) {
+      record.revokedAt = now;
+      revoked++;
+    }
+  }
+  return revoked;
+}
+
 /** Clears the in-memory token store (primarily for unit tests). */
 export function clearTokenStore(): void {
   tokenStore.clear();
