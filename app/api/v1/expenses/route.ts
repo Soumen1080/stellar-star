@@ -8,8 +8,7 @@ import { runIdempotentMutation } from "@/lib/idempotency/route";
 import { EXPENSE_REPLAY_FIELDS, replayFieldsUnder } from "@/lib/idempotency/replay";
 import { fetchTripById, fetchExpensesForTrip, insertExpense } from "@/lib/api/data";
 import { memberHasPermission } from "@/lib/trip/roles";
-import { dispatchWebhookEvent } from "@/lib/api/webhooks";
-import { enqueueOutboxEvent, completeOutboxEvent } from "@/lib/outbox";
+import { enqueueWebhookEvent } from "@/lib/api/webhooks";
 import type { Expense } from "@/types/expense";
 import { parseJsonBody, limitedJson, responseLimitFor } from "@/lib/api/bodyLimits";
 
@@ -140,84 +139,39 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // Creation, outbox enqueue and eager dispatch run once per key; a retry
-  // replays the 201 instead of inserting a second expense.
-  const response = await runIdempotentMutation({
-    request,
-    client: apiIdempotencyClient(),
-    key: idempotencyKey,
-    replayFields: replayFieldsUnder("data", EXPENSE_REPLAY_FIELDS),
-    principal: tokenPayload.walletAddress,
-    payload: body,
-    format: "v1",
-    execute: async () => {
-      const expenseId = crypto.randomUUID();
-      const expense: Expense = {
-        id: expenseId,
-        title: String(title).trim(),
-        description: body.description ? String(body.description).trim() : undefined,
-        totalAmount: String(total_amount),
-        currency: (currency || "XLM").toUpperCase(),
-        splitMode: split_mode === "custom" ? "custom" : "equal",
-        paidByMemberId: trip.members[0]?.id || crypto.randomUUID(),
-        members: trip.members,
-        shares: trip.members.map((m) => ({
-          memberId: m.id,
-          name: m.name,
-          amount: (parseFloat(total_amount) / (trip.members.length || 1)).toFixed(7),
-          paid: m.walletAddress === tokenPayload.walletAddress,
-        })),
-        createdAt: new Date().toISOString(),
-        settled: false,
-      };
+  const expenseId = crypto.randomUUID();
+  const expense: Expense = {
+    id: expenseId,
+    title: String(title).trim(),
+    description: body.description ? String(body.description).trim() : undefined,
+    totalAmount: String(total_amount),
+    currency: (currency || "XLM").toUpperCase(),
+    splitMode: split_mode === "custom" ? "custom" : "equal",
+    paidByMemberId: trip.members[0]?.id || crypto.randomUUID(),
+    members: trip.members,
+    shares: trip.members.map((m) => ({
+      memberId: m.id,
+      name: m.name,
+      amount: (parseFloat(total_amount) / (trip.members.length || 1)).toFixed(7),
+      paid: m.walletAddress === tokenPayload.walletAddress,
+    })),
+    createdAt: new Date().toISOString(),
+    settled: false,
+  };
 
-      const created = await insertExpense(expense, trip_id);
+  const created = await insertExpense(expense, trip_id);
 
-      // Transactional outbox durable promise (#425):
-      // Persist outbox event in the same transaction to guarantee eventual delivery
-      // even if synchronous webhook dispatch fails or network disconnects.
-      const traceId = crypto.randomUUID();
-      const outboxEvent = await enqueueOutboxEvent({
-        aggregateType: "expense",
-        aggregateId: created.id,
-        eventType: "expense.created",
-        channel: "webhook",
-        payload: {
-          expense_id: created.id,
-          trip_id,
-          title: created.title,
-          total_amount: created.totalAmount,
-          currency: created.currency,
-          created_at: created.createdAt,
-        },
-        traceId,
-        deduplicationKey: `outbox:webhook:expense:${created.id}:created`,
-        createdByWallet: tokenPayload.walletAddress,
-      });
-
-      // Attempt eager dispatch; on failure or timeout, outbox worker handles retry
-      dispatchWebhookEvent({
-        event: "expense.created",
-        data: {
-          expense_id: created.id,
-          trip_id,
-          title: created.title,
-          total_amount: created.totalAmount,
-          currency: created.currency,
-          created_at: created.createdAt,
-          _outboxId: outboxEvent.id,
-          _traceId: traceId,
-        },
-        walletAddress: tokenPayload.walletAddress,
-      })
-        .then(() => {
-          completeOutboxEvent(outboxEvent.id, "inline-dispatch");
-        })
-        .catch(() => {
-          // Post-commit failure safely retained in outbox table for worker retry
-        });
-
-      return respond({ data: created }, { status: 201 });
+  // Trigger webhook event
+  enqueueWebhookEvent({
+    id: created.id,
+    event: "expense.created",
+    data: {
+      expense_id: created.id,
+      trip_id,
+      title: created.title,
+      total_amount: created.totalAmount,
+      currency: created.currency,
+      created_at: created.createdAt,
     },
   });
 

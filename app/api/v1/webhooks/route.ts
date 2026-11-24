@@ -1,9 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { authenticateApiRequest, recordAuditLog } from "@/lib/api/middleware";
-import { registerWebhookEndpoint, listWebhooksForWallet } from "@/lib/api/webhooks";
-import { runIdempotentMutation } from "@/lib/idempotency/route";
-import { parseJsonBody } from "@/lib/api/bodyLimits";
-import { toPublicErrorResponse } from "@/lib/api/errors";
+import { createDurableWebhookEndpoint, listDurableWebhookEndpoints } from "@/lib/api/webhooks";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -19,7 +16,7 @@ export async function GET(request: NextRequest) {
   }
 
   const { tokenPayload, ip, userAgent } = auth.context;
-  const webhooks = listWebhooksForWallet(tokenPayload.walletAddress);
+  const webhooks = await listDurableWebhookEndpoints(tokenPayload.walletAddress);
 
   recordAuditLog({
     timestamp: new Date().toISOString(),
@@ -58,25 +55,13 @@ export async function POST(request: NextRequest) {
 
   const { url, events, description } = body;
 
-  // The response carries the endpoint's signing secret, so the replay stays in
-  // the process-local ledger (like the endpoint registry) and never reaches
-  // the database.
-  return runIdempotentMutation({
-    request,
-    key: idempotencyKey,
-    replayFields: ["data.id", "data.url", "data.events", "data.description", "data.secret", "data.active", "data.createdAt", "data.walletAddress"],
-    principal: tokenPayload.walletAddress,
-    payload: body,
-    persist: false,
-    format: "v1",
-    execute: async () => {
-      try {
-        const endpoint = registerWebhookEndpoint({
-          walletAddress: tokenPayload.walletAddress,
-          url: String(url || ""),
-          events: Array.isArray(events) ? events : ["trip.created", "expense.created", "settlement.completed"],
-          description: description ? String(description) : undefined,
-        });
+  try {
+    const endpoint = await createDurableWebhookEndpoint({
+      walletAddress: tokenPayload.walletAddress,
+      url: String(url || ""),
+      events: Array.isArray(events) ? events : ["trip.created", "expense.created", "settlement.completed"],
+      description: description ? String(description) : undefined,
+    });
 
         recordAuditLog({
           timestamp: new Date().toISOString(),

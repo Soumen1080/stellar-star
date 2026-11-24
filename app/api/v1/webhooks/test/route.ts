@@ -1,9 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { authenticateApiRequest, recordAuditLog } from "@/lib/api/middleware";
-import { sendTestWebhookPing } from "@/lib/api/webhooks";
-import { runIdempotentMutation } from "@/lib/idempotency/route";
-import { parseJsonBody } from "@/lib/api/bodyLimits";
-import { toPublicErrorResponse } from "@/lib/api/errors";
+import { enqueueDurableWebhookPing } from "@/lib/api/webhooks";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -41,19 +38,8 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // One ping per key: a retried request does not fire a second delivery.
-  return runIdempotentMutation({
-    request,
-    key: idempotencyKey,
-    replayFields: ["data.id", "data.webhookId", "data.event", "data.statusCode", "data.success", "data.latencyMs", "data.attempt", "data.timestamp", "data.error"],
-    principal: tokenPayload.walletAddress,
-    payload: { webhookId },
-    // Endpoints live in the process-local registry; so does the replay.
-    persist: false,
-    format: "v1",
-    execute: async () => {
-      try {
-        const delivery = await sendTestWebhookPing(webhookId, tokenPayload.walletAddress);
+  try {
+    const delivery = await enqueueDurableWebhookPing(webhookId, tokenPayload.walletAddress);
 
         recordAuditLog({
           timestamp: new Date().toISOString(),

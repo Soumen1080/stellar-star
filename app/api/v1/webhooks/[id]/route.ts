@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { authenticateApiRequest, recordAuditLog } from "@/lib/api/middleware";
-import { deleteWebhookEndpoint } from "@/lib/api/webhooks";
-import { runIdempotentMutation } from "@/lib/idempotency/route";
+import { deleteDurableWebhookEndpoint } from "@/lib/api/webhooks";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -24,17 +23,20 @@ export async function DELETE(
   const idempotencyKey = auth.context.idempotencyKey as string;
   const { id } = await params;
 
-  return runIdempotentMutation({
-    request,
-    key: idempotencyKey,
-    replayFields: ["success", "message"],
-    principal: tokenPayload.walletAddress,
-    payload: { webhookId: id },
-    // The endpoint registry is process-local; so is the replay.
-    persist: false,
-    format: "v1",
-    execute: async () => {
-      const deleted = deleteWebhookEndpoint(id, tokenPayload.walletAddress);
+  const deleted = await deleteDurableWebhookEndpoint(id, tokenPayload.walletAddress);
+
+  recordAuditLog({
+    timestamp: new Date().toISOString(),
+    tokenId: tokenPayload.tokenId,
+    walletAddress: tokenPayload.walletAddress,
+    method: "DELETE",
+    path: `/api/v1/webhooks/${id}`,
+    statusCode: deleted ? 200 : 404,
+    latencyMs: Date.now() - startTime,
+    ip,
+    userAgent,
+    idempotencyKey: null,
+  });
 
       recordAuditLog({
         timestamp: new Date().toISOString(),
