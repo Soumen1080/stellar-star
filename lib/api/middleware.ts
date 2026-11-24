@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { type ApiScope, type AuditLogEntry, type ScopedTokenPayload } from "./types";
 import { verifyScopedToken } from "./tokens";
-import { checkRateLimit, getClientIp } from "@/lib/auth/rateLimiter";
+import { checkRateLimit, getClientIp, rateLimiterUnavailableResponse } from "@/lib/auth/rateLimiter";
 import { createServiceRoleClient } from "@/lib/supabase/server";
 
 export interface AuthenticatedContext {

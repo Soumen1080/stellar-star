@@ -113,41 +113,47 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const tripId = crypto.randomUUID();
-  const newTrip: Trip = {
-    id: tripId,
-    name: body.name.trim(),
-    description: body.description?.trim() || "",
-    members: body.members.map((m: any) => ({
-      id: crypto.randomUUID(),
-      name: String(m.name || "").trim(),
-      walletAddress: m.wallet_address ? String(m.wallet_address).trim().toUpperCase() : undefined,
-    })),
-    expenseIds: [],
-    startsOn: body.starts_on || undefined,
-    endsOn: body.ends_on || undefined,
-    createdAt: new Date().toISOString(),
-    settled: false,
-    createdByWallet: tokenPayload.walletAddress,
-  };
+  const response = await runIdempotentMutation({
+    request,
+    client: apiIdempotencyClient(),
+    key: idempotencyKey,
+    principal: tokenPayload.walletAddress,
+    payload: body,
+    format: "v1",
+    execute: async () => {
+      const tripId = crypto.randomUUID();
+      const newTrip: Trip = {
+        id: tripId,
+        name: body.name.trim(),
+        description: body.description?.trim() || "",
+        members: body.members.map((m: any) => ({
+          id: crypto.randomUUID(),
+          name: String(m.name || "").trim(),
+          walletAddress: m.wallet_address ? String(m.wallet_address).trim().toUpperCase() : undefined,
+        })),
+        expenseIds: [],
+        startsOn: body.starts_on || undefined,
+        endsOn: body.ends_on || undefined,
+        createdAt: new Date().toISOString(),
+        settled: false,
+        createdByWallet: tokenPayload.walletAddress,
+      };
 
-  const created = await insertTrip(newTrip);
+      const created = await insertTrip(newTrip);
 
-  // Dispatch webhook event
-  enqueueWebhookEvent({
-    id: created.id,
-    event: "trip.created",
-    data: {
-      trip_id: created.id,
-      name: created.name,
-      member_count: created.members.length,
-      created_by_wallet: created.createdByWallet,
-      created_at: created.createdAt,
-    },
-    walletAddress: tokenPayload.walletAddress,
-  }).catch(() => {});
-
-  const responseBody = { data: created };
+      // Dispatch webhook event
+      enqueueWebhookEvent({
+        id: created.id,
+        event: "trip.created",
+        data: {
+          trip_id: created.id,
+          name: created.name,
+          member_count: created.members.length,
+          created_by_wallet: created.createdByWallet,
+          created_at: created.createdAt,
+        },
+        walletAddress: tokenPayload.walletAddress,
+      }).catch(() => {});
 
       return respond({ data: created }, { status: 201 });
     },
