@@ -93,17 +93,22 @@ import { ConsentBanner } from "@/components/analytics/ConsentBanner";
 import { ConsentModal } from "@/components/analytics/ConsentModal";
 import { OfflineRuntime } from "@/components/system/OfflineRuntime";
 import { MotionConfig } from "framer-motion";
+import { headers } from "next/headers";
+import { CSP_NONCE_HEADER } from "@/lib/security/csp";
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
+  const nonce = (await headers()).get(CSP_NONCE_HEADER) ?? undefined;
+
   return (
     <html lang="en" suppressHydrationWarning>
       <body
         className={`${poppins.className} bg-[#F6F6F6] text-[#0F0F14] font-sans antialiased`}
         suppressHydrationWarning
+        nonce={nonce}
       >
         <MotionConfig reducedMotion="user">
         <LocaleProvider>

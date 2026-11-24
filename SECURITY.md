@@ -41,6 +41,14 @@ The following components are in scope for our security program:
 - Social engineering attacks targeting community contributors or maintainers.
 - Compromises arising from malware or compromised browser extensions on the client's own device (beyond hostile client mitigations documented in [THREAT_MODEL.md](docs/THREAT_MODEL.md)).
 
+## Content Security Policy (CSP) & Client Hardening
+
+Stellar Star enforces a scanner-approved, nonce-hardened Content Security Policy (#457):
+- **Script Execution**: `script-src` requires cryptographic nonces (`'nonce-...'`) and `'strict-dynamic'`. `'unsafe-eval'` and `'unsafe-inline'` are strictly removed in production.
+- **Origins**: `connect-src` is restricted strictly to verified Stellar Horizon/RPC nodes, Supabase real-time, and self.
+- **Embedding**: `frame-ancestors 'self'` and `object-src 'none'` prevent clickjacking and arbitrary plugin execution.
+- **Violation Telemetry**: Browser-detected CSP violations are ingested and rate-limited via `POST /api/csp/report`.
+
 ## Safe Harbor
 
 We consider security research conducted under this policy to be authorized. We will not pursue legal action against researchers who:

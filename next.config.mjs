@@ -47,7 +47,7 @@ const nextConfig = {
           },
           {
             key: "Content-Security-Policy",
-            value: "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://stellar.expert https://*.stellar.org; font-src 'self' data:; connect-src 'self' https://*.stellar.org https://*.supabase.co wss://*.supabase.co https://horizon.stellar.org https://horizon-testnet.stellar.org https://rpc.stellar.org https://soroban-testnet.stellar.org; frame-ancestors 'self';",
+            value: "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://stellar.expert https://*.stellar.org; font-src 'self' data:; connect-src 'self' https://*.stellar.org https://horizon.stellar.org https://horizon-testnet.stellar.org https://rpc.stellar.org https://soroban-testnet.stellar.org https://*.supabase.co wss://*.supabase.co; worker-src 'self' blob:; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'; report-uri /api/csp/report;",
           },
         ],
       },

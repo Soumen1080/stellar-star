@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { generateCSPNonce, buildContentSecurityPolicy, CSP_HEADER_NAME, CSP_NONCE_HEADER } from "@/lib/security/csp";
 
 async function verifiedWalletClaim(token: string, secret: string): Promise<string | null> {
   try {
@@ -21,7 +22,29 @@ async function verifiedWalletClaim(token: string, secret: string): Promise<strin
 
 /** Emit RFC 9745 Deprecation and RFC 8594 Sunset headers when configured. */
 export async function middleware(request: NextRequest) {
-  const response = NextResponse.next();
+  // Generate cryptographic nonce for HTML page renders
+  const nonce = generateCSPNonce();
+  const isApi = request.nextUrl.pathname.startsWith("/api/");
+
+  const requestHeaders = new Headers(request.headers);
+  requestHeaders.set(CSP_NONCE_HEADER, nonce);
+
+  const response = NextResponse.next({
+    request: {
+      headers: requestHeaders,
+    },
+  });
+
+  // Attach dynamic nonce-hardened Content-Security-Policy to HTML navigation requests
+  if (!isApi) {
+    const csp = buildContentSecurityPolicy({
+      nonce,
+      isDev: process.env.NODE_ENV === "development",
+    });
+    response.headers.set(CSP_HEADER_NAME, csp);
+    response.headers.set(CSP_NONCE_HEADER, nonce);
+  }
+
   if (request.nextUrl.pathname.startsWith("/api/v1/")) {
     const deprecationDate = process.env.API_V1_DEPRECATION_DATE;
     const sunsetDate = process.env.API_V1_SUNSET_DATE;
@@ -67,4 +90,20 @@ export async function middleware(request: NextRequest) {
   return response;
 }
 
-export const config = { matcher: "/api/:path*" };
+export const config = {
+  matcher: [
+    /*
+     * Match all request paths except for the ones starting with:
+     * - _next/static (static files)
+     * - _next/image (image optimization files)
+     * - favicon.ico, sitemap.xml, robots.txt (metadata files)
+     */
+    {
+      source: "/((?!_next/static|_next/image|favicon.ico|sitemap.xml|robots.txt).*)",
+      missing: [
+        { type: "header", key: "next-router-prefetch" },
+        { type: "header", key: "purpose", value: "prefetch" },
+      ],
+    },
+  ],
+};
