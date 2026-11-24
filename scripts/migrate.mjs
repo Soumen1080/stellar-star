@@ -159,7 +159,8 @@ async function main() {
         remote.checksum === "settlement_intents_v1" ||
         remote.checksum === "verify_trip_invite_v1" ||
         remote.checksum === "durable_webhooks_476_v1" ||
-        remote.checksum === "account_deletion_478_v1";
+        remote.checksum === "account_deletion_478_v1" ||
+        remote.checksum === "immutable_finance_479_v1";
 
       if (checksumOk) {
         console.log(`  ${GREEN}[APPLIED]${RESET}   ${local.file} ${DIM}(at ${remote.applied_at})${RESET}`);
