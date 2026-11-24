@@ -289,6 +289,24 @@ export function getAssetRegistry(net: StellarNetwork = defaultNetwork()): AssetD
  * Used as a map key and for equality. The issuer is always included for
  * non-native assets, so two different "USDC"s never collide.
  */
+/**
+ * Normalizes an asset string or AssetRef to its canonical asset key string.
+ */
+export function normalizeAssetKey(s?: string | AssetRef | null): string {
+  if (!s) return "native";
+  if (typeof s === "string") {
+    const trimmed = s.trim();
+    if (!trimmed || trimmed === "native" || trimmed.toUpperCase() === "XLM") return "native";
+    try {
+      const parsed = parseAssetKey(trimmed);
+      return assetKey(parsed);
+    } catch {
+      return trimmed;
+    }
+  }
+  return assetKey(s);
+}
+
 export function assetKey(ref: AssetRef): string {
   if (isNative(ref)) return NATIVE_ASSET_KEY;
   if (!ref.issuer) {
@@ -471,4 +489,63 @@ export function formatAssetLabel(
   if (def.isNative || def.trusted) return def.code;
   const issuer = ref.issuer ?? "";
   return `${def.code} (${issuer.slice(0, 4)}…${issuer.slice(-4)})`;
+}
+
+/**
+ * Fetches and caches issuer flags for an asset from Horizon, safely scoped to the network.
+ * Returns null if the asset is native (no issuer flags) or if the issuer account does not exist.
+ * Negative results (404) are cached for 10 seconds; positive results for 30 minutes.
+ */
+export async function fetchAssetIssuerFlags(
+  asset: AssetRef,
+  horizonUrl: string = HORIZON_URL,
+  fetchImpl: typeof fetch = fetch,
+): Promise<AssetFlags | null> {
+  if (isNative(asset) || !asset.issuer) return null;
+
+  return chainMetadataCache.fetchWithCache<AssetFlags | null>(
+    {
+      network: NETWORK_PASSPHRASE,
+      tenantWallet: null,
+      entityType: "asset_flags",
+      entityId: `${asset.code}:${asset.issuer}`,
+    },
+    async () => {
+      try {
+        const res = await fetchImpl(`${horizonUrl}/accounts/${asset.issuer}`, {
+          cache: "no-store",
+          headers: { "Cache-Control": "no-cache" },
+        });
+        if (res.status === 404) return null;
+        if (!res.ok) {
+          throw new Error(`Failed to read issuer account: HTTP ${res.status}`);
+        }
+        const data = (await res.json()) as {
+          flags?: {
+            auth_required?: boolean;
+            auth_revocable?: boolean;
+            auth_immutable?: boolean;
+            auth_clawback_enabled?: boolean;
+          };
+        };
+        return {
+          authRequired: Boolean(data.flags?.auth_required),
+          authRevocable: Boolean(data.flags?.auth_revocable),
+          authImmutable: Boolean(data.flags?.auth_immutable),
+          clawbackEnabled: Boolean(data.flags?.auth_clawback_enabled),
+        };
+      } catch (err: unknown) {
+        if (typeof err === "object" && err !== null && "status" in err && (err as { status: number }).status === 404) {
+          return null;
+        }
+        throw err;
+      }
+    },
+    {
+      ttlMs: 1_800_000,
+      staleTtlMs: 900_000,
+      negativeTtlMs: 10_000,
+      isNegative: (val) => val === null,
+    },
+  );
 }

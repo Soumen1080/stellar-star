@@ -100,7 +100,14 @@ export function buildDeps(
 }
 
 export type AuthedRequest =
-  | { ok: true; wallet: string; requestId: string; deps: ReminderDeps }
+  | {
+      ok: true;
+      wallet: string;
+      requestId: string;
+      deps: ReminderDeps;
+      /** The caller's RLS-bound client; also backs the idempotency ledger (#412). */
+      client: StellarStarClient;
+    }
   | { ok: false; response: NextResponse };
 
 /** Every reminder route except unsubscribe and the cron runner requires a wallet session. */
@@ -115,11 +122,13 @@ export function authenticate(request: NextRequest): AuthedRequest {
   if (!isServerSupabaseConfigured()) {
     return { ok: false, response: json({ error: "Database service is not configured on the server." }, 503, requestId) };
   }
+  const client = createServerClientForToken(token);
   return {
     ok: true,
     wallet: session.wallet_address,
     requestId,
-    deps: buildDeps(request, { user: createServerClientForToken(token), service: createServiceRoleClient() }),
+    deps: buildDeps(request, { user: client, service: createServiceRoleClient() }),
+    client,
   };
 }
 

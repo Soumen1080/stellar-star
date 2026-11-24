@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { authenticateApiRequest, recordAuditLog } from "@/lib/api/middleware";
 import { registerWebhookEndpoint, listWebhooksForWallet } from "@/lib/api/webhooks";
+import { runIdempotentMutation } from "@/lib/idempotency/route";
+import { parseJsonBody } from "@/lib/api/bodyLimits";
+import { toPublicErrorResponse } from "@/lib/api/errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -38,53 +41,67 @@ export async function POST(request: NextRequest) {
   const startTime = Date.now();
   const auth = await authenticateApiRequest(request, {
     requiredScopes: ["webhooks:manage"],
+    requireIdempotencyKey: true,
   });
 
   if (!auth.success) {
     return auth.response;
   }
 
-  const { tokenPayload, ip, userAgent, idempotencyKey } = auth.context;
+  const { tokenPayload, ip, userAgent } = auth.context;
+  const idempotencyKey = auth.context.idempotencyKey as string;
 
   let body: any;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json(
-      { error: { code: "BAD_REQUEST", message: "Invalid JSON body.", status: 400 } },
-      { status: 400 }
-    );
-  }
+  const parsedBody = await parseJsonBody(request, { route: "/api/v1/webhooks", format: "v1" });
+  if (!parsedBody.ok) return parsedBody.response;
+  body = parsedBody.value;
 
   const { url, events, description } = body;
 
-  try {
-    const endpoint = registerWebhookEndpoint({
-      walletAddress: tokenPayload.walletAddress,
-      url: String(url || ""),
-      events: Array.isArray(events) ? events : ["trip.created", "expense.created", "settlement.completed"],
-      description: description ? String(description) : undefined,
-    });
+  // The response carries the endpoint's signing secret, so the replay stays in
+  // the process-local ledger (like the endpoint registry) and never reaches
+  // the database.
+  return runIdempotentMutation({
+    request,
+    key: idempotencyKey,
+    replayFields: ["data.id", "data.url", "data.events", "data.description", "data.secret", "data.active", "data.createdAt", "data.walletAddress"],
+    principal: tokenPayload.walletAddress,
+    payload: body,
+    persist: false,
+    format: "v1",
+    execute: async () => {
+      try {
+        const endpoint = registerWebhookEndpoint({
+          walletAddress: tokenPayload.walletAddress,
+          url: String(url || ""),
+          events: Array.isArray(events) ? events : ["trip.created", "expense.created", "settlement.completed"],
+          description: description ? String(description) : undefined,
+        });
 
-    recordAuditLog({
-      timestamp: new Date().toISOString(),
-      tokenId: tokenPayload.tokenId,
-      walletAddress: tokenPayload.walletAddress,
-      method: "POST",
-      path: "/api/v1/webhooks",
-      statusCode: 201,
-      latencyMs: Date.now() - startTime,
-      ip,
-      userAgent,
-      idempotencyKey,
-    });
+        recordAuditLog({
+          timestamp: new Date().toISOString(),
+          tokenId: tokenPayload.tokenId,
+          walletAddress: tokenPayload.walletAddress,
+          method: "POST",
+          path: "/api/v1/webhooks",
+          statusCode: 201,
+          latencyMs: Date.now() - startTime,
+          ip,
+          userAgent,
+          idempotencyKey,
+        });
 
-    return NextResponse.json({ data: endpoint }, { status: 201 });
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : "Failed to register webhook.";
-    return NextResponse.json(
-      { error: { code: "WEBHOOK_REGISTRATION_FAILED", message, status: 400 } },
-      { status: 400 }
-    );
-  }
+        return NextResponse.json({ data: endpoint }, { status: 201, headers: { "Cache-Control": "no-store" } });
+      } catch (err: unknown) {
+        return toPublicErrorResponse(err, {
+          format: "v1",
+          fallbackMessage: "Failed to register webhook.",
+          route: "/api/v1/webhooks",
+          method: "POST",
+          status: 400,
+          code: "WEBHOOK_REGISTRATION_FAILED",
+        });
+      }
+    },
+  });
 }

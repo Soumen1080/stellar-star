@@ -1,0 +1,135 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "version": "1.0.0",
+  "description": "PostgreSQL 16 Query-Plan & Pruning Fixtures for Partitioned Operational Data (#424)",
+  "fixtures": [
+    {
+      "name": "support_audit_logs_monthly_pruning",
+      "table": "public.support_audit_logs",
+      "partition_type": "RANGE (created_at)",
+      "query": "SELECT id, query_type, results_count FROM public.support_audit_logs WHERE created_at >= '2026-11-01 00:00:00+00' AND created_at < '2026-12-01 00:00:00+00' AND staff_identifier = 'STAFF-123' ORDER BY created_at DESC",
+      "plan": {
+        "node_type": "Index Scan",
+        "relation_name": "support_audit_logs_y2026m11",
+        "index_name": "support_audit_logs_y2026m11_staff_identifier_created_at_idx",
+        "partitions_total": 5,
+        "partitions_scanned": 1,
+        "partitions_pruned": 4,
+        "pruned_partitions": [
+          "support_audit_logs_default",
+          "support_audit_logs_y2026m10",
+          "support_audit_logs_y2026m12",
+          "support_audit_logs_y2027m01"
+        ],
+        "filter_predicate": "created_at >= '2026-11-01 00:00:00+00'::timestamptz AND created_at < '2026-12-01 00:00:00+00'::timestamptz AND staff_identifier = 'STAFF-123'",
+        "pruning_method": "static_range_elimination"
+      },
+      "performance": {
+        "monolithic_scan_rows": 1000000,
+        "partitioned_scan_rows": 83333,
+        "io_reduction_percent": 91.6,
+        "p99_latency_budget_ms": 25.0
+      }
+    },
+    {
+      "name": "reminder_events_monthly_pruning",
+      "table": "public.reminder_events",
+      "partition_type": "RANGE (created_at)",
+      "query": "SELECT id, reminder_id, kind, channel FROM public.reminder_events WHERE created_at >= '2026-11-01 00:00:00+00' AND created_at < '2026-12-01 00:00:00+00' AND actor_wallet = 'GQUERYPLAN' ORDER BY created_at DESC",
+      "plan": {
+        "node_type": "Index Scan",
+        "relation_name": "reminder_events_y2026m11",
+        "index_name": "reminder_events_y2026m11_actor_wallet_created_at_idx",
+        "partitions_total": 5,
+        "partitions_scanned": 1,
+        "partitions_pruned": 4,
+        "pruned_partitions": [
+          "reminder_events_default",
+          "reminder_events_y2026m10",
+          "reminder_events_y2026m12",
+          "reminder_events_y2027m01"
+        ],
+        "filter_predicate": "created_at >= '2026-11-01 00:00:00+00'::timestamptz AND created_at < '2026-12-01 00:00:00+00'::timestamptz AND actor_wallet = 'GQUERYPLAN'",
+        "pruning_method": "static_range_elimination"
+      },
+      "performance": {
+        "monolithic_scan_rows": 1500000,
+        "partitioned_scan_rows": 125000,
+        "io_reduction_percent": 91.6,
+        "p99_latency_budget_ms": 20.0
+      }
+    },
+    {
+      "name": "export_audit_events_monthly_pruning",
+      "table": "public.export_audit_events",
+      "partition_type": "RANGE (created_at)",
+      "query": "SELECT id, export_kind, byte_size, status FROM public.export_audit_events WHERE created_at >= '2026-11-01 00:00:00+00' AND created_at < '2026-12-01 00:00:00+00' AND actor_wallet = 'GQUERYPLAN' ORDER BY created_at DESC",
+      "plan": {
+        "node_type": "Index Scan",
+        "relation_name": "export_audit_events_y2026m11",
+        "index_name": "export_audit_events_y2026m11_actor_wallet_created_at_idx",
+        "partitions_total": 5,
+        "partitions_scanned": 1,
+        "partitions_pruned": 4,
+        "pruned_partitions": [
+          "export_audit_events_default",
+          "export_audit_events_y2026m10",
+          "export_audit_events_y2026m12",
+          "export_audit_events_y2027m01"
+        ],
+        "filter_predicate": "created_at >= '2026-11-01 00:00:00+00'::timestamptz AND created_at < '2026-12-01 00:00:00+00'::timestamptz AND actor_wallet = 'GQUERYPLAN'",
+        "pruning_method": "static_range_elimination"
+      },
+      "performance": {
+        "monolithic_scan_rows": 500000,
+        "partitioned_scan_rows": 41666,
+        "io_reduction_percent": 91.6,
+        "p99_latency_budget_ms": 15.0
+      }
+    },
+    {
+      "name": "reconciliation_queue_active_jobs_pruning",
+      "table": "public.reconciliation_queue",
+      "partition_type": "RANGE (created_at)",
+      "query": "SELECT id, trip_id, expense_id, status, attempts FROM public.reconciliation_queue WHERE created_at >= '2026-11-01 00:00:00+00' AND created_at < '2026-12-01 00:00:00+00' AND status = 'not_submitted' ORDER BY created_at DESC",
+      "plan": {
+        "node_type": "Index Scan",
+        "relation_name": "reconciliation_queue_y2026m11",
+        "index_name": "reconciliation_queue_y2026m11_status_next_attempt_at_idx",
+        "partitions_total": 5,
+        "partitions_scanned": 1,
+        "partitions_pruned": 4,
+        "pruned_partitions": [
+          "reconciliation_queue_default",
+          "reconciliation_queue_y2026m10",
+          "reconciliation_queue_y2026m12",
+          "reconciliation_queue_y2027m01"
+        ],
+        "filter_predicate": "created_at >= '2026-11-01 00:00:00+00'::timestamptz AND created_at < '2026-12-01 00:00:00+00'::timestamptz AND status = 'not_submitted'",
+        "pruning_method": "static_range_elimination"
+      },
+      "performance": {
+        "monolithic_scan_rows": 2000000,
+        "partitioned_scan_rows": 166666,
+        "io_reduction_percent": 91.6,
+        "p99_latency_budget_ms": 30.0
+      }
+    }
+  ],
+  "cleanup_benchmarks": {
+    "monolithic_table_delete_100k_rows": {
+      "strategy": "DELETE FROM table WHERE created_at < cutoff",
+      "duration_ms": 4820.0,
+      "wal_generated_mb": 142.5,
+      "vacuum_required": true,
+      "lock_type": "RowExclusiveLock (extended duration)"
+    },
+    "partitioned_detach_drop_100k_rows": {
+      "strategy": "ALTER TABLE parent DETACH PARTITION child; DROP TABLE child;",
+      "duration_ms": 4.2,
+      "wal_generated_mb": 0.05,
+      "vacuum_required": false,
+      "lock_type": "AccessExclusiveLock (metadata-only, sub-millisecond)"
+    }
+  }
+}

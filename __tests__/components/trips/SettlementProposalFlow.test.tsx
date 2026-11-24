@@ -23,6 +23,10 @@ jest.mock("@/hooks/useExpense", () => ({ useExpense: jest.fn() }));
 jest.mock("@/components/ui/Toast", () => ({
   useToast: () => ({ success: jest.fn(), error: jest.fn(), info: jest.fn() }),
 }));
+jest.mock("@/lib/settlement/disputes", () => ({
+  listTripDisputes: jest.fn().mockResolvedValue([]),
+  unresolvedDisputedShares: jest.fn().mockReturnValue(new Set()),
+}));
 
 const mockPayNet = jest.fn(async () => {});
 jest.mock("@/hooks/useNetPayment", () => ({

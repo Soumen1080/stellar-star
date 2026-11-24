@@ -106,7 +106,7 @@ describe("migration hygiene", () => {
   const migrations = readMigrationFiles();
 
   it("numbers every migration uniquely, so parallel contributors collide loudly", () => {
-    const versions = migrations.map((m) => m.name.slice(0, 4));
+    const versions = migrations.map((m) => m.name.replace(/\.sql$/, ""));
     // Two contributors both adding "0004_*" is a merge conflict here rather
     // than a silent divergence in what each database actually ran.
     expect(new Set(versions).size).toBe(versions.length);

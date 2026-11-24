@@ -41,6 +41,7 @@ This document defines the comprehensive authorization matrix for all data bounda
 | **Claim Member Slot**| `POST /api/invitations/claim` | ❌ N/A | ❌ (Already) | ✅ ALLOW | ❌ DENY (410) | ✅ ALLOW | ❌ DENY (401) | `claim_trip_invite` + session check |
 | **Revoke Invite** | `POST /api/invitations/revoke` | ✅ ALLOW | ❌ DENY | ❌ DENY | ❌ DENY | ❌ DENY | ❌ DENY | API + `trip_invites_update_creator` |
 | **Request Attestation** | `POST /api/settlement/attest` | ✅ (as debtor)| ✅ (as debtor)| ❌ DENY | ❌ DENY | ❌ DENY | ❌ DENY | Session check (`session.wallet == member`) |
+| **Run Reconciliation Worker**| `POST /api/settlement/reconciliation-worker`| ❌ DENY | ❌ DENY | ❌ DENY | ❌ DENY | ❌ DENY | ❌ DENY | Cron secret or explicit staff credentials only (SR-09) |
 | **Reconcile Settlement**| `POST /api/settlement/reconcile`| ✅ ALLOW | ✅ ALLOW | ❌ DENY | ❌ DENY | ❌ DENY | ❌ DENY | Horizon check + session participant check |
 | **Realtime Stream** | WebSocket Postgres Changes | ✅ ALLOW | ✅ ALLOW | ❌ DENY | ❌ DENY | ❌ DENY | ❌ DENY | Supabase Realtime RLS scoping |
 | **Read Receipts** | `GET /api/receipts/[id]` | ✅ ALLOW | ✅ ALLOW | ❌ DENY | ❌ DENY | ❌ DENY | ❌ DENY | Storage signed URL + membership check |
@@ -92,8 +93,41 @@ Client bundles built via Next.js dead-code eliminate all server-only modules. In
 | **SR-06** | `lib/settlement/attestationLedger.ts`| Multi-instance attestation double-claim prevention ledger | Read/write strictly keyed by transaction hash and verified Horizon record |
 | **SR-07** | `lib/onboarding/sponsorshipLedger.ts`| Gas sponsorship ledger & capacity reserve | Rate-limited by inviter abuse-resistance controls |
 | **SR-08** | `lib/privacy/accountDeletion.ts` | Executes off-chain account deletion and anonymization | Requires verified session JWT from the account owner |
+| **SR-09** | `app/api/settlement/reconciliation-worker/route.ts`, `.../cron/route.ts` | Runs bounded reconciliation passes and serves the reconciliation report | Runs: `Authorization: Bearer $CRON_SECRET` or explicit staff credentials (`x-staff-secret`, `x-operator-secret`, or a wallet on `RECONCILIATION_STAFF_WALLETS`), all compared in constant time; there is no development fallback. The cron route accepts only the cron secret. A plain wallet session can only read its own rows; anonymous callers get 401. Every run is logged to `reconciliation_worker_runs` (#415). Jobs are claimed under a lease via `service_role`-only RPCs (`claim_reconciliation_jobs` and its heartbeat/fail/release/requeue siblings); wallet sessions can read and enqueue their own jobs but have no `UPDATE` on `reconciliation_queue` (#416). |
+| **SR-10** | `app/api/idempotency/cleanup/route.ts` | Redacts expired idempotency replays and deletes expired audit rows | Gated by `Authorization: Bearer $CRON_SECRET` using timing-safe comparison (#414) |
+| **SR-11** | `app/api/outbox/worker/route.ts` | Leases and dispatches transactional outbox events; reports queue counts | Gated by `Authorization: Bearer $CRON_SECRET` (timing-safe) on GET and POST; disabled when unset. The secret is never used as a database token (#419) |
+| **SR-12** | `app/api/reminders/run/route.ts` | Scheduled payment reminder delivery | Gated by `Authorization: Bearer $CRON_SECRET` |
+| **SR-13** | `app/api/reminders/unsubscribe/route.ts` | One-click reminder unsubscribe | Signed, single-purpose unsubscribe capability; no session |
+| **SR-14** | `app/api/support/**` | Support console lookup, audit log and dual-control actions | Explicit staff credentials; dual control for actions |
 
 ---
+
+### 4.3 Standard route guard (#419)
+
+Wallet-session routes do not parse credentials or build database clients
+themselves. Each starts with `authenticateWalletRequest(request)`, or
+`optionalWalletSession` where anonymous callers are allowed, from
+`lib/api/routeGuard.ts`. Before any query, the guard:
+
+1. assigns the request ID;
+2. parses the `Bearer` token strictly;
+3. verifies the wallet session;
+4. attaches the actor (wallet, subject);
+5. exposes only the session's RLS-scoped client (`ctx.db()`), created on first use.
+
+A missing, malformed, forged or expired credential gets one identical
+`401 { error, code: "AUTH_REQUIRED", requestId }`.
+
+`__tests__/security/routeGuards.test.ts` enforces this in CI:
+
+- No route outside an explicit list (session issuance and renewal, and the
+  reconciliation actor resolver) calls `verifyWalletSession` or
+  `createServerClientForToken`.
+- `createServiceRoleClient` appears only in the routes inventoried in §4.2.
+- A matrix generated from the route tree checks every guarded handler with
+  anonymous, wrong-scheme, garbage, oversized, forged, expired and `alg: none`
+  credentials. Each must return the same 401 without constructing any database
+  client.
 
 ## 5. Automated Verification & Regression Testing
 

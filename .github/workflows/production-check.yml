@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+  pull_request:
   workflow_dispatch:
     inputs:
       target_network:
@@ -53,6 +54,61 @@ jobs:
 
       - name: Assert No E2E Wallet Bypass in Production Bundle (P0 Security)
         run: npm run test:security-build
+
+      # Evidence for scorecard requirement SEC-02 (#447). Only reached when the
+      # gate above passed, so its existence is the proof.
+      - name: Record security-build evidence
+        run: npm run release:evidence -- --name security-build --source "npm run test:security-build" --data '{"passed":true}'
+
+      - name: Upload security-build evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-evidence-security-build
+          path: release/evidence/security-build.json
+          retention-days: 90
+
+  # Evidence for scorecard requirement CON-02 (#447): the Soroban contract suite
+  # passes on the exact commit being promoted.
+  contract-evidence:
+    name: Contract test evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build output
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            contract/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('contract/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+
+      - name: Run contract tests
+        working-directory: contract
+        run: cargo test
+
+      - name: Record contract evidence
+        shell: bash
+        run: |
+          mkdir -p release/evidence
+          printf '{\n  "name": "contracts",\n  "collectedAt": "%s",\n  "source": "cargo test (contract/)",\n  "commit": "%s",\n  "data": { "passed": true }\n}\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$GITHUB_SHA" > release/evidence/contracts.json
+
+      - name: Upload contract evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-evidence-contracts
+          path: release/evidence/contracts.json
+          retention-days: 90
 
   production-readiness:
     name: Validate Production Build Inputs
@@ -126,9 +182,81 @@ jobs:
       - name: Build with production-like env
         run: npm run build
 
+  # ── Release Readiness Scorecard (#447) ──────────────────────────────────────
+  # One verifiable promotion decision over migrations, RLS, performance,
+  # security, backups, dependencies, SLOs, contracts and rollback
+  # (release/readiness-policy.json). A manual PUBLIC promotion is enforced: any
+  # failed blocking requirement without an accountable exception blocks the
+  # deploy gate. Pushes and pull requests are not promotions, so they run in
+  # report-only mode and publish the scorecard without failing.
+  release-scorecard:
+    name: Release Readiness Scorecard
+    needs: [p0-release-gate, production-readiness, contract-evidence]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Collect dependency advisory evidence (DEP-02)
+        shell: bash
+        run: |
+          # npm audit exits non-zero when advisories exist; the scorecard, not
+          # this step, decides whether they block.
+          npm audit --omit=dev --json > "$RUNNER_TEMP/npm-audit.json" || true
+          npm run release:evidence -- --name npm-audit --source "npm audit --omit=dev --json" --from "$RUNNER_TEMP/npm-audit.json"
+
+      - name: Collect restore-drill evidence (BAK-01)
+        run: node scripts/recovery-drill.mjs --evidence-out release/evidence/restore-drill.json
+
+      - name: Download evidence from upstream jobs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-evidence-*
+          path: release/evidence
+          merge-multiple: true
+
+      - name: Evaluate scorecard
+        shell: bash
+        run: |
+          set +e
+          MODE="--report-only"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.target_network }}" = "PUBLIC" ]; then
+            MODE=""
+          fi
+          npm run release:scorecard -- $MODE --target "${{ inputs.target_network || 'PUBLIC' }}" | tee "$RUNNER_TEMP/scorecard.txt"
+          status=${PIPESTATUS[0]}
+          { echo '```'; cat "$RUNNER_TEMP/scorecard.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit $status
+
+      - name: Verify audit record chain
+        if: always()
+        run: npm run release:audit:verify
+
+      - name: Upload scorecard, audit record and evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-scorecard-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            release/out/
+            release/evidence/
+            release/exceptions.json
+          retention-days: 90
+
   production-deploy-gate:
     name: Production Deployment Release Gate
-    needs: [p0-release-gate, production-readiness]
+    needs: [p0-release-gate, production-readiness, release-scorecard]
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
@@ -142,4 +270,5 @@ jobs:
           echo " - Mainnet Go/No-Go Gate audited & approved"
           echo " - Zero wallet bypass in production build verified"
           echo " - Production build inputs and secrets validated"
+          echo " - Release readiness scorecard evaluated and audited"
           echo "Release gate is OPEN for public production deployment."

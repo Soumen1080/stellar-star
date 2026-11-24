@@ -3,6 +3,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { createServiceRoleClient } from "@/lib/supabase/server";
 import { buildDeps } from "@/lib/reminders/server";
 import { runDueSchedules } from "@/lib/reminders/service";
+import { toPublicErrorResponse } from "@/lib/api/errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -38,8 +39,10 @@ async function run(request: NextRequest) {
     const result = await runDueSchedules(buildDeps(request, { user: null, service }));
     return NextResponse.json({ data: result }, { headers: { "Cache-Control": "no-store" } });
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Scheduled reminders failed.";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return toPublicErrorResponse(err, {
+      fallbackMessage: "Scheduled reminders failed.",
+      route: "/api/reminders/run",
+    });
   }
 }
 

@@ -68,8 +68,11 @@ async function run(request: NextRequest) {
       if (page.length < PAGE) break;
     }
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Draft generation failed.";
-    return NextResponse.json({ error: message, created }, { status: 500 });
+    return toPublicErrorResponse(err, {
+      fallbackMessage: "Draft generation failed.",
+      route: "/api/recurring/run",
+      context: { created },
+    });
   }
 
   return NextResponse.json(

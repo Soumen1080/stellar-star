@@ -1,14 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
+import { toPublicErrorResponse } from "@/lib/api/errors";
 import {
   isAllowedEventName,
   containsSensitiveData,
   sanitizeAnalyticsEvent,
   ANALYTICS_SCHEMA_VERSION,
 } from "@/lib/analytics";
+import { parseJsonBody } from "@/lib/api/bodyLimits";
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
+    const parsedBody = await parseJsonBody<any>(req, { route: "/api/analytics/events" });
+    if (!parsedBody.ok) return parsedBody.response;
+    const body = parsedBody.value;
 
     if (!body || typeof body !== "object") {
       return NextResponse.json({ error: "Invalid payload" }, { status: 400 });
@@ -41,7 +45,10 @@ export async function POST(req: NextRequest) {
       schemaVersion: ANALYTICS_SCHEMA_VERSION,
     });
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : "Internal error";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return toPublicErrorResponse(err, {
+      fallbackMessage: "Internal error",
+      route: "/api/analytics/events",
+      method: "POST",
+    });
   }
 }

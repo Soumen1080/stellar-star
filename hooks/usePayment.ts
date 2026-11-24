@@ -618,7 +618,7 @@ export function usePayment({ expenseId }: UsePaymentOpts) {
 
         setPaymentState({ status: "signing" });
         toastInfo("Waiting for wallet signature...", "Review and confirm the transaction.");
-        const signedXDR = await signXDR(xdr, NETWORK_PASSPHRASE);
+        const signedXDR = await signXDR(xdr, NETWORK_PASSPHRASE, publicKey);
 
         setPaymentState({ status: "submitting" });
         const result = await submitSignedTransaction(signedXDR, requestId);

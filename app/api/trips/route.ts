@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { verifyWalletSession } from "@/lib/supabase/serverAuth";
-import { createServerClientForToken, isServerSupabaseConfigured } from "@/lib/supabase/server";
+import { isServerSupabaseConfigured } from "@/lib/supabase/server";
 import {
   fetchTripsPaginated,
   insertTrip,
@@ -8,29 +7,19 @@ import {
   MAX_PAGE_SIZE,
   DEFAULT_PAGE_SIZE,
 } from "@/lib/supabase/queries";
-import {
-  extractIdempotencyKey,
-  withIdempotency,
-  idempotentJsonResponse,
-  IdempotencyConflictError,
-  IdempotencyLockedError,
-} from "@/lib/idempotency/store";
+import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
+import { TRIP_REPLAY_FIELDS } from "@/lib/idempotency/replay";
 import type { Trip } from "@/types/trip";
+import { authenticateWalletRequest } from "@/lib/api/routeGuard";
+import { toPublicErrorResponse } from "@/lib/api/errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
-  const authHeader = request.headers.get("authorization") ?? "";
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
-  const session = token ? verifyWalletSession(token) : null;
-
-  if (!session) {
-    return NextResponse.json(
-      { error: "Unauthorized: Sign in with your wallet to view trips." },
-      { status: 401 }
-    );
-  }
+  const auth = authenticateWalletRequest(request, { message: "Unauthorized: Sign in with your wallet to view trips." });
+  if (!auth.ok) return auth.response;
+  const session = auth.ctx.claims;
 
   const { searchParams } = request.nextUrl;
   const rawLimit = searchParams.get("limit");
@@ -57,33 +46,32 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const client = createServerClientForToken(token);
+    const client = auth.ctx.db();
     const result = await fetchTripsPaginated(parsed, client);
     return NextResponse.json(result);
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Failed to load trips.";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return toPublicErrorResponse(err, {
+      requestId: auth.ctx.requestId,
+      fallbackMessage: "Failed to load trips.",
+      route: "/api/trips",
+      method: "GET",
+    });
   }
 }
 
 export async function POST(request: NextRequest) {
-  const authHeader = request.headers.get("authorization") ?? "";
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
-  const session = token ? verifyWalletSession(token) : null;
-
-  if (!session) {
-    return NextResponse.json(
-      { error: "Unauthorized: Sign in with your wallet to create a trip." },
-      { status: 401 }
-    );
-  }
+  const auth = authenticateWalletRequest(request, { message: "Unauthorized: Sign in with your wallet to create a trip." });
+  if (!auth.ok) return auth.response;
+  const session = auth.ctx.claims;
 
   let body: any;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "Request body must be valid JSON." }, { status: 400 });
-  }
+  const parsedBody = await parseJsonBody(request, { route: "/api/trips" });
+  if (!parsedBody.ok) return parsedBody.response;
+  body = (parsedBody.value) as typeof body;
+
+  // Issue #412: a valid key is required before any work.
+  const idempotency = requireIdempotencyKey(request, { body });
+  if (!idempotency.ok) return idempotency.response;
 
   const { name, description, members } = body ?? {};
   if (!name || typeof name !== "string" || !name.trim()) {
@@ -105,8 +93,7 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const client = createServerClientForToken(token);
-    const idempotencyKey = extractIdempotencyKey(request, body);
+    const client = auth.ctx.db();
 
     const tripToSave: Trip = {
       id: body.id || crypto.randomUUID(),
@@ -119,27 +106,26 @@ export async function POST(request: NextRequest) {
       createdByWallet: session.wallet_address,
     };
 
-    const idempotentResult = await withIdempotency({
+    return await runIdempotentMutation({
+      request,
       client,
-      key: idempotencyKey,
-      walletAddress: session.wallet_address,
+      key: idempotency.key,
+      replayFields: TRIP_REPLAY_FIELDS,
+      principal: session.wallet_address,
+      // Kept from the pre-#412 wrapper so keys stored before the change still match.
       endpoint: "/api/trips",
       payload: body,
       execute: async () => {
         const saved = await insertTrip(tripToSave, session.wallet_address, client);
-        return { data: saved, status: 201 };
+        return NextResponse.json(saved, { status: 201, headers: { "Cache-Control": "no-store" } });
       },
     });
-
-    return idempotentJsonResponse(idempotentResult);
   } catch (err) {
-    if (err instanceof IdempotencyConflictError || err instanceof IdempotencyLockedError) {
-      return NextResponse.json(
-        { error: err.message, code: err.code },
-        { status: 409 }
-      );
-    }
-    const message = err instanceof Error ? err.message : "Failed to create trip.";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return toPublicErrorResponse(err, {
+      requestId: auth.ctx.requestId,
+      fallbackMessage: "Failed to create trip.",
+      route: "/api/trips",
+      method: "POST",
+    });
   }
 }

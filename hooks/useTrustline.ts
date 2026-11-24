@@ -8,6 +8,7 @@ import {
   buildChangeTrustTransaction,
   hasTrustline,
   InsufficientReserveError,
+  invalidateTrustlineCache,
 } from "@/lib/stellar/trustline";
 import { NETWORK_PASSPHRASE } from "@/lib/utils/constants";
 
@@ -70,10 +71,11 @@ export function useTrustline(asset: AssetRef) {
           setReserveStroops(locked);
 
           setPhase("awaiting_signature");
-          const signed = await signXDR(xdr, NETWORK_PASSPHRASE);
+          const signed = await signXDR(xdr, NETWORK_PASSPHRASE, publicKey);
 
           setPhase("submitting");
           const result = await submitSignedTransaction(signed);
+          invalidateTrustlineCache(publicKey, asset);
 
           setPhase("done");
           setTxHash(result.hash);
@@ -85,6 +87,7 @@ export function useTrustline(asset: AssetRef) {
           // the account already holds is submitted (e.g. a duplicate that
           // slipped past the pre-flight check). Treat it as success.
           if (/op_already_exists|already_exists/i.test(message)) {
+            invalidateTrustlineCache(publicKey, asset);
             setPhase("done");
             return true;
           }

@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { verifyWalletSession } from "@/lib/supabase/serverAuth";
-import { createServerClientForToken, isServerSupabaseConfigured } from "@/lib/supabase/server";
+import { isServerSupabaseConfigured } from "@/lib/supabase/server";
 import {
   searchExpenseHistory,
   insertExpense,
@@ -8,35 +7,26 @@ import {
 } from "@/lib/supabase/queries";
 import {
   decodeHistoryCursor,
+  HistoryFilterError,
   parseHistoryFilters,
   parseTimezoneOffset,
   parseTripIdFilter,
 } from "@/lib/expense/historyFilters";
 import { normalizeCategory } from "@/lib/expense/categories";
 import { normalizeTags, validateTags } from "@/lib/expense/tags";
-import {
-  extractIdempotencyKey,
-  withIdempotency,
-  idempotentJsonResponse,
-  IdempotencyConflictError,
-  IdempotencyLockedError,
-} from "@/lib/idempotency/store";
+import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
+import { EXPENSE_REPLAY_FIELDS } from "@/lib/idempotency/replay";
 import type { Expense } from "@/types/expense";
+import { authenticateWalletRequest } from "@/lib/api/routeGuard";
+import { toPublicErrorResponse } from "@/lib/api/errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
-  const authHeader = request.headers.get("authorization") ?? "";
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
-  const session = token ? verifyWalletSession(token) : null;
-
-  if (!session) {
-    return NextResponse.json(
-      { error: "Unauthorized: Sign in with your wallet to view expenses." },
-      { status: 401 }
-    );
-  }
+  const auth = authenticateWalletRequest(request, { message: "Unauthorized: Sign in with your wallet to view expenses." });
+  if (!auth.ok) return auth.response;
+  const session = auth.ctx.claims;
 
   // History is keyset-paginated and filtered in the database, so a trip with
   // thousands of expenses is still served one page at a time. See
@@ -66,33 +56,36 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const client = createServerClientForToken(token);
+    const client = auth.ctx.db();
     const result = await searchExpenseHistory(query, client);
     return NextResponse.json(result);
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Failed to load expenses.";
-    return NextResponse.json({ error: message }, { status: 500 });
+    if (err instanceof HistoryFilterError) {
+      return NextResponse.json({ error: err.message, code: "INVALID_FILTER", requestId: auth.ctx.requestId }, { status: 400 });
+    }
+    return toPublicErrorResponse(err, {
+      requestId: auth.ctx.requestId,
+      fallbackMessage: "Failed to load expenses.",
+      route: "/api/expenses",
+      method: "GET",
+    });
   }
 }
 
 export async function POST(request: NextRequest) {
-  const authHeader = request.headers.get("authorization") ?? "";
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
-  const session = token ? verifyWalletSession(token) : null;
-
-  if (!session) {
-    return NextResponse.json(
-      { error: "Unauthorized: Sign in with your wallet to create an expense." },
-      { status: 401 }
-    );
-  }
+  const auth = authenticateWalletRequest(request, { message: "Unauthorized: Sign in with your wallet to create an expense." });
+  if (!auth.ok) return auth.response;
+  const session = auth.ctx.claims;
 
   let body: any;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "Request body must be valid JSON." }, { status: 400 });
-  }
+  const parsedBody = await parseJsonBody(request, { route: "/api/expenses" });
+  if (!parsedBody.ok) return parsedBody.response;
+  body = (parsedBody.value) as typeof body;
+
+  // Issue #412: a valid key is required before any work. The body field is
+  // still accepted for offline drafts queued by older clients.
+  const idempotency = requireIdempotencyKey(request, { body });
+  if (!idempotency.ok) return idempotency.response;
 
   const { title, totalAmount, currency, splitMode, paidByMemberId, members, shares } = body ?? {};
   if (!title || typeof title !== "string" || !title.trim()) {
@@ -137,8 +130,7 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const client = createServerClientForToken(token);
-    const idempotencyKey = extractIdempotencyKey(request, body);
+    const client = auth.ctx.db();
 
     const expenseToSave: Expense = {
       id: body.id || crypto.randomUUID(),
@@ -157,29 +149,31 @@ export async function POST(request: NextRequest) {
       settled: false,
       version: 1,
       createdAt: new Date().toISOString(),
+      correctionOfExpenseId: body.correctionOfExpenseId ?? undefined,
+      correctionType: body.correctionType ?? undefined,
+      correctionReason: body.correctionReason?.trim() || undefined,
     };
 
-    const idempotentResult = await withIdempotency({
+    return await runIdempotentMutation({
+      request,
       client,
-      key: idempotencyKey,
-      walletAddress: session.wallet_address,
+      key: idempotency.key,
+      replayFields: EXPENSE_REPLAY_FIELDS,
+      principal: session.wallet_address,
+      // Kept from the pre-#412 wrapper so keys stored before the change still match.
       endpoint: "/api/expenses",
       payload: body,
       execute: async () => {
         const saved = await insertExpense(expenseToSave, session.wallet_address, client);
-        return { data: saved, status: 201 };
+        return NextResponse.json(saved, { status: 201, headers: { "Cache-Control": "no-store" } });
       },
     });
-
-    return idempotentJsonResponse(idempotentResult);
   } catch (err) {
-    if (err instanceof IdempotencyConflictError || err instanceof IdempotencyLockedError) {
-      return NextResponse.json(
-        { error: err.message, code: err.code },
-        { status: 409 }
-      );
-    }
-    const message = err instanceof Error ? err.message : "Failed to create expense.";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return toPublicErrorResponse(err, {
+      requestId: auth.ctx.requestId,
+      fallbackMessage: "Failed to create expense.",
+      route: "/api/expenses",
+      method: "POST",
+    });
   }
 }

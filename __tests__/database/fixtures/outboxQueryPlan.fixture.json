@@ -1,0 +1,102 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "version": "1.0.0",
+  "description": "PostgreSQL 16 Query-Plan & Performance Fixtures for Transactional Outbox Pattern (#425)",
+  "fixtures": [
+    {
+      "name": "outbox_active_batch_polling",
+      "table": "public.transactional_outbox",
+      "index_name": "idx_transactional_outbox_polling",
+      "query": "SELECT id, aggregate_type, aggregate_id, event_type, channel, payload, headers, trace_id, deduplication_key, attempts, max_attempts, backoff_ms FROM public.transactional_outbox WHERE ((status = 'pending' AND next_attempt_at <= '2026-11-20 00:00:00+00') OR (status = 'leased' AND lease_expires_at < '2026-11-20 00:00:00+00') OR (status = 'failed' AND attempts < max_attempts AND next_attempt_at <= '2026-11-20 00:00:00+00')) ORDER BY next_attempt_at ASC, created_at ASC LIMIT 10 FOR UPDATE SKIP LOCKED",
+      "plan": {
+        "node_type": "Limit",
+        "relation_name": "transactional_outbox",
+        "index_name": "idx_transactional_outbox_polling",
+        "locking_clause": "FOR UPDATE SKIP LOCKED",
+        "filter_predicate": "status = ANY('{pending,leased,failed}'::text[])",
+        "index_cond": "status = 'pending' AND next_attempt_at <= '2026-11-20 00:00:00+00'::timestamptz",
+        "rows_scanned": 10,
+        "concurrency_protection": "SKIP LOCKED (zero lock contention)"
+      },
+      "performance": {
+        "p99_latency_budget_ms": 5.0,
+        "estimated_startup_cost": 0.28,
+        "estimated_total_cost": 8.35,
+        "deadlock_probability": 0.0
+      }
+    },
+    {
+      "name": "outbox_deduplication_lookup",
+      "table": "public.transactional_outbox",
+      "index_name": "uq_transactional_outbox_dedup",
+      "query": "SELECT id, status, attempts, next_attempt_at FROM public.transactional_outbox WHERE deduplication_key = 'outbox:webhook:expense:100:created'",
+      "plan": {
+        "node_type": "Index Scan",
+        "relation_name": "transactional_outbox",
+        "index_name": "uq_transactional_outbox_dedup",
+        "index_cond": "deduplication_key = 'outbox:webhook:expense:100:created'::text",
+        "rows_scanned": 1
+      },
+      "performance": {
+        "p99_latency_budget_ms": 1.5,
+        "estimated_startup_cost": 0.15,
+        "estimated_total_cost": 4.17
+      }
+    },
+    {
+      "name": "outbox_trace_id_correlation",
+      "table": "public.transactional_outbox",
+      "index_name": "idx_transactional_outbox_trace",
+      "query": "SELECT id, aggregate_id, event_type, status, created_at FROM public.transactional_outbox WHERE trace_id = '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01' ORDER BY created_at DESC",
+      "plan": {
+        "node_type": "Index Scan",
+        "relation_name": "transactional_outbox",
+        "index_name": "idx_transactional_outbox_trace",
+        "index_cond": "trace_id = '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01'::text",
+        "rows_scanned": 2
+      },
+      "performance": {
+        "p99_latency_budget_ms": 3.0,
+        "estimated_startup_cost": 0.15,
+        "estimated_total_cost": 8.18
+      }
+    },
+    {
+      "name": "outbox_aggregate_lookup",
+      "table": "public.transactional_outbox",
+      "index_name": "idx_transactional_outbox_aggregate",
+      "query": "SELECT id, event_type, status, created_at FROM public.transactional_outbox WHERE aggregate_type = 'expense' AND aggregate_id = 'exp-999' ORDER BY created_at DESC",
+      "plan": {
+        "node_type": "Index Scan",
+        "relation_name": "transactional_outbox",
+        "index_name": "idx_transactional_outbox_aggregate",
+        "index_cond": "aggregate_type = 'expense'::text AND aggregate_id = 'exp-999'::text",
+        "rows_scanned": 1
+      },
+      "performance": {
+        "p99_latency_budget_ms": 3.0,
+        "estimated_startup_cost": 0.15,
+        "estimated_total_cost": 8.18
+      }
+    }
+  ],
+  "concurrency_benchmarks": {
+    "skip_locked_worker_competition_10_nodes": {
+      "concurrent_workers": 10,
+      "batch_size_per_worker": 10,
+      "contention_conflicts": 0,
+      "duplicate_claims": 0,
+      "p99_claim_latency_ms": 4.2
+    },
+    "exponential_backoff_distribution": {
+      "base_backoff_ms": 1000,
+      "attempt_1_ms": 1000,
+      "attempt_2_ms": 2000,
+      "attempt_3_ms": 4000,
+      "attempt_4_ms": 8000,
+      "attempt_5_ms": 16000,
+      "max_cap_ms": 60000,
+      "jitter_percent": 20
+    }
+  }
+}

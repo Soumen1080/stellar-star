@@ -11,6 +11,12 @@
  * silently resolves every query to `never`.
  */
 
+import type {
+  HouseholdChoreCompletionRow,
+  HouseholdChorePreferenceRow,
+  HouseholdChoreRow,
+} from "./householdChore";
+
 export type Json =
   | string
   | number
@@ -56,6 +62,23 @@ export type ExpenseRow = {
   member_wallets: string[];
   created_at: string;
   updated_at: string;
+  voided?: boolean;
+  voided_at?: string | null;
+  voided_by_wallet?: string | null;
+  void_reason?: string | null;
+  correction_of_expense_id?: string | null;
+  correction_type?: 'reversal' | 'adjustment' | 'offset' | null;
+  correction_reason?: string | null;
+};
+
+export type ExpenseAuditEventRow = {
+  id: string;
+  expense_id: string;
+  action: 'voided' | 'correction_created' | 'reversal_created' | 'adjustment_created';
+  actor_wallet: string;
+  reason: string;
+  metadata: Json;
+  created_at: string;
 };
 
 export type TripRow = {
@@ -76,6 +99,7 @@ export type TripRow = {
   source_template_id: string | null;
   copied_from_trip_id: string | null;
   workspace?: Json | null;
+  household_coordination_enabled: boolean;
   created_at: string;
   updated_at: string;
 };
@@ -103,6 +127,58 @@ export type ContactWalletChangeRow = {
   affected_trip_ids: string[]; notice_until: string; verified: boolean; created_at: string; applied_at: string | null;
 };
 
+
+export type PaymentReminderRow = {
+  id: string;
+  trip_id: string;
+  expense_id: string;
+  member_id: string;
+  recipient_wallet: string;
+  sender_wallet: string;
+  amount: string;
+  asset: string;
+  note: string | null;
+  trigger: "manual" | "schedule";
+  schedule_id: string | null;
+  state: "delivered" | "read" | "dismissed" | "cancelled" | "muted";
+  channels: string[];
+  created_at: string;
+  updated_at: string;
+  read_at: string | null;
+};
+
+export type ReminderEventRow = {
+  id: string;
+  reminder_id: string | null;
+  actor_wallet: string;
+  kind: string;
+  channel: "in_app" | "email" | "push" | null;
+  detail: string | null;
+  created_at: string;
+};
+
+export type ReminderPreferencesRow = {
+  wallet: string;
+  email_opt_in: boolean;
+  email_address: string | null;
+  push_opt_in: boolean;
+  push_endpoint: string | null;
+  muted_trip_ids: string[];
+  muted_sender_wallets: string[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type ReminderScheduleRow = {
+  id: string;
+  trip_id: string;
+  owner_wallet: string;
+  interval_days: number;
+  next_run_at: string;
+  active: boolean;
+  created_at: string;
+  updated_at: string;
+};
 export type ExportAuditEventRow = {
   id: string;
   actor_wallet: string;
@@ -140,6 +216,18 @@ export type SettlementProposalResponseRow = {
   reason: string | null;
   content_hash: string;
   created_at: string;
+};
+
+export type ExpenseDisputeRow = {
+  id: string; trip_id: string; expense_id: string; share_member_id: string;
+  opened_by_wallet: string; category: "incorrect_amount" | "incorrect_split" | "not_shared" | "duplicate" | "already_paid" | "missing_context" | "other"; comment: string; evidence_receipt_ids: string[];
+  status: "open" | "upheld" | "resolved"; created_at: string; resolved_at: string | null;
+};
+
+export type ExpenseDisputeEventRow = {
+  id: string; dispute_id: string; actor_wallet: string;
+  action: "opened" | "upheld" | "dismissed" | "adjusted";
+  reason: string; created_at: string;
 };
 
 export type TripRoleAuditRow = {
@@ -220,6 +308,103 @@ export type SettlementAttestationRow = {
   created_at: string;
 };
 
+export type ReconciliationJobStatusValue =
+  | "not_submitted"
+  | "submitted_not_confirmed"
+  | "confirmed_not_recorded"
+  | "recorded"
+  | "escalated"
+  | "failed"
+  | "dead_letter";
+
+export type ReconciliationJobRow = {
+  id: string;
+  intent_id: string | null;
+  trip_id: string;
+  expense_id: string;
+  member_id: string;
+  payer_wallet: string;
+  member_wallet: string;
+  asset: string;
+  amount: string;
+  amount_stroops: string;
+  expected_memo: string | null;
+  request_id: string | null;
+  tx_hash: string | null;
+  ledger: number | null;
+  status: ReconciliationJobStatusValue;
+  attempts: number;
+  max_attempts: number;
+  backoff_ms: number;
+  last_attempt_at: string | null;
+  next_attempt_at: string;
+  escalation_reason: string | null;
+  error_message: string | null;
+  verified_at: string | null;
+  recorded_at: string | null;
+  created_at: string;
+  updated_at: string;
+  /** Leased queue (migration 0026, #416). */
+  dedupe_key: string | null;
+  lease_owner: string | null;
+  lease_token: string | null;
+  leased_at: string | null;
+  lease_expires_at: string | null;
+  heartbeat_at: string | null;
+  claim_count: number;
+  lease_recoveries: number;
+  max_lease_recoveries: number;
+  dead_lettered_at: string | null;
+  dead_lettered_from: string | null;
+  dead_letter_reason: string | null;
+};
+
+export type TransactionalOutboxRow = {
+  id: string;
+  aggregate_type: string;
+  aggregate_id: string;
+  event_type: string;
+  channel: "webhook" | "reminder" | "analytics";
+  payload: Json;
+  headers: Json;
+  trace_id: string;
+  deduplication_key: string;
+  status: "pending" | "leased" | "delivered" | "failed" | "dead_letter";
+  attempts: number;
+  max_attempts: number;
+  backoff_ms: number;
+  lease_id: string | null;
+  leased_at: string | null;
+  lease_expires_at: string | null;
+  next_attempt_at: string;
+  last_attempt_at: string | null;
+  delivered_at: string | null;
+  error_message: string | null;
+  created_by_wallet: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type DeletedAccountRow = {
+  wallet_address: string;
+  deleted_at: string;
+  reason: string;
+};
+
+export type DatabaseQueryTraceRow = {
+  id: string;
+  route: string;
+  request_id: string;
+  operation: string;
+  table_name: string | null;
+  duration_ms: number;
+  query_count: number;
+  rows_count: number;
+  status: "ok" | "slow" | "chatty" | "timeout" | "error";
+  error_code: string | null;
+  created_at: string;
+};
+
 export type SponsoredAccountRow = {
   account: string;
   /** `numeric(30)` — carried as a string so large values keep full precision. */
@@ -258,6 +443,58 @@ export type ExpenseReceiptRow = {
   removed_at: string | null;
   removed_by_wallet: string | null;
   removal_reason: "user" | "retention" | "expense_deleted" | null;
+};
+
+/** Issue #452: OCR job queue row. */
+export type OcrJobRow = {
+  id: string;
+  receipt_id: string;
+  expense_id: string | null;
+  trip_id: string | null;
+  wallet: string;
+  status: "pending" | "leased" | "completed" | "failed" | "cancelled";
+  priority: number;
+  leased_at: string | null;
+  leased_by: string | null;
+  lease_expires_at: string | null;
+  timeout_ms: number;
+  attempts: number;
+  max_attempts: number;
+  last_error: string | null;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+};
+
+/** Issue #452: OCR result with confidence and provenance. */
+export type OcrResultRow = {
+  id: string;
+  job_id: string;
+  receipt_id: string;
+  raw_text: string | null;
+  confidence: number | null;
+  parsed_fields: Json;
+  line_items: Json;
+  engine: string;
+  engine_version: string | null;
+  worker_id: string | null;
+  processing_ms: number | null;
+  reviewed: boolean;
+  reviewed_at: string | null;
+  reviewed_by: string | null;
+  created_at: string;
+};
+
+/** Issue #452: OCR quota configuration. */
+export type OcrQuotaConfigRow = {
+  id: string;
+  scope: "global" | "user" | "trip";
+  max_jobs: number;
+  window_seconds: number;
+  max_file_bytes: number;
+  max_concurrent: number;
+  created_at: string;
+  updated_at: string;
 };
 
 export type RecurringTemplateRow = {
@@ -349,6 +586,37 @@ export type SchemaMigrationRow = {
   name: string;
   applied_at: string;
   checksum: string;
+  migration_id?: string | null;
+  sequence?: number | null;
+  manifest_checksum?: string | null;
+};
+
+export type SupportAuditLogRow = {
+  id: string;
+  staff_identifier: string;
+  query_type: string;
+  query_value: string;
+  results_count: number;
+  ip_address: string;
+  user_agent: string | null;
+  created_at: string;
+};
+
+export type SupportCorrectiveActionRow = {
+  id: string;
+  action_type: string;
+  target_id: string;
+  target_type: string;
+  ticket_ref: string;
+  reason: string;
+  details: Json;
+  proposed_by: string;
+  proposed_at: string;
+  approved_by: string | null;
+  approved_at: string | null;
+  status: "pending_approval" | "approved" | "executed" | "rejected" | "expired";
+  execution_result: Json | null;
+  created_at: string;
 };
 
 export type IdempotencyRecordRow = {
@@ -358,9 +626,44 @@ export type IdempotencyRecordRow = {
   request_fingerprint: string;
   status: "pending" | "completed" | "failed";
   response_status: number | null;
+  /** Allowlisted replay summary (#414); NULL once redacted or omitted for size. */
   response_body: Json;
   created_at: string;
   locked_until: string;
+  response_digest: string | null;
+  response_bytes: number | null;
+  replay_omitted: boolean;
+  completed_at: string | null;
+  replay_expires_at: string | null;
+  redacted_at: string | null;
+};
+
+export type ReconciliationWorkerRunRow = {
+  id: string;
+  request_id: string;
+  actor_kind: "cron" | "staff";
+  actor_id: string;
+  trigger: "schedule" | "manual";
+  batch_size: number;
+  batches: number;
+  wallet_filter: string | null;
+  started_at: string;
+  finished_at: string;
+  duration_ms: number;
+  outcome: "succeeded" | "failed";
+  processed: number;
+  recorded: number;
+  escalated: number;
+  pending: number;
+  failed: number;
+  error_count: number;
+  errored_job_ids: string[];
+  failure_code: string | null;
+  created_at: string;
+  /** Migration 0026 (#416): lease owner used for the run's claims. */
+  worker_id: string | null;
+  dead_lettered: number;
+  lease_lost: number;
 };
 
 export type Database = {
@@ -429,6 +732,7 @@ export type Database = {
           | "permissions"
           | "source_template_id"
           | "copied_from_trip_id"
+          | "household_coordination_enabled"
         > & {
           id?: string;
           created_at?: string;
@@ -440,6 +744,7 @@ export type Database = {
           permissions?: Json;
           source_template_id?: string | null;
           copied_from_trip_id?: string | null;
+          household_coordination_enabled?: boolean;
         };
         // Copy provenance is written once, by create_trip_from_copy.
         Update: Partial<
@@ -451,6 +756,31 @@ export type Database = {
         Row: TripRoleAuditRow;
         Insert: Record<string, never>;
         Update: Record<string, never>;
+        Relationships: [];
+      };
+      household_chores: {
+        Row: HouseholdChoreRow;
+        Insert: Omit<HouseholdChoreRow, "id" | "rotation_cursor" | "active" | "created_at" | "updated_at"> & {
+          id?: string;
+          rotation_cursor?: number;
+          active?: boolean;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: Partial<Pick<HouseholdChoreRow, "active">>;
+        Relationships: [];
+      };
+      household_chore_completions: {
+        Row: HouseholdChoreCompletionRow;
+        Insert: Record<string, never>;
+        Update: Record<string, never>;
+        Relationships: [];
+      };
+      household_chore_preferences: {
+        Row: HouseholdChorePreferenceRow;
+        Insert: Pick<HouseholdChorePreferenceRow, "trip_id" | "wallet_address"> &
+          Partial<Pick<HouseholdChorePreferenceRow, "opted_out" | "updated_at">>;
+        Update: Partial<Pick<HouseholdChorePreferenceRow, "opted_out" | "updated_at">>;
         Relationships: [];
       };
       trip_templates: {
@@ -511,6 +841,55 @@ export type Database = {
         Update: Record<string, never>;
         Relationships: [];
       };
+      expense_audit_events: {
+        Row: ExpenseAuditEventRow;
+        Insert: Omit<ExpenseAuditEventRow, "id" | "created_at">;
+        Update: Record<string, never>;
+        Relationships: [];
+      };
+      expense_disputes: {
+        Row: ExpenseDisputeRow;
+        Insert: Pick<ExpenseDisputeRow, "trip_id" | "expense_id" | "share_member_id" | "opened_by_wallet" | "category" | "comment" | "evidence_receipt_ids">;
+        Update: Partial<Pick<ExpenseDisputeRow, "status" | "resolved_at">>;
+        Relationships: [];
+      };
+      expense_dispute_events: {
+        Row: ExpenseDisputeEventRow;
+        Insert: Omit<ExpenseDisputeEventRow, "id" | "created_at">;
+        Update: Record<string, never>;
+        Relationships: [];
+      };
+
+      payment_reminders: {
+        Row: PaymentReminderRow;
+        Insert: Omit<
+          PaymentReminderRow,
+          "id" | "state" | "created_at" | "updated_at" | "read_at"
+        > &
+          Partial<Omit<PaymentReminderRow, "id" | "created_at" | "updated_at">>;
+        Update: Partial<Pick<PaymentReminderRow, "state" | "read_at" | "channels">>;
+        Relationships: [];
+      };
+      reminder_events: {
+        Row: ReminderEventRow;
+        Insert: Omit<ReminderEventRow, "id" | "created_at">;
+        Update: Record<string, never>;
+        Relationships: [];
+      };
+      reminder_preferences: {
+        Row: ReminderPreferencesRow;
+        Insert: Pick<ReminderPreferencesRow, "wallet"> &
+          Partial<Omit<ReminderPreferencesRow, "wallet" | "created_at" | "updated_at">>;
+        Update: Partial<Omit<ReminderPreferencesRow, "wallet" | "created_at">>;
+        Relationships: [];
+      };
+      reminder_schedules: {
+        Row: ReminderScheduleRow;
+        Insert: Pick<ReminderScheduleRow, "trip_id" | "owner_wallet" | "interval_days" | "next_run_at"> &
+          Partial<Pick<ReminderScheduleRow, "active">>;
+        Update: Partial<Pick<ReminderScheduleRow, "interval_days" | "next_run_at" | "active">>;
+        Relationships: [];
+      };
       export_audit_events: {
         Row: ExportAuditEventRow;
         Insert: Pick<ExportAuditEventRow, "actor_wallet" | "export_kind" | "status"> &
@@ -536,6 +915,124 @@ export type Database = {
           updated_at?: string;
         };
         Update: Partial<TripInviteRow>;
+        Relationships: [];
+      };
+      deleted_accounts: {
+        Row: DeletedAccountRow;
+        Insert: {
+          wallet_address: string;
+          deleted_at?: string;
+          reason?: string;
+        };
+        Update: Partial<DeletedAccountRow>;
+        Relationships: [];
+      };
+      expense_search_documents: {
+        Row: {
+          expense_id: string;
+          member_wallets: string[];
+          created_at: string;
+          search_vector: string;
+          updated_at: string;
+        };
+        Insert: never;
+        Update: never;
+        Relationships: [];
+      };
+      reconciliation_worker_runs: {
+        Row: ReconciliationWorkerRunRow;
+        Insert: Omit<ReconciliationWorkerRunRow, "created_at" | "worker_id" | "dead_lettered" | "lease_lost"> & {
+          created_at?: string;
+          worker_id?: string | null;
+          dead_lettered?: number;
+          lease_lost?: number;
+        };
+        Update: never;
+        Relationships: [];
+      };
+      reconciliation_queue: {
+        Row: ReconciliationJobRow;
+        Insert: {
+          id?: string;
+          intent_id?: string | null;
+          trip_id: string;
+          expense_id: string;
+          member_id: string;
+          payer_wallet: string;
+          member_wallet: string;
+          asset?: string;
+          amount: string;
+          amount_stroops: string;
+          expected_memo?: string | null;
+          request_id?: string | null;
+          tx_hash?: string | null;
+          ledger?: number | null;
+          status?: ReconciliationJobStatusValue;
+          attempts?: number;
+          max_attempts?: number;
+          backoff_ms?: number;
+          last_attempt_at?: string | null;
+          next_attempt_at?: string;
+          escalation_reason?: string | null;
+          error_message?: string | null;
+          verified_at?: string | null;
+          recorded_at?: string | null;
+          created_at?: string;
+          updated_at?: string;
+          dedupe_key?: string | null;
+          claim_count?: number;
+          lease_recoveries?: number;
+          max_lease_recoveries?: number;
+        };
+        Update: Partial<Omit<ReconciliationJobRow, "id" | "created_at">>;
+        Relationships: [];
+      };
+      database_query_traces: {
+        Row: DatabaseQueryTraceRow;
+        Insert: {
+          id?: string;
+          route: string;
+          request_id: string;
+          operation: string;
+          table_name?: string | null;
+          duration_ms: number;
+          query_count?: number;
+          rows_count?: number;
+          status: "ok" | "slow" | "chatty" | "timeout" | "error";
+          error_code?: string | null;
+          created_at?: string;
+        };
+        Update: Partial<Omit<DatabaseQueryTraceRow, "id" | "created_at">>;
+        Relationships: [];
+      };
+      transactional_outbox: {
+        Row: TransactionalOutboxRow;
+        Insert: {
+          id?: string;
+          aggregate_type: string;
+          aggregate_id: string;
+          event_type: string;
+          channel: "webhook" | "reminder" | "analytics";
+          payload: Json;
+          headers?: Json;
+          trace_id: string;
+          deduplication_key: string;
+          status?: "pending" | "leased" | "delivered" | "failed" | "dead_letter";
+          attempts?: number;
+          max_attempts?: number;
+          backoff_ms?: number;
+          lease_id?: string | null;
+          leased_at?: string | null;
+          lease_expires_at?: string | null;
+          next_attempt_at?: string;
+          last_attempt_at?: string | null;
+          delivered_at?: string | null;
+          error_message?: string | null;
+          created_by_wallet?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: Partial<Omit<TransactionalOutboxRow, "id" | "created_at">>;
         Relationships: [];
       };
       settlement_intents: {
@@ -610,6 +1107,33 @@ export type Database = {
         >;
         Relationships: [];
       };
+      ocr_jobs: {
+        Row: OcrJobRow;
+        Insert: Omit<OcrJobRow, "id" | "created_at" | "status" | "leased_at" | "leased_by" | "lease_expires_at" | "attempts" | "started_at" | "completed_at" | "last_error"> & {
+          id?: string;
+          created_at?: string;
+          status?: OcrJobRow["status"];
+          attempts?: number;
+        };
+        Update: Partial<Pick<OcrJobRow, "status" | "leased_at" | "leased_by" | "lease_expires_at" | "attempts" | "started_at" | "completed_at" | "last_error">>;
+        Relationships: [];
+      };
+      ocr_results: {
+        Row: OcrResultRow;
+        Insert: Omit<OcrResultRow, "id" | "created_at" | "reviewed" | "reviewed_at" | "reviewed_by"> & {
+          id?: string;
+          created_at?: string;
+          reviewed?: boolean;
+        };
+        Update: Partial<Pick<OcrResultRow, "reviewed" | "reviewed_at" | "reviewed_by">>;
+        Relationships: [];
+      };
+      ocr_quota_config: {
+        Row: OcrQuotaConfigRow;
+        Insert: Omit<OcrQuotaConfigRow, "id" | "created_at" | "updated_at"> & { id?: string };
+        Update: Partial<Omit<OcrQuotaConfigRow, "id" | "created_at">>;
+        Relationships: [];
+      };
       recurring_expense_templates: {
         Row: RecurringTemplateRow;
         Insert: Omit<
@@ -679,6 +1203,12 @@ export type Database = {
           response_body?: Json;
           created_at?: string;
           locked_until?: string;
+          response_digest?: string | null;
+          response_bytes?: number | null;
+          replay_omitted?: boolean;
+          completed_at?: string | null;
+          replay_expires_at?: string | null;
+          redacted_at?: string | null;
         };
         Update: Partial<IdempotencyRecordRow>;
         Relationships: [];
@@ -692,6 +1222,25 @@ export type Database = {
           created_at?: string;
         };
         Update: Partial<AuthChallengeRow>;
+        Relationships: [];
+      };
+
+      support_audit_logs: {
+        Row: SupportAuditLogRow;
+        Insert: Omit<SupportAuditLogRow, "id" | "created_at"> & {
+          id?: string;
+          created_at?: string;
+        };
+        Update: Partial<SupportAuditLogRow>;
+        Relationships: [];
+      };
+      support_corrective_actions: {
+        Row: SupportCorrectiveActionRow;
+        Insert: Omit<SupportCorrectiveActionRow, "id" | "created_at"> & {
+          id?: string;
+          created_at?: string;
+        };
+        Update: Partial<SupportCorrectiveActionRow>;
         Relationships: [];
       };
       auth_rate_limits: {
@@ -708,11 +1257,26 @@ export type Database = {
     };
     Views: { [_ in never]: never };
     Functions: {
+      resolve_expense_dispute: {
+        Args: { p_dispute_id: string; p_action: "upheld" | "dismissed" | "adjusted"; p_reason: string };
+        Returns: undefined;
+      };
+      search_expense_ids: {
+        Args: { p_terms: string[]; p_trip_id?: string | null; p_category?: string | null;
+          p_tags?: string[] | null; p_payer?: string | null; p_status?: string | null; p_asset?: string | null;
+          p_from?: string | null; p_to?: string | null; p_cursor_rank?: number | null;
+          p_cursor_created_at?: string | null; p_cursor_id?: string | null; p_limit?: number };
+        Returns: { id: string; created_at: string; search_rank: number }[];
+      };
       search_expenses: {
         Args: { p_trip_id: string | null; p_terms: string[] | null; p_category: string | null;
           p_tags: string[] | null; p_payer: string | null; p_status: string | null; p_asset: string | null;
           p_from: string | null; p_to: string | null; p_cursor_created_at: string | null; p_cursor_id: string | null; p_limit: number };
         Returns: ExpenseRow[];
+      };
+      complete_household_chore: {
+        Args: { p_chore_id: string; p_due_on: string; p_supply_expense_id: string | null };
+        Returns: string;
       };
       save_trip_template: {
         Args: { p_idempotency_key: string; p_source_trip_id: string; p_template: Json };
@@ -733,6 +1297,10 @@ export type Database = {
       trip_has_permission: {
         Args: { p_trip_id: string; p_permission: string };
         Returns: boolean;
+      };
+      trips_with_permission: {
+        Args: { p_trip_ids: string[]; p_permission: string };
+        Returns: string[];
       };
       expense_has_permission: {
         Args: { p_expense_id: string; p_permission: string };
@@ -780,7 +1348,84 @@ export type Database = {
           p_window_ms: number;
           p_now: number;
         };
-        Returns: Json;
+        Returns: {
+          allowed: boolean;
+          remaining: number;
+          resetMs: number;
+          count: number;
+        };
+      };
+      claim_idempotency_key: {
+        Args: {
+          p_wallet_address: string;
+          p_key: string;
+          p_endpoint: string;
+          p_request_fingerprint: string;
+          p_lease_seconds?: number;
+          p_now?: string;
+        };
+        Returns: {
+          outcome: string;
+          status?: string;
+          response_status?: number;
+          response_body?: Json;
+          response_digest?: string | null;
+          replay_omitted?: boolean;
+          locked_until?: string;
+          retry_after_seconds?: number;
+          recovered?: boolean;
+          error?: string;
+        };
+      };
+      complete_idempotency_key: {
+        Args: {
+          p_wallet_address: string;
+          p_key: string;
+          p_request_fingerprint: string;
+          p_response_status: number;
+          p_response_body: Json;
+          p_response_digest?: string | null;
+          p_response_bytes?: number | null;
+          p_replay_omitted?: boolean;
+          p_replay_seconds?: number;
+          p_now?: string;
+        };
+        Returns: void;
+      };
+      purge_idempotency_records: {
+        Args: {
+          p_now?: string;
+          p_batch_size?: number;
+          p_audit_retention_days?: number;
+          p_stale_pending_hours?: number;
+        };
+        Returns: {
+          redacted: number;
+          deleted: number;
+          stale_pending_deleted: number;
+          batch_size: number;
+        };
+      };
+      release_idempotency_key: {
+        Args: {
+          p_wallet_address: string;
+          p_key: string;
+        };
+        Returns: void;
+      };
+      check_rate_limit: {
+        Args: {
+          p_key: string;
+          p_limit: number;
+          p_window_ms: number;
+          p_now: number;
+        };
+        Returns: {
+          allowed: boolean;
+          remaining: number;
+          resetMs: number;
+          count: number;
+        };
       };
       consume_tenant_quotas: {
         Args: {
@@ -805,13 +1450,29 @@ export type Database = {
           p_selected_member_id?: string;
           p_expected_trip_id?: string;
         };
-        Returns: Json;
+        Returns: {
+          success: boolean;
+          trip_id: string;
+          trip_name: string;
+          member_id: string;
+          member_name: string;
+        };
       };
       verify_trip_invite: {
         Args: {
           p_token_hash: string;
         };
-        Returns: Json;
+        Returns: {
+          invite_id: string;
+          trip_id: string;
+          trip_name: string;
+          trip_description: string | null;
+          member_id: string | null;
+          member_name: string | null;
+          inviter_wallet: string;
+          expires_at: string;
+          unclaimed_members: Array<{ id: string; name: string }> | null;
+        };
       };
       update_expense_versioned: {
         Args: {
@@ -845,6 +1506,13 @@ export type Database = {
         };
         Returns: ExpenseRow[];
       };
+      void_expense: {
+        Args: {
+          p_expense_id: string;
+          p_reason: string;
+        };
+        Returns: ExpenseRow[];
+      };
       record_share_installment: {
         Args: {
           p_expense_id: string;
@@ -867,7 +1535,122 @@ export type Database = {
       };
       claim_contact_profile: {
         Args: { p_token_hash: string };
-        Returns: Json;
+        Returns: {
+          status: "verified" | "pending_notice";
+          contact_name: string;
+          owner_wallet: string;
+          notice_until?: string | null;
+        };
+      };
+      delete_user_account: {
+        Args: { p_wallet_address: string };
+        Returns: {
+          success: boolean;
+          wallet_address: string;
+          deleted_at: string;
+        };
+      };
+      record_migration_v2: {
+        Args: {
+          p_version: string;
+          p_name: string;
+          p_migration_id: string;
+          p_sequence: number;
+          p_manifest_checksum: string;
+        };
+        Returns: undefined;
+      };
+      create_monthly_partition: {
+        Args: { p_table: string; p_year: number; p_month: number };
+        Returns: string;
+      };
+      archive_partition: {
+        Args: { p_parent_table: string; p_partition_name: string };
+        Returns: undefined;
+      };
+      prune_old_partitions: {
+        Args: { p_parent_table: string; p_cutoff_date: string };
+        Returns: number;
+      };
+      enqueue_reconciliation_job: {
+        Args: {
+          p_dedupe_key: string;
+          p_intent_id: string | null;
+          p_trip_id: string;
+          p_expense_id: string;
+          p_member_id: string;
+          p_payer_wallet: string;
+          p_member_wallet: string;
+          p_asset: string;
+          p_amount: string;
+          p_amount_stroops: string;
+          p_expected_memo?: string | null;
+          p_request_id?: string | null;
+          p_tx_hash?: string | null;
+          p_max_attempts?: number;
+          p_backoff_ms?: number;
+        };
+        Returns: ReconciliationJobRow[];
+      };
+      claim_reconciliation_jobs: {
+        Args: { p_worker_id: string; p_batch_size?: number; p_lease_seconds?: number };
+        Returns: ReconciliationJobRow[];
+      };
+      heartbeat_reconciliation_job: {
+        Args: { p_id: string; p_lease_token: string; p_lease_seconds?: number };
+        Returns: boolean;
+      };
+      fail_reconciliation_job: {
+        Args: { p_id: string; p_lease_token: string; p_error_code: string; p_backoff_ms?: number };
+        Returns: "retry" | "dead_letter" | "lease_lost";
+      };
+      release_reconciliation_job: {
+        Args: { p_id: string; p_lease_token: string };
+        Returns: boolean;
+      };
+      requeue_reconciliation_job: {
+        Args: { p_id: string };
+        Returns: boolean;
+      };
+      claim_outbox_batch: {
+        Args: {
+          p_worker_id: string;
+          p_batch_size?: number;
+          p_lease_duration_seconds?: number;
+        };
+        Returns: TransactionalOutboxRow[];
+      };
+      complete_outbox_event: {
+        Args: {
+          p_id: string;
+          p_lease_id: string;
+        };
+        Returns: boolean;
+      };
+      fail_outbox_event: {
+        Args: {
+          p_id: string;
+          p_lease_id: string;
+          p_error_message: string;
+          p_backoff_ms?: number;
+        };
+        Returns: boolean;
+      };
+      enqueue_outbox_event: {
+        Args: {
+          p_aggregate_type: string;
+          p_aggregate_id: string;
+          p_event_type: string;
+          p_channel: string;
+          p_payload: Json;
+          p_trace_id: string;
+          p_deduplication_key: string;
+          p_headers?: Json;
+          p_created_by_wallet?: string | null;
+          p_max_attempts?: number;
+          p_backoff_ms?: number;
+        };
+        Returns: string;
       };
     };
     Enums: { [_ in never]: never };
@@ -885,6 +1668,8 @@ export type AuthChallengeInsert = Database["public"]["Tables"]["auth_challenges"
 
 export type SettlementIntentInsert = Database["public"]["Tables"]["settlement_intents"]["Insert"];
 export type SettlementIntentUpdate = Database["public"]["Tables"]["settlement_intents"]["Update"];
+export type ReconciliationJobInsert = Database["public"]["Tables"]["reconciliation_queue"]["Insert"];
+export type ReconciliationJobUpdate = Database["public"]["Tables"]["reconciliation_queue"]["Update"];
 export type SettlementAttestationInsert =
   Database["public"]["Tables"]["settlement_attestations"]["Insert"];
 export type SponsoredAccountInsert = Database["public"]["Tables"]["sponsored_accounts"]["Insert"];
@@ -893,3 +1678,7 @@ export type SponsorshipInviteInsert = Database["public"]["Tables"]["sponsorship_
 export type TripInviteInsert = Database["public"]["Tables"]["trip_invites"]["Insert"];
 export type ContactInsert = Database["public"]["Tables"]["contacts"]["Insert"];
 export type ContactUpdate = Database["public"]["Tables"]["contacts"]["Update"];
+export type DatabaseQueryTraceInsert = Database["public"]["Tables"]["database_query_traces"]["Insert"];
+export type DatabaseQueryTraceUpdate = Database["public"]["Tables"]["database_query_traces"]["Update"];
+export type TransactionalOutboxInsert = Database["public"]["Tables"]["transactional_outbox"]["Insert"];
+export type TransactionalOutboxUpdate = Database["public"]["Tables"]["transactional_outbox"]["Update"];

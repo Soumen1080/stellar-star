@@ -13,6 +13,8 @@ import {
   recordShareInstallmentRow,
   cacheDomainsForMutation,
   rowToExpense,
+  voidExpenseRow,
+  createCorrectionExpense,
 } from "@/lib/supabase/queries";
 import { useRealtimeCollection } from "@/lib/supabase/useRealtimeCollection";
 import { invalidateQueryCaches } from "@/lib/supabase/cacheInvalidation";
@@ -29,6 +31,8 @@ interface ExpenseContextType {
   discardExpenseDraft: (idempotencyKey: string) => void;
   updateExpense: (id: string, updates: Partial<Expense>) => Promise<void>;
   deleteExpense: (id: string) => Promise<void>;
+  voidExpense: (id: string, reason: string) => Promise<Expense>;
+  createCorrection: (correction: Expense) => Promise<Expense>;
   markSharePaid: (expenseId: string, memberId: string, txHash: string) => Promise<void>;
   /** Appends one partial payment to a share; the share is paid only once fully covered. */
   recordShareInstallment: (
@@ -43,6 +47,9 @@ interface ExpenseContextType {
   needsSetup: boolean;
   refresh: () => Promise<void>;
 }
+
+
+
 
 const ExpenseContext = createContext<ExpenseContextType | null>(null);
 ExpenseContext.displayName = "ExpenseContext";
@@ -73,6 +80,7 @@ export function ExpenseProvider({ children }: { children: React.ReactNode }) {
     setExpenseDrafts(wallet ? readExpenseDrafts(wallet) : []);
   }, [wallet]);
 
+  
   const syncExpenseDrafts = useCallback(async () => {
     if (!wallet || !accessToken || !navigator.onLine || syncingDraftsRef.current) return;
     syncingDraftsRef.current = true;
@@ -227,6 +235,37 @@ export function ExpenseProvider({ children }: { children: React.ReactNode }) {
     [mutate, wallet]
   );
 
+  const voidExpense = useCallback(
+    async (id: string, reason: string): Promise<Expense> => {
+      const saved = await voidExpenseRow(id, reason);
+      mutate((previous) => previous.map((e) => (e.id === id ? saved : e)));
+      if (wallet) {
+        invalidateQueryCaches({
+          wallet,
+          domains: cacheDomainsForMutation("expense_write"),
+          expenseId: id,
+        });
+      }
+      return saved;
+    },
+    [mutate, wallet]
+  );
+
+  const createCorrection = useCallback(
+    async (correction: Expense): Promise<Expense> => {
+      if (!wallet) throw new Error("Wallet connection required.");
+      const saved = await createCorrectionExpense(correction, wallet);
+      mutate((previous) => [saved, ...previous]);
+      invalidateQueryCaches({
+        wallet,
+        domains: cacheDomainsForMutation("expense_write"),
+        expenseId: saved.id,
+      });
+      return saved;
+    },
+    [mutate, wallet]
+  );
+
   const getExpense = useCallback((id: string) => expensesRef.current.find((e) => e.id === id), []);
 
   const value = useMemo<ExpenseContextType>(
@@ -238,6 +277,8 @@ export function ExpenseProvider({ children }: { children: React.ReactNode }) {
       discardExpenseDraft,
       updateExpense,
       deleteExpense,
+      voidExpense,
+      createCorrection,
       markSharePaid,
       recordShareInstallment,
       getExpense,

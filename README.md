@@ -88,6 +88,7 @@ Every payment can be traced through an explorer transaction hash, and settlement
 | Transaction hash receipt links | ✅ Live |
 | SEP-0007 QR generation | ✅ Live |
 | Trip net-balance optimization | ✅ Live |
+| Shared household chores with rotation | 🧪 Research prototype (opt-in; separate from balances) |
 | Realtime sync (Supabase + contract events) | ✅ Live |
 | Responsive mobile-first UI | ✅ Live |
 | Duplicate wallet address validation (trip and expense forms) | ✅ Live |

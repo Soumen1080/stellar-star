@@ -82,6 +82,12 @@ const SUPPORTED_WALLETS: SupportedWallet[] = [
   },
 ];
 
+function normalizeDetectedNetwork(value: string): string {
+  if (value === WalletNetwork.TESTNET) return "TESTNET";
+  if (value === WalletNetwork.PUBLIC) return "PUBLIC";
+  return value;
+}
+
 // ─── Kit options ──────────────────────────────────────────────────────────────
 
 export interface StellarWalletsKitOptions {
@@ -107,6 +113,18 @@ export interface GetAddressResult {
 
 export interface SignTransactionResult {
   signedTxXdr: string;
+}
+
+export interface WalletCapabilities {
+  walletId: WalletId;
+  installed: boolean;
+  canReadAddress: boolean;
+  canSignTransactions: boolean;
+  canVerifyNetwork: boolean;
+  supportsPathPaymentXdr: boolean;
+  qrOrDeepLinkFallback: boolean;
+  copyXdrFallback: boolean;
+  network: string | null;
 }
 
 // ─── Kit class ────────────────────────────────────────────────────────────────
@@ -260,6 +278,10 @@ export class StellarWalletsKit {
         flex:       "1",
       } as Partial<CSSStyleDeclaration>);
 
+      const capabilityEl = document.createElement("small");
+      Object.assign(capabilityEl.style, { display: "block", fontSize: "10px", fontWeight: "400", color: "#777", marginTop: "3px" });
+      capabilityEl.textContent = "Detecting network and signing support...";
+
       const badge = document.createElement("span");
       Object.assign(badge.style, {
         fontSize:     "11px",
@@ -271,20 +293,37 @@ export class StellarWalletsKit {
       } as Partial<CSSStyleDeclaration>);
       badge.textContent = "Checking...";
 
-      wallet.isInstalled().then((available) => {
-        if (available) {
+      this.detectCapabilities(wallet.id).then((capabilities) => {
+        if (capabilities.installed) {
           badge.textContent     = "Available";
           badge.style.background = "#ECFDF5";
           badge.style.color      = "#059669";
+          const network = capabilities.network ?? "Network unknown";
+          capabilityEl.textContent = `${network} · address ${capabilities.canReadAddress ? "yes" : "no"} · sign ${capabilities.canSignTransactions ? "yes" : "no"} · path XDR ${capabilities.supportsPathPaymentXdr ? "yes" : "no"}`;
         } else {
           badge.textContent     = unavailText;
           badge.style.background = "#F5F5F5";
           badge.style.color      = "#888";
+          capabilityEl.textContent = "Install this wallet, or use the copy-XDR fallback for a prepared transaction.";
+          btn.disabled = true;
+          btn.style.cursor = "not-allowed";
+          btn.style.opacity = "0.7";
+          const install = document.createElement("a");
+          install.href = wallet.installUrl;
+          install.target = "_blank";
+          install.rel = "noopener noreferrer";
+          install.textContent = `Install ${wallet.name}`;
+          Object.assign(install.style, { marginTop: "3px", display: "block", fontSize: "10px", color: "#0F766E", textDecoration: "underline" });
+          labels.appendChild(install);
         }
       });
 
+      const labels = document.createElement("span");
+      labels.style.flex = "1";
+      labels.appendChild(nameEl);
+      labels.appendChild(capabilityEl);
       btn.appendChild(img);
-      btn.appendChild(nameEl);
+      btn.appendChild(labels);
       btn.appendChild(badge);
 
       btn.addEventListener("click", async () => {
@@ -394,6 +433,40 @@ export class StellarWalletsKit {
     throw new Error(`Wallet "${this.selectedWalletId}" does not support signing.`);
   }
 
+  async detectCapabilities(id: WalletId): Promise<WalletCapabilities> {
+    const wallet = SUPPORTED_WALLETS.find((item) => item.id === id)!;
+    const installed = await wallet.isInstalled().catch(() => false);
+    let canReadAddress = false;
+    let canSignTransactions = false;
+    if (installed && typeof window !== "undefined") {
+      if (id === FREIGHTER_ID) {
+        canReadAddress = true;
+        canSignTransactions = typeof freighterSignTransaction === "function";
+      } else if (id === XBULL_ID) {
+        const api = (window as unknown as Record<string, { getPublicKey?: unknown; signXDR?: unknown }>).xBulls;
+        canReadAddress = typeof api?.getPublicKey === "function";
+        canSignTransactions = typeof api?.signXDR === "function";
+      } else {
+        const api = (window as unknown as Record<string, { getPublicKey?: unknown; signTransaction?: unknown }>).lobstr;
+        canReadAddress = typeof api?.getPublicKey === "function";
+        canSignTransactions = typeof api?.signTransaction === "function";
+      }
+    }
+    const network = installed ? await this.readNetwork(id) : null;
+    const canVerifyNetwork = network !== null;
+    return {
+      walletId: id,
+      installed,
+      canReadAddress,
+      canSignTransactions,
+      canVerifyNetwork,
+      supportsPathPaymentXdr: canSignTransactions,
+      qrOrDeepLinkFallback: true,
+      copyXdrFallback: true,
+      network,
+    };
+  }
+
   private async freighterSign(xdr: string, opts: SignTransactionOptions): Promise<SignTransactionResult> {
     const testWallet = getE2eTestWallet();
     if (testWallet) {
@@ -433,17 +506,29 @@ export class StellarWalletsKit {
 
   // ── Network ─────────────────────────────────────────────────────────────────
 
-  async getNetworkFromWallet(): Promise<string> {
-    if (this.selectedWalletId === FREIGHTER_ID) {
-      try {
+  async getNetworkFromWallet(): Promise<string | null> {
+    return this.readNetwork(this.selectedWalletId);
+  }
+
+  private async readNetwork(id: WalletId): Promise<string | null> {
+    if (id === FREIGHTER_ID && getE2eTestWallet()) return "TESTNET";
+    try {
+      if (id === FREIGHTER_ID) {
         const result = await getNetwork();
-        if ("error" in result && result.error) return STELLAR_NETWORK;
-        return (result as { network: string }).network ?? STELLAR_NETWORK;
-      } catch {
-        return STELLAR_NETWORK;
+        if ("error" in result && result.error) return null;
+        const detected = (result as { network?: string }).network;
+        return detected ? normalizeDetectedNetwork(detected) : null;
       }
+      const api = (window as unknown as Record<string, { getNetwork?: () => Promise<unknown> }>)[id === XBULL_ID ? "xBulls" : "lobstr"];
+      if (typeof api?.getNetwork !== "function") return null;
+      const result = await api.getNetwork();
+      if (typeof result === "string") return normalizeDetectedNetwork(result);
+      if (result && typeof result === "object" && "network" in result && typeof result.network === "string") return normalizeDetectedNetwork(result.network);
+      if (result && typeof result === "object" && "networkPassphrase" in result && typeof result.networkPassphrase === "string") return normalizeDetectedNetwork(result.networkPassphrase);
+      return null;
+    } catch {
+      return null;
     }
-    return STELLAR_NETWORK;
   }
 
   static getSupportedWallets(): SupportedWallet[] {
