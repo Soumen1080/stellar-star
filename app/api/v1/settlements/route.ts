@@ -1,6 +1,11 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
 import { authenticateApiRequest, recordAuditLog } from "@/lib/api/middleware";
 import { fetchTripById } from "@/lib/api/data";
+import { limitedJson, responseLimitFor } from "@/lib/api/bodyLimits";
+
+/** Every JSON response here is size-capped (#418). */
+const respond = (body: unknown, init?: ResponseInit) =>
+  limitedJson(body, init, responseLimitFor("/api/v1/settlements"));
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -22,7 +27,7 @@ export async function GET(request: NextRequest) {
   if (tripId) {
     const trip = await fetchTripById(tripId, tokenPayload.walletAddress);
     if (!trip) {
-      return NextResponse.json(
+      return respond(
         {
           error: {
             code: "NOT_FOUND",
@@ -61,5 +66,5 @@ export async function GET(request: NextRequest) {
     idempotencyKey: null,
   });
 
-  return NextResponse.json({ data });
+  return respond({ data });
 }

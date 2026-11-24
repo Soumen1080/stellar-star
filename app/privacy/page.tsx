@@ -1,30 +1,20 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useRef, useState } from "react";
 import Link from "next/link";
 import { motion } from "framer-motion";
-import {
-  Shield,
-  Lock,
-  Database,
-  Trash2,
-  Download,
-  AlertTriangle,
-  CheckCircle2,
-  ExternalLink,
-  ChevronRight,
-  ArrowLeft,
-  Clock,
-  FileText,
-} from "lucide-react";
+import { Shield, Lock, Database, Trash2, Download, AlertTriangle, CheckCircle2, ExternalLink, ChevronRight, ArrowLeft, Clock, FileText } from "lucide-react";
 import Header from "@/components/layout/Header";
 import Footer from "@/components/layout/Footer";
 import { useAuth } from "@/context/AuthContext";
+import { useAccessToken } from "@/lib/supabase/useSession";
 import { useWallet } from "@/hooks/useWallet";
 import { useToast } from "@/components/ui/Toast";
+import { createIdempotencyKeyHolder, idempotencyHeaders } from "@/lib/idempotency/client";
 
 export default function PrivacyPage() {
-  const { user, token, signOut } = useAuth();
+  const { user, signOut } = useAuth();
+  const token = useAccessToken();
   const { isConnected, publicKey, disconnect } = useWallet();
   const { success, error: toastError } = useToast();
 
@@ -63,6 +53,9 @@ export default function PrivacyPage() {
     }
   };
 
+  // One key for the deletion, reused if the user retries after a dropped response (#412).
+  const deleteKey = useRef(createIdempotencyKeyHolder());
+
   const handleDeleteAccount = async () => {
     if (!token) {
       toastError("Authentication Required", "Please sign in with your wallet to delete your account.");
@@ -75,6 +68,7 @@ export default function PrivacyPage() {
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
+          ...idempotencyHeaders(deleteKey.current.current()),
         },
       });
       const result = await res.json();

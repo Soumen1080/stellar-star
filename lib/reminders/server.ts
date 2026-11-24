@@ -3,6 +3,7 @@
  */
 
 import { NextResponse, type NextRequest } from "next/server";
+import { publicEnv } from "@/lib/config/publicEnv";
 import { checkRateLimit } from "@/lib/auth/rateLimiter";
 import { getOrCreateRequestId, REQUEST_ID_HEADER } from "@/lib/observability/requestId";
 import { verifyWalletSession } from "@/lib/supabase/serverAuth";
@@ -29,7 +30,7 @@ export function json(body: unknown, status: number, requestId: string, headers: 
 
 /** Absolute origin for links that leave the app. */
 export function appOrigin(request: NextRequest): string {
-  const configured = process.env.NEXT_PUBLIC_SITE_URL?.trim().replace(/\/+$/, "");
+  const configured = publicEnv.siteUrl?.trim().replace(/\/+$/, "");
   return configured || request.nextUrl.origin;
 }
 
@@ -99,7 +100,14 @@ export function buildDeps(
 }
 
 export type AuthedRequest =
-  | { ok: true; wallet: string; requestId: string; deps: ReminderDeps }
+  | {
+      ok: true;
+      wallet: string;
+      requestId: string;
+      deps: ReminderDeps;
+      /** The caller's RLS-bound client; also backs the idempotency ledger (#412). */
+      client: StellarStarClient;
+    }
   | { ok: false; response: NextResponse };
 
 /** Every reminder route except unsubscribe and the cron runner requires a wallet session. */
@@ -114,11 +122,13 @@ export function authenticate(request: NextRequest): AuthedRequest {
   if (!isServerSupabaseConfigured()) {
     return { ok: false, response: json({ error: "Database service is not configured on the server." }, 503, requestId) };
   }
+  const client = createServerClientForToken(token);
   return {
     ok: true,
     wallet: session.wallet_address,
     requestId,
-    deps: buildDeps(request, { user: createServerClientForToken(token), service: createServiceRoleClient() }),
+    deps: buildDeps(request, { user: client, service: createServiceRoleClient() }),
+    client,
   };
 }
 

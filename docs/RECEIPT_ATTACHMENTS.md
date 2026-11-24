@@ -16,35 +16,33 @@ server-generated ids. The uploaded file name is kept as display metadata and
 never becomes part of a path. Without the service-role key, the receipt
 endpoints return `503` and the rest of the app works as before.
 
-## Upload pipeline (`POST /api/expenses/:id/receipts`)
+## Upload pipeline (`POST /api/expenses/:id/receipts` and `/intent`)
 
-1. **Session and membership.** The expense is read with the caller's own
+1. **Upload intents (`POST /api/expenses/:id/receipts/intent`).** Callers obtain
+   a short-lived upload intent (15 min TTL) before uploading large receipts.
+   The intent establishes the authorized caller, target expense, and limits (#451).
+2. **Session and membership.** The expense is read with the caller's own
    RLS-bound client. If RLS hides it, the route returns `404`, the same as for
    an id that doesn't exist, so ids can't be probed.
-2. **Authorization.** Only the payer (or the expense creator) can attach;
+3. **Authorization.** Only the payer (or the expense creator) can attach;
    anyone else gets `403`.
-3. **Size.** Default limit is 4 MiB (`RECEIPT_MAX_BYTES`). Oversized bodies are
-   refused with `413` before they're buffered. The limit stays under typical
-   serverless request-body caps. On the client, large JPEG/PNG/WebP photos are
-   re-encoded to fit.
-4. **Type allowlist.** JPEG, PNG, WebP, HEIC/HEIF, and PDF. The type comes from
-   the file's magic bytes. A declared type that contradicts them is refused
-   (`415`). An uninformative declared type (`application/octet-stream`, or
-   empty, which mobile camera captures often send) is resolved by sniffing.
-   SVG and HTML are never accepted.
-5. **Scan → store or quarantine.** `scanReceipt()` is a static heuristic
-   scanner, not antivirus. It flags PDFs with JavaScript, launch actions,
-   embedded files, RichMedia, XFA, or encryption, and any file containing
-   script/HTML/PHP markers (polyglots). Flagged files are stored under
-   `quarantine/` with status `quarantined`. They're never signed or served, but
-   they're kept so a false positive can be reviewed instead of losing the
-   user's receipt. To use a real scanner (for example a ClamAV sidecar or a
-   cloud AV API), replace `scanReceipt` with a call to it that returns the same
-   `ScanResult` shape.
-6. **Metadata.** The row stores the uploader wallet, timestamp, SHA-256
-   checksum, size, content type, an optional caption (≤ 200 chars), the scan
-   result, and `retain_until`. Uploading the same bytes to the same expense
-   twice returns `409`. An expense can have at most 10 live receipts.
+4. **Streamed size limits.** Default limit is 4 MiB (`RECEIPT_MAX_BYTES`).
+   Oversized bodies are rejected with `413` during streaming via `readLimitedFormData`
+   before unbounded buffering.
+5. **Magic-byte validation.** JPEG, PNG, WebP, HEIC/HEIF, and PDF. The true type
+   is authoritatively derived from the file's magic bytes. Client metadata is never
+   trusted: a declared type contradicting magic bytes is refused (`415`). Disguised
+   executables (PE/MZ, ELF, Mach-O, Shell scripts) are detected and refused or quarantined.
+6. **Malware scan → Quarantine → Atomic promote.** `scanReceipt()` scans for active
+   PDF features (/JavaScript, /Launch, /EmbeddedFile, /SubmitForm, /ImportData),
+   polyglots, event handlers, and executable headers. Flagged or suspicious files
+   are kept quarantined under `quarantine/` with status `quarantined` and are NEVER
+   promoted or served. Clean files are atomically promoted to `receipts/` with status
+   `active`.
+7. **Metadata & retention.** The row stores uploader wallet, timestamp, SHA-256
+   checksum, size, content type, optional caption (≤ 200 chars), scan result, and
+   `retain_until`. Abandoned upload intents and orphaned quarantine files are cleaned
+   up automatically during the retention sweep.
 
 ## Download (`GET /api/receipts/:receiptId`)
 

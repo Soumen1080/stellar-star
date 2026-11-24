@@ -1,0 +1,33 @@
+{
+  "version": "1.0.0",
+  "updated": "2026-11-21",
+  "owner": "Platform on-call",
+  "reviewBy": "2027-05-21",
+  "components": [
+    {
+      "id": "app",
+      "name": "App",
+      "description": "The website and its API."
+    },
+    {
+      "id": "database",
+      "name": "Database",
+      "description": "Saving and loading trips, expenses and members."
+    },
+    {
+      "id": "notifications",
+      "name": "Notifications",
+      "description": "Payment reminders and webhook deliveries."
+    },
+    {
+      "id": "quotes",
+      "name": "Quotes",
+      "description": "Exchange rates used to show amounts in other currencies."
+    },
+    {
+      "id": "reconciliation",
+      "name": "Reconciliation",
+      "description": "Recording confirmed payments against expenses."
+    }
+  ]
+}

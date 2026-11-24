@@ -22,6 +22,7 @@ import {
   type SettlementMatch,
 } from "@/lib/stellar/verifyPaymentOperation";
 import { REQUEST_ID_HEADER } from "@/lib/observability/requestId";
+import { resilientOracleVerify } from "@/lib/stellar/resilience";
 
 /** Classic Stellar assets are int64 stroops with exactly 7 decimals, protocol-wide. */
 const STROOPS_PER_UNIT = 10_000_000n;
@@ -75,28 +76,31 @@ export function amountToStroops(amount: string): bigint {
 type HorizonOperation = HorizonOperationRecord;
 
 async function fetchJson(url: string, requestId?: string): Promise<unknown> {
-  let response: Response;
-  try {
-    response = await fetch(url, {
-      cache: "no-store",
-      ...(requestId ? { headers: { [REQUEST_ID_HEADER]: requestId } } : {}),
-    });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "network error";
-    throw new HorizonVerificationError(`Could not reach Horizon: ${message}`, true);
-  }
+  return resilientOracleVerify(async (signal) => {
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        cache: "no-store",
+        signal,
+        ...(requestId ? { headers: { [REQUEST_ID_HEADER]: requestId } } : {}),
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "network error";
+      throw new HorizonVerificationError(`Could not reach Horizon: ${message}`, true);
+    }
 
-  if (response.status === 404) {
-    throw new HorizonVerificationError("Transaction not found on the network.");
-  }
-  if (!response.ok) {
-    // Anything other than a definitive 404 is Horizon having a bad day, not
-    // proof the payment is fake — so it degrades settlement rather than
-    // condemning the claim.
-    throw new HorizonVerificationError(`Horizon returned HTTP ${response.status}.`, true);
-  }
+    if (response.status === 404) {
+      throw new HorizonVerificationError("Transaction not found on the network.");
+    }
+    if (!response.ok) {
+      // Anything other than a definitive 404 is Horizon having a bad day, not
+      // proof the payment is fake — so it degrades settlement rather than
+      // condemning the claim.
+      throw new HorizonVerificationError(`Horizon returned HTTP ${response.status}.`, true);
+    }
 
-  return response.json();
+    return response.json();
+  });
 }
 
 /**

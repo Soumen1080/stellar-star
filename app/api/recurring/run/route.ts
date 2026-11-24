@@ -4,6 +4,7 @@ import { createServiceRoleClient } from "@/lib/supabase/server";
 import { fetchActiveTemplates, fetchExceptions } from "@/lib/recurring/queries";
 import { generateDueDrafts } from "@/lib/recurring/generate";
 import { utcToday } from "@/lib/recurring/schedule";
+import { consumeTenantQuota } from "@/lib/quotas/server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -49,15 +50,29 @@ async function run(request: NextRequest) {
       const page = await fetchActiveTemplates(client, { limit: PAGE, offset });
       if (page.length === 0) break;
       templates += page.length;
-      const exceptions = await fetchExceptions(page.map((t) => t.id), client);
-      const result = await generateDueDrafts(client, page, exceptions, today);
-      created += result.created;
-      failedTemplateIds.push(...result.failedTemplateIds);
+      const eligible: typeof page = [];
+      for (const template of page) {
+        const quota = await consumeTenantQuota(template.createdByWallet, { jobs: 1 });
+        if (!quota.available) {
+          return NextResponse.json({ error: "Tenant quota service is unavailable.", created }, { status: 503 });
+        }
+        if (quota.allowed) eligible.push(template);
+        else failedTemplateIds.push(template.id);
+      }
+      if (eligible.length) {
+        const exceptions = await fetchExceptions(eligible.map((t) => t.id), client);
+        const result = await generateDueDrafts(client, eligible, exceptions, today);
+        created += result.created;
+        failedTemplateIds.push(...result.failedTemplateIds);
+      }
       if (page.length < PAGE) break;
     }
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Draft generation failed.";
-    return NextResponse.json({ error: message, created }, { status: 500 });
+    return toPublicErrorResponse(err, {
+      fallbackMessage: "Draft generation failed.",
+      route: "/api/recurring/run",
+      context: { created },
+    });
   }
 
   return NextResponse.json(

@@ -84,7 +84,7 @@ export function WorkspacePrivacyModal({
             <span>Strict Zero On-Chain Leakage Guarantee</span>
           </div>
           <p className="text-emerald-800 text-[11px] leading-relaxed">
-            All itinerary schedules, collaborative packing checklists, booking confirmation
+            All itinerary schedules, collaborative packing checklists, chore completion history, booking confirmation
             codes, files, and reference links are isolated off-chain. They are NEVER published to
             public Stellar blockchain transactions, memos, or Soroban smart contracts.
           </p>
@@ -134,7 +134,7 @@ export function WorkspacePrivacyModal({
           </div>
           {confirmDelete && (
             <p className="text-[11px] text-red-600 leading-tight">
-              Are you sure? This deletes all travel itinerary, checklists, and booking references.
+              Are you sure? This deletes all travel itinerary, checklists, chores, and booking references.
               Trip expenses, shares, balances, and on-chain settlements will NOT be affected.
             </p>
           )}

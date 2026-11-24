@@ -102,6 +102,7 @@ Before submission or mainnet promotion, verify:
 
 - README is up to date
 - `docs/MAINNET_READINESS.md` signed off and Go/No-Go gate evaluated
+- Release readiness scorecard (`npm run release:scorecard`) returns PROMOTE, see `docs/RELEASE_READINESS_SCORECARD.md`
 - `docs/RELEASE_CHECKLIST.md` current
 - `docs/REQUIREMENT_PROOF_MATRIX.md` current
 - `docs/ARCHITECTURE_AND_LIMITATIONS.md` current
@@ -117,6 +118,7 @@ If a production or production-like issue occurs:
 4. Validate `.env.local` contract ID and network configuration consistency.
 5. Compare README proof IDs/tx hashes against Stellar Expert explorer.
 6. If contract ID is wrong or unrecoverable, follow the formal rollback procedure in Section 9.3.
+7. **Tell users**: declare the incident on the public status page and keep to the update cadence for its severity. See [Incident communication](INCIDENT_COMMUNICATION.md).
 
 ## 8. Settlement Pool Credit Model
 

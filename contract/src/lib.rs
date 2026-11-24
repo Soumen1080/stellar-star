@@ -34,6 +34,7 @@ pub enum ContractError {
     AssetMismatch      = 14,
     /// Storage carries a version newer than this code knows how to read.
     UnknownStorageVersion = 15,
+    InvalidSignerSet = 16,
 }
 
 #[contracttype]
@@ -72,7 +73,8 @@ pub struct PoolConfigEventV1 {
 #[derive(Clone)]
 pub struct OracleConfigEventV1 {
     pub version:    u32,
-    pub oracle_key: BytesN<32>,
+    pub signer_count: u32,
+    pub threshold: u32,
     pub updated_by: Address,
     pub timestamp:  u64,
 }
@@ -84,8 +86,9 @@ pub enum DataKey {
     Admin,
     PoolContract,
     Version,
-    /// Raw ed25519 public key of the attestation oracle.
-    OracleKey,
+    /// Public keys authorised to attest settlement claims.
+    OracleSigners,
+    OracleThreshold,
     /// The asset this deployment settles in.
     ///
     /// The *pool* is multi-asset as of #145, so a balance can no longer be
@@ -103,7 +106,7 @@ const STORAGE_BUMP_THRESHOLD: u32 = LEDGERS_PER_DAY * 30;
 const STORAGE_BUMP_AMOUNT:    u32 = LEDGERS_PER_DAY * 365;
 /// Bumped from 1: `record_payment` gained a mandatory attestation argument and
 /// instance storage gained the oracle key and settlement asset.
-const CONTRACT_VERSION:       u32 = 2;
+const CONTRACT_VERSION:       u32 = 3;
 const MAX_ID_LEN:             u32 = 64;
 const MAX_TX_HASH_LEN:        u32 = 128;
 const MAX_AMOUNT_STROOPS:     i128 = 10_000_000_000_000_000;
@@ -112,7 +115,7 @@ const MAX_AMOUNT_STROOPS:     i128 = 10_000_000_000_000_000;
 ///
 /// Bounding this is what limits the blast radius of a stolen oracle key: an
 /// attacker who signs a batch of claims still has only this long to land them
-/// before every one of them is dead, and rotating the key via `set_oracle_key`
+/// before every one of them is dead, and rotating the keys via governance.
 /// kills them immediately.
 const MAX_ATTESTATION_TTL_SECS: u64 = 900;
 
@@ -131,7 +134,8 @@ impl SettleXContract {
         env:              Env,
         admin:            Address,
         pool_contract:    Address,
-        oracle_key:       BytesN<32>,
+        oracle_signers:   Vec<BytesN<32>>,
+        oracle_threshold: u32,
         settlement_asset: Address,
     ) {
         if env.storage().instance().has(&DataKey::Admin) {
@@ -141,48 +145,74 @@ impl SettleXContract {
         if admin == pool_contract {
             panic_with_error!(&env, ContractError::InvalidActor);
         }
+        Self::validate_signer_set(&env, &oracle_signers, oracle_threshold);
 
         admin.require_auth();
         env.storage().instance().set(&DataKey::Version, &CONTRACT_VERSION);
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::PoolContract, &pool_contract);
-        env.storage().instance().set(&DataKey::OracleKey, &oracle_key);
+        env.storage().instance().set(&DataKey::OracleSigners, &oracle_signers);
+        env.storage().instance().set(&DataKey::OracleThreshold, &oracle_threshold);
         env.storage().instance().set(&DataKey::SettlementAsset, &settlement_asset);
         env.storage().instance().extend_ttl(STORAGE_BUMP_THRESHOLD, STORAGE_BUMP_AMOUNT);
 
         env.events().publish((symbol_short!("stx_ini"),), CONTRACT_VERSION);
     }
 
-    /// Rotates the attestation oracle key.
+    /// Updates the approved signer set. During rotation, first install an
+    /// overlapping old+new set with a threshold met by both quorums; after
+    /// the transition window, remove retired keys and set the final threshold.
     ///
     /// This is the compromise response: every attestation signed by the old key
     /// stops verifying on the next ledger, without touching any recorded
     /// payment. Deliberately admin-gated and deliberately not the oracle's own
     /// privilege — a compromised oracle must not be able to re-anchor trust in
     /// itself.
-    pub fn set_oracle_key(env: Env, oracle_key: BytesN<32>) {
+    pub fn set_oracle_signers(env: Env, signers: Vec<BytesN<32>>, threshold: u32) {
         let admin = Self::require_admin(&env);
-
-        env.storage().instance().set(&DataKey::OracleKey, &oracle_key);
+        Self::validate_signer_set(&env, &signers, threshold);
+        env.storage().instance().set(&DataKey::OracleSigners, &signers);
+        env.storage().instance().set(&DataKey::OracleThreshold, &threshold);
         env.storage().instance().extend_ttl(STORAGE_BUMP_THRESHOLD, STORAGE_BUMP_AMOUNT);
 
         env.events().publish(
             (symbol_short!("orcl_cfg"),),
             OracleConfigEventV1 {
                 version: CONTRACT_VERSION,
-                oracle_key,
+                signer_count: signers.len(),
+                threshold,
                 updated_by: admin,
                 timestamp: env.ledger().timestamp(),
             },
         );
     }
 
-    pub fn get_oracle_key(env: Env) -> BytesN<32> {
+    pub fn get_oracle_signers(env: Env) -> Vec<BytesN<32>> {
         Self::require_version(&env);
         env.storage()
             .instance()
-            .get(&DataKey::OracleKey)
+            .get(&DataKey::OracleSigners)
             .unwrap_or_else(|| panic_with_error!(&env, ContractError::NotInitialized))
+    }
+
+    pub fn get_oracle_threshold(env: Env) -> u32 {
+        Self::require_version(&env);
+        env.storage().instance().get(&DataKey::OracleThreshold)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::NotInitialized))
+    }
+
+    fn validate_signer_set(env: &Env, signers: &Vec<BytesN<32>>, threshold: u32) {
+        if signers.len() == 0 || threshold == 0 || threshold > signers.len() {
+            panic_with_error!(env, ContractError::InvalidSignerSet);
+        }
+        for i in 0..signers.len() {
+            let key = signers.get(i).unwrap();
+            for j in 0..i {
+                if key == signers.get(j).unwrap() {
+                    panic_with_error!(env, ContractError::InvalidSignerSet);
+                }
+            }
+        }
     }
 
     pub fn get_settlement_asset(env: Env) -> Address {
@@ -351,8 +381,11 @@ impl SettleXContract {
             nonce:      &attestation.nonce,
             expires_at: attestation.expires_at,
         };
-        let oracle_key = Self::get_oracle_key(env.clone());
-        verify_claim(&env, &oracle_key, &claim, &attestation.signature);
+        let signers = Self::get_oracle_signers(env.clone());
+        let threshold = Self::get_oracle_threshold(env.clone());
+        if !verify_claim(&env, &signers, threshold, &claim, &attestation.signatures) {
+            panic_with_error!(&env, ContractError::InvalidSignerSet);
+        }
 
         // Burn the nonce. `has`-then-`set` is atomic with respect to other
         // submissions because it happens inside one ledger entry's footprint:
@@ -456,6 +489,8 @@ mod test {
         SigningKey::from_bytes(&[7u8; 32])
     }
 
+    fn secondary_signing_key() -> SigningKey { SigningKey::from_bytes(&[8u8; 32]) }
+
     fn oracle_public_key(env: &Env) -> BytesN<32> {
         BytesN::from_array(env, &oracle_signing_key().verifying_key().to_bytes())
     }
@@ -508,16 +543,26 @@ mod test {
         fixture: &ClaimFixture,
         key: &SigningKey,
     ) -> Attestation {
-        let signature = env.as_contract(contract_id, || {
+        attest_many(env, contract_id, fixture, &[key])
+    }
+
+    fn attest_many(env: &Env, contract_id: &Address, fixture: &ClaimFixture, keys: &[&SigningKey]) -> Attestation {
+        let message = env.as_contract(contract_id, || {
             let message = claim_message(env, &fixture.as_claim());
-            sign_message(env, key, &message)
+            message
         });
+        let mut signatures = Vec::new(env);
+        for key in keys {
+            let signature = sign_message(env, key, &message);
+            let signer = BytesN::from_array(env, &key.verifying_key().to_bytes());
+            signatures.push_back(crate::attest::OracleSignature { signer, signature });
+        }
 
         Attestation {
             asset: fixture.asset.clone(),
             nonce: fixture.nonce.clone(),
             expires_at: fixture.expires_at,
-            signature,
+            signatures,
         }
     }
 
@@ -551,10 +596,14 @@ mod test {
                 soroban_sdk::token::StellarAssetClient::new(&$env, &$token_addr);
 
             $pool_client.init_pool(&admin, &settlement_contract_id, &$token_addr);
+            let mut signer_set = Vec::new(&$env);
+            signer_set.push_back(oracle_public_key(&$env));
+            signer_set.push_back(BytesN::from_array(&$env, &secondary_signing_key().verifying_key().to_bytes()));
             $client.init(
                 &admin,
                 &pool_contract_id,
-                &oracle_public_key(&$env),
+                &signer_set,
+                &1u32,
                 &$token_addr,
             );
         };
@@ -698,7 +747,7 @@ mod test {
             asset: f.asset.clone(),
             nonce: f.nonce.clone(),
             expires_at: f.expires_at,
-            signature: BytesN::from_array(&env, &[0u8; 64]),
+            signatures: Vec::new(&env),
         };
         record(&client, &f, &a);
     }
@@ -957,10 +1006,10 @@ mod test {
         let a = attest(&env, &contract_id, &f, &oracle_signing_key());
 
         let next_key = SigningKey::from_bytes(&[11u8; 32]);
-        client.set_oracle_key(&BytesN::from_array(
-            &env,
-            &next_key.verifying_key().to_bytes(),
-        ));
+        let mut signers = Vec::new(&env);
+        signers.push_back(BytesN::from_array(&env, &next_key.verifying_key().to_bytes()));
+        signers.push_back(BytesN::from_array(&env, &secondary_signing_key().verifying_key().to_bytes()));
+        client.set_oracle_signers(&signers, &1u32);
 
         record(&client, &f, &a);
     }
@@ -969,10 +1018,10 @@ mod test {
     fn test_rotated_oracle_key_accepts_new_attestations() {
         setup!(env, client, contract_id, pool_client, token_addr, token_admin_client);
         let next_key = SigningKey::from_bytes(&[11u8; 32]);
-        client.set_oracle_key(&BytesN::from_array(
-            &env,
-            &next_key.verifying_key().to_bytes(),
-        ));
+        let mut signers = Vec::new(&env);
+        signers.push_back(BytesN::from_array(&env, &next_key.verifying_key().to_bytes()));
+        signers.push_back(BytesN::from_array(&env, &secondary_signing_key().verifying_key().to_bytes()));
+        client.set_oracle_signers(&signers, &1u32);
 
         let f = fixture(
             &env, &pool_client, &token_admin_client, &token_addr,
@@ -999,7 +1048,7 @@ mod test {
             asset: f.asset.clone(),
             nonce: f.nonce.clone(),
             expires_at: f.expires_at,
-            signature: BytesN::from_array(&env, &[0u8; 64]),
+            signatures: Vec::new(&env),
         };
         assert!(client.try_record_payment(
             &f.trip_id, &f.expense_id, &f.payer, &f.member,
@@ -1149,7 +1198,10 @@ mod test {
 
         pool_client.init_pool(&admin, &settlement_id, &token_a);
         pool_client.add_supported_asset(&token_b);
-        client.init(&admin, &pool_id, &oracle_public_key(&env), &token_a);
+        let mut signer_set = Vec::new(&env);
+        signer_set.push_back(oracle_public_key(&env));
+        signer_set.push_back(BytesN::from_array(&env, &secondary_signing_key().verifying_key().to_bytes()));
+        client.init(&admin, &pool_id, &signer_set, &1u32, &token_a);
 
         // One shared expense, two members, two assets.
         let payer = Address::generate(&env);
@@ -1248,10 +1300,51 @@ mod test {
     }
 
     #[test]
-    fn test_init_stores_oracle_key_and_asset() {
+    fn test_init_stores_oracle_signers_and_asset() {
         setup!(env, client, _contract_id, _pool_client, token_addr, _token_admin_client);
 
-        assert_eq!(client.get_oracle_key(), oracle_public_key(&env));
+        assert_eq!(client.get_oracle_signers().len(), 2);
+        assert_eq!(client.get_oracle_threshold(), 1);
         assert_eq!(client.get_settlement_asset(), token_addr);
+    }
+
+    #[test]
+    fn test_two_of_three_distinct_signers_can_attest() {
+        setup!(env, client, contract_id, pool_client, token_addr, token_admin_client);
+        let third = SigningKey::from_bytes(&[9u8; 32]);
+        let mut signers = Vec::new(&env);
+        signers.push_back(oracle_public_key(&env));
+        signers.push_back(BytesN::from_array(&env, &secondary_signing_key().verifying_key().to_bytes()));
+        signers.push_back(BytesN::from_array(&env, &third.verifying_key().to_bytes()));
+        client.set_oracle_signers(&signers, &2u32);
+        let f = fixture(&env, &pool_client, &token_admin_client, &token_addr, "trip-q", "exp-q", "tx-q", 1_000_000, 7);
+        let attestation = attest_many(&env, &contract_id, &f, &[&oracle_signing_key(), &secondary_signing_key()]);
+        record(&client, &f, &attestation);
+        assert!(client.is_paid(&f.expense_id, &f.member));
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_insufficient_quorum_and_signer_outage_are_rejected() {
+        setup!(env, client, contract_id, pool_client, token_addr, token_admin_client);
+        let third = SigningKey::from_bytes(&[9u8; 32]);
+        let mut signers = Vec::new(&env);
+        signers.push_back(oracle_public_key(&env));
+        signers.push_back(BytesN::from_array(&env, &secondary_signing_key().verifying_key().to_bytes()));
+        signers.push_back(BytesN::from_array(&env, &third.verifying_key().to_bytes()));
+        client.set_oracle_signers(&signers, &2u32);
+        let f = fixture(&env, &pool_client, &token_admin_client, &token_addr, "trip-low", "exp-low", "tx-low", 1_000_000, 8);
+        record(&client, &f, &attest(&env, &contract_id, &f, &oracle_signing_key()));
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_duplicate_signer_configuration_rejected() {
+        setup!(env, client, _contract_id, _pool_client, _token_addr, _token_admin_client);
+        let key = oracle_public_key(&env);
+        let mut signers = Vec::new(&env);
+        signers.push_back(key.clone());
+        signers.push_back(key);
+        client.set_oracle_signers(&signers, &2u32);
     }
 }

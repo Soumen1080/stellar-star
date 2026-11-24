@@ -37,20 +37,17 @@ describe("Server-side pagination and route validation", () => {
     it("validates and formats ISO cursor", () => {
       const date = "2026-09-29T12:00:00.000Z";
       const parsed = parsePaginationParams({ cursor: date });
-      expect(parsed.cursor).toBe(date);
+      // Legacy timestamp cursors still decode, as a keyset with no tie-breaker.
+      expect(parsed.cursor).toEqual({ createdAt: date, id: null });
     });
 
     it("throws error for malformed cursor", () => {
       expect(() => parsePaginationParams({ cursor: "not-a-date" })).toThrow(/ISO 8601/);
     });
 
-    it("parses non-negative offset", () => {
-      const parsed = parsePaginationParams({ offset: "10" });
-      expect(parsed.offset).toBe(10);
-    });
-
-    it("throws error for negative offset", () => {
-      expect(() => parsePaginationParams({ offset: -5 })).toThrow(/non-negative integer/);
+    it("rejects offset pagination (#449)", () => {
+      expect(() => parsePaginationParams({ offset: "10" })).toThrow(/Offset pagination is not supported/);
+      expect(() => parsePaginationParams({ offset: -5 })).toThrow(/Offset pagination is not supported/);
     });
   });
 
@@ -89,7 +86,7 @@ describe("Server-side pagination and route validation", () => {
       const token = signWalletSession(WALLET);
       const req = new NextRequest("http://localhost:3000/api/trips", {
         method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
         body: JSON.stringify({ name: "" }),
       });
       const res = await postTripsRoute(req);
@@ -134,7 +131,7 @@ describe("Server-side pagination and route validation", () => {
       const token = signWalletSession(WALLET);
       const req = new NextRequest("http://localhost:3000/api/expenses", {
         method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
         body: JSON.stringify({ title: "" }),
       });
       const res = await postExpensesRoute(req);

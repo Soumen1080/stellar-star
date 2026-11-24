@@ -14,11 +14,19 @@ export function isUuid(value: string): boolean {
   return UUID_RE.test(value);
 }
 
-/** Receipt responses describe private documents; nothing may cache them. */
+/**
+ * Receipt responses describe private documents; nothing may cache them. Also
+ * applied to idempotent replays so a replayed receipt is just as private.
+ */
+export const RECEIPT_RESPONSE_HEADERS: Readonly<Record<string, string>> = Object.freeze({
+  "Cache-Control": "no-store, private",
+  "X-Content-Type-Options": "nosniff",
+});
+
 export function receiptJson(body: unknown, status = 200) {
   return NextResponse.json(body, {
     status,
-    headers: { "Cache-Control": "no-store, private", "X-Content-Type-Options": "nosniff" },
+    headers: { ...RECEIPT_RESPONSE_HEADERS },
   });
 }
 
@@ -28,6 +36,11 @@ export function receiptError(message: string, status: number) {
 
 export function errorResponse(err: unknown) {
   if (err instanceof ReceiptValidationError || err instanceof ReceiptStoreError) {
+    if (err instanceof ReceiptStoreError && err.status === 429 && err.retryAfterMs > 0) {
+      const response = receiptError(err.message, err.status);
+      response.headers.set("Retry-After", String(Math.max(1, Math.ceil(err.retryAfterMs / 1000))));
+      return response;
+    }
     return receiptError(err.message, err.status);
   }
   return receiptError("Something went wrong with this receipt. Please try again.", 500);

@@ -48,8 +48,7 @@ const STUB_ATTESTATION = {
     nonce: "e".repeat(64),
     expiresAt: 1900000000,
   },
-  signature: "d".repeat(128),
-  oraclePublicKey: "GORACLE",
+  signatures: [{ signer: "GORACLE", signature: "d".repeat(128) }],
 };
 
 describe("Exactly-Once Settlement Recording & Concurrency (Issue #156 / Epic #50)", () => {

@@ -221,11 +221,11 @@ describe("Idempotency Keys for Money-Adjacent Mutations (#312)", () => {
       const inviteRoute = fs.readFileSync(path.join(process.cwd(), "app/api/invitations/create/route.ts"), "utf8");
       const claimRoute = fs.readFileSync(path.join(process.cwd(), "app/api/invitations/claim/route.ts"), "utf8");
 
+      // Issue #412: routes validate the key up front and run the mutation
+      // through the shared wrapper, which handles replay and 409 conflicts.
       for (const route of [expenseRoute, tripRoute, inviteRoute, claimRoute]) {
-        expect(route).toContain("extractIdempotencyKey");
-        expect(route).toContain("withIdempotency");
-        expect(route).toContain("idempotentJsonResponse");
-        expect(route).toContain("IdempotencyConflictError");
+        expect(route).toContain("requireIdempotencyKey");
+        expect(route).toContain("runIdempotentMutation");
       }
     });
   });

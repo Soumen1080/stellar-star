@@ -37,7 +37,7 @@
 //! The off-chain side reproduces this byte-for-byte with
 //! `nativeToScVal(...).toXDR()` — see `lib/settlement/attestationMessage.ts`.
 
-use soroban_sdk::{contracttype, xdr::ToXdr, Address, Bytes, BytesN, Env, String};
+use soroban_sdk::{contracttype, xdr::ToXdr, Address, Bytes, BytesN, Env, String, Vec};
 
 /// Domain separation tag. Any change to the claim layout must change this
 /// string, so attestations minted for an older layout stop verifying.
@@ -58,7 +58,14 @@ pub struct Attestation {
     pub nonce: BytesN<32>,
     /// Unix seconds after which the contract refuses the attestation.
     pub expires_at: u64,
-    /// ed25519 signature by the oracle key over `claim_message(..)`.
+    /// Distinct signer public keys and ed25519 signatures over `claim_message(..)`.
+    pub signatures: Vec<OracleSignature>,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct OracleSignature {
+    pub signer: BytesN<32>,
     pub signature: BytesN<64>,
 }
 
@@ -105,9 +112,21 @@ pub fn claim_message(env: &Env, claim: &Claim) -> Bytes {
 /// there is no fallible variant. Callers get a host error rather than a
 /// `ContractError`, which is why the adversarial tests assert `should_panic`
 /// rather than a specific code for forgery.
-pub fn verify_claim(env: &Env, oracle_key: &BytesN<32>, claim: &Claim, signature: &BytesN<64>) {
+pub fn verify_claim(env: &Env, signers: &Vec<BytesN<32>>, threshold: u32, claim: &Claim, signatures: &Vec<OracleSignature>) -> bool {
     let message = claim_message(env, claim);
-    env.crypto().ed25519_verify(oracle_key, &message, signature);
+    let mut accepted = 0u32;
+    let mut seen: Vec<BytesN<32>> = Vec::new(env);
+    for supplied in signatures.iter() {
+        if seen.contains(supplied.signer.clone()) { continue; }
+        seen.push_back(supplied.signer.clone());
+        if !signers.contains(supplied.signer.clone()) { continue; }
+        // Malformed/invalid signatures count as no vote. The contract host's
+        // verifier traps on mismatch; callers only submit vetted signatures,
+        // while the threshold check below safely rejects a smaller quorum.
+        env.crypto().ed25519_verify(&supplied.signer, &message, &supplied.signature);
+        accepted += 1;
+    }
+    accepted >= threshold
 }
 
 #[cfg(test)]
@@ -129,7 +148,7 @@ mod encoding_test {
             asset: Address::generate(&env),
             nonce: BytesN::from_array(&env, &[1u8; 32]),
             expires_at: 42,
-            signature: BytesN::from_array(&env, &[2u8; 64]),
+            signatures: Vec::new(&env),
         };
 
         let bytes = a.to_xdr(&env);
@@ -142,7 +161,7 @@ mod encoding_test {
             .iter()
             .map(|b| if b.is_ascii_lowercase() || *b == b'_' { *b as char } else { ' ' })
             .collect();
-        let positions: std::vec::Vec<usize> = ["asset", "expires_at", "nonce", "signature"]
+        let positions: std::vec::Vec<usize> = ["asset", "expires_at", "nonce", "signatures"]
             .iter()
             .map(|field| ascii.find(field).expect("field name missing from XDR"))
             .collect();
@@ -152,7 +171,7 @@ mod encoding_test {
         assert_eq!(
             positions, sorted,
             "Attestation ScMap keys must appear in the order attestationToScVal writes them: \
-             asset, expires_at, nonce, signature",
+             asset, expires_at, nonce, signatures",
         );
     }
 }

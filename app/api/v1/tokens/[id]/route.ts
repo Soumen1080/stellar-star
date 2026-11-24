@@ -38,20 +38,32 @@ export async function DELETE(
   if (limited) return limited;
 
   const { id } = await params;
-  const revoked = revokeToken(id, wallet);
+  return runIdempotentMutation({
+    request,
+    key: idempotency.key,
+    replayFields: ["success", "message"],
+    principal: wallet,
+    payload: { tokenId: id },
+    // The token store is process-local; so is the replay.
+    persist: false,
+    format: "v1",
+    execute: async () => {
+      const revoked = revokeToken(id, wallet);
 
-  if (!revoked) {
-    return NextResponse.json(
-      {
-        error: {
-          code: "NOT_FOUND",
-          message: "Token not found or not owned by authenticated wallet.",
-          status: 404,
-        },
-      },
-      { status: 404 }
-    );
-  }
+      if (!revoked) {
+        return NextResponse.json(
+          {
+            error: {
+              code: "NOT_FOUND",
+              message: "Token not found or not owned by authenticated wallet.",
+              status: 404,
+            },
+          },
+          { status: 404 }
+        );
+      }
 
-  return NextResponse.json({ success: true, message: "Token successfully revoked." });
+      return NextResponse.json({ success: true, message: "Token successfully revoked." });
+    },
+  });
 }

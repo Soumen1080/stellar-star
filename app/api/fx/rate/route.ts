@@ -43,7 +43,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { defaultRateService } from "@/lib/fx/rateService";
 import { normalizeCurrency, SUPPORTED_CURRENCIES } from "@/lib/fx/currencies";
-import { checkRateLimit, getClientIp } from "@/lib/auth/rateLimiter";
+import { checkRateLimit, getClientIp, rateLimiterUnavailableResponse } from "@/lib/auth/rateLimiter";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -96,6 +96,9 @@ export async function GET(request: NextRequest) {
     corroborate ? CORROBORATE_LIMIT_MAX : RATE_LIMIT_MAX,
     RATE_LIMIT_WINDOW_MS,
   );
+  if (limit.unavailable) {
+    return rateLimiterUnavailableResponse(limit);
+  }
   if (!limit.allowed) {
     return jsonError("Too many rate requests. Please try again later.", 429, {
       "Retry-After": String(Math.ceil(limit.resetMs / 1000)),

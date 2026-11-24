@@ -54,8 +54,7 @@ const STUB_ATTESTATION = {
     nonce: "b".repeat(64),
     expiresAt: 1900000000,
   },
-  signature: "c".repeat(128),
-  oraclePublicKey: "GORACLE",
+  signatures: [{ signer: "GORACLE", signature: "c".repeat(128) }],
 };
 
 

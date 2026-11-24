@@ -84,6 +84,9 @@ function ToastCard({
 
   return (
     <motion.div
+      role={t.variant === "error" ? "alert" : "status"}
+      aria-live={t.variant === "error" ? "assertive" : "polite"}
+      aria-atomic="true"
       layout
       initial={{ opacity: 0, y: 20, scale: 0.95 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -107,7 +110,7 @@ function ToastCard({
       </div>
       <button
         onClick={() => onDismiss(t.id)}
-        className="shrink-0 text-[#AAA] hover:text-[#555] transition-colors mt-0.5"
+        className="shrink-0 min-w-11 min-h-11 flex items-center justify-center text-[#555] hover:text-[#222] transition-colors mt-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0F766E]"
         aria-label="Dismiss"
       >
         <X size={14} />
@@ -152,8 +155,6 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
       {/* Toast viewport - fixed bottom-right */}
       <div
         className="fixed bottom-4 right-4 z-[200] flex flex-col gap-2 pointer-events-none"
-        aria-live="polite"
-        aria-atomic="false"
       >
         <AnimatePresence initial={false} mode="sync">
           {toasts.map((t) => (

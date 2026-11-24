@@ -1,11 +1,13 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/types/supabase";
+import { publicEnv } from "@/lib/config/publicEnv";
 import { getAccessToken, clearSession } from "./session";
+import { resetRealtimeChannels } from "./realtimeRegistry";
 
 export type StellarStarClient = SupabaseClient<Database>;
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim() ?? "";
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim() ?? "";
+const supabaseUrl = publicEnv.supabaseUrl?.trim() ?? "";
+const supabaseAnonKey = publicEnv.supabaseAnonKey?.trim() ?? "";
 
 const configured = Boolean(supabaseUrl && supabaseAnonKey);
 
@@ -95,6 +97,9 @@ export function requireAuthenticatedClient(): StellarStarClient {
  * subscriptions opened for the previous one.
  */
 export function resetSupabaseClient(): void {
+  // Cancels shared-channel reconnect/teardown timers so nothing reopens for
+  // the previous wallet (#448).
+  resetRealtimeChannels();
   if (browserClient) {
     void browserClient.removeAllChannels();
   }

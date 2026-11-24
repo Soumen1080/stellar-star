@@ -10,10 +10,12 @@ import {
 import {
   errorResponse,
   isUuid,
+  RECEIPT_RESPONSE_HEADERS,
   receiptClients,
   receiptError,
   receiptJson,
 } from "@/lib/receipts/http";
+import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -55,28 +57,43 @@ export async function DELETE(request: NextRequest, context: Context) {
   const clients = receiptClients(request);
   if ("response" in clients) return clients.response;
 
+  // Issue #412: a valid key is required before any work.
+  const idempotency = requireIdempotencyKey(request);
+  if (!idempotency.ok) return idempotency.response;
+
   try {
-    const found = await loadReceipt(clients.userClient, receiptId);
-    if (!found) return receiptError("Receipt not found.", 404);
-    if (found.receipt.status === "removed") return receiptJson({ data: { removed: true } });
+    return await runIdempotentMutation({
+      request,
+      client: clients.userClient,
+      key: idempotency.key,
+      replayFields: ["data.removed"],
+      principal: clients.wallet,
+      payload: { receiptId },
+      replayHeaders: { ...RECEIPT_RESPONSE_HEADERS },
+      execute: async () => {
+        const found = await loadReceipt(clients.userClient, receiptId);
+        if (!found) return receiptError("Receipt not found.", 404);
+        if (found.receipt.status === "removed") return receiptJson({ data: { removed: true } });
 
-    const access = found.receipt.expenseId
-      ? await loadExpenseAccess(clients.userClient, found.receipt.expenseId)
-      : null;
-    const canRemove = access
-      ? await hasExpensePermission(found.receipt.expenseId, "receipts.manage", clients.userClient)
-      : found.receipt.uploadedByWallet.trim().toUpperCase() === clients.wallet.trim().toUpperCase();
-    if (!canRemove) {
-      return receiptError("You do not have permission to remove this receipt.", 403);
-    }
+        const access = found.receipt.expenseId
+          ? await loadExpenseAccess(clients.userClient, found.receipt.expenseId)
+          : null;
+        const canRemove = access
+          ? await hasExpensePermission(found.receipt.expenseId, "receipts.manage", clients.userClient)
+          : found.receipt.uploadedByWallet.trim().toUpperCase() === clients.wallet.trim().toUpperCase();
+        if (!canRemove) {
+          return receiptError("You do not have permission to remove this receipt.", 403);
+        }
 
-    await removeReceipt(clients.serviceClient, {
-      receiptId,
-      storagePath: found.storagePath,
-      wallet: clients.wallet,
-      reason: "user",
+        await removeReceipt(clients.serviceClient, {
+          receiptId,
+          storagePath: found.storagePath,
+          wallet: clients.wallet,
+          reason: "user",
+        });
+        return receiptJson({ data: { removed: true } });
+      },
     });
-    return receiptJson({ data: { removed: true } });
   } catch (err) {
     return errorResponse(err);
   }

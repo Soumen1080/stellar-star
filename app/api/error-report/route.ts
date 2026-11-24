@@ -19,7 +19,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { checkRateLimit, getClientIp } from "@/lib/auth/rateLimiter";
+import { checkRateLimit, getClientIp, rateLimiterUnavailableResponse } from "@/lib/auth/rateLimiter";
 import {
   REQUEST_ID_HEADER,
   createRequestId,
@@ -30,6 +30,7 @@ import {
   dispatchOnCallAlert,
 } from "@/lib/observability/alerts";
 import { redactSensitiveData } from "@/lib/observability/reportError";
+import { RequestBodyError, readTextBody } from "@/lib/api/bodyLimits";
 
 interface IncomingReport {
   requestId?: string;
@@ -149,6 +150,9 @@ export async function POST(req: NextRequest) {
 
   const clientIp = getClientIp(req);
   const rateLimit = await checkRateLimit(`error-report:ip:${clientIp}`, RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_MS);
+  if (rateLimit.unavailable) {
+    return rateLimiterUnavailableResponse(rateLimit, requestId);
+  }
   if (!rateLimit.allowed) {
     return NextResponse.json(
       { ok: false, error: "Too many error reports", requestId },
@@ -156,28 +160,16 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const declaredLength = Number(req.headers.get("content-length"));
-  if (Number.isFinite(declaredLength) && declaredLength > MAX_BODY_BYTES) {
-    return NextResponse.json(
-      { ok: false, error: "payload too large", requestId },
-      { status: 413, headers: responseHeaders() },
-    );
-  }
-
+  // Byte-limited streamed read (#418). Beacons may send text/plain, so the
+  // media type is not enforced here; the JSON is parsed below.
   let raw: string;
   try {
-    raw = await req.text();
-  } catch {
+    raw = await readTextBody(req, { maxBytes: MAX_BODY_BYTES });
+  } catch (err) {
+    const tooLarge = err instanceof RequestBodyError && err.status === 413;
     return NextResponse.json(
-      { ok: false, error: "invalid body", requestId },
-      { status: 400, headers: responseHeaders() },
-    );
-  }
-
-  if (raw.length > MAX_BODY_BYTES) {
-    return NextResponse.json(
-      { ok: false, error: "payload too large", requestId },
-      { status: 413, headers: responseHeaders() },
+      { ok: false, error: tooLarge ? "payload too large" : "invalid body", requestId },
+      { status: tooLarge ? 413 : 400, headers: responseHeaders() },
     );
   }
 

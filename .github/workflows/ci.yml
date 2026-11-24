@@ -19,6 +19,20 @@ jobs:
     name: Lint, Test, Build
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: stellar_star_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d stellar_star_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     env:
       # Public placeholders for CI only. Real values are injected in deployment environments.
       NEXT_PUBLIC_SUPABASE_URL: https://example.supabase.co
@@ -37,6 +51,24 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Enforce tenant isolation on real PostgreSQL
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -h localhost -U postgres -d stellar_star_test -v ON_ERROR_STOP=1 -c "CREATE ROLE anon NOLOGIN; CREATE ROLE authenticated NOLOGIN; CREATE ROLE service_role NOLOGIN BYPASSRLS;"
+          psql -h localhost -U postgres -d stellar_star_test -v ON_ERROR_STOP=1 -f supabase-setup.sql
+          psql -h localhost -U postgres -d stellar_star_test -v ON_ERROR_STOP=1 -f migrations/0019_force_row_level_security.sql
+          psql -h localhost -U postgres -d stellar_star_test -v ON_ERROR_STOP=1 -f migrations/0020_tenant_quotas.sql
+          psql -h localhost -U postgres -d stellar_star_test -v ON_ERROR_STOP=1 -f scripts/postgres-rls-check.sql
+
+      - name: Verify concurrent tenants cannot exceed quotas
+        env:
+          PGPASSWORD: postgres
+          PGHOST: localhost
+          PGUSER: postgres
+          PGDATABASE: stellar_star_test
+        run: bash scripts/test-tenant-quota-concurrency.sh
 
       - name: Type check
         run: npx tsc --noEmit
@@ -157,6 +189,11 @@ jobs:
       # configured the script reports local migrations and exits cleanly.
       - name: Migration manifest is readable
         run: npm run db:status
+
+      # Release gate: builds disposable schema from migrations, checks type
+      # agreement, and fails if committed types/supabase.ts drifts from SQL/RPCs (#423).
+      - name: Database types match disposable schema (Release Gate)
+        run: npm run db:types:verify
 
   playwright:
     name: Playwright E2E — ${{ matrix.project }}

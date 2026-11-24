@@ -56,6 +56,16 @@ When adding columns, tables, or altering RLS policies:
    ```
 4. **Update `supabase-setup.sql`** so that the single-file developer setup remains in sync with all cumulative migrations.
 
+Migration `0019_shared_household_coordination.sql` adds the opt-in shared
+household chore prototype, its append-only completion record, member opt-out
+preferences, and RLS policies. Chore completion is isolated from the expense
+and settlement tables.
+
+Migration `0022_transactional_outbox.sql` introduces the Transactional Outbox
+Pattern, adding `public.transactional_outbox`, concurrency-safe `SKIP LOCKED`
+worker batch leasing, deduplication constraints, exponential backoff, and
+distributed trace ID propagation. See [TRANSACTIONAL_OUTBOX.md](./TRANSACTIONAL_OUTBOX.md).
+
 ---
 
 ## 3. Verification & CLI Commands
@@ -63,6 +73,9 @@ When adding columns, tables, or altering RLS policies:
 Check migration status and database schema agreement:
 
 ```bash
+# Verify database schema & TypeScript type synchronization
+npm run db:types:verify
+
 # View migration status (applied vs pending)
 npm run db:status
 
@@ -71,7 +84,12 @@ npm run db:migrate
 
 # Comprehensive end-to-end database & schema check
 npm run db:check
+
+# Benchmark operational data partitioning and pruning
+npm run db:partitions:benchmark
 ```
+
+See [DATABASE_PARTITIONING.md](./DATABASE_PARTITIONING.md) for details on declarative monthly range partitioning, partition-local indexes, query-plan pruning, and retention lifecycle procedures.
 
 In CI/CD, `npm run db:check` fails the build if the database schema is missing any migrations that exist in the codebase.
 

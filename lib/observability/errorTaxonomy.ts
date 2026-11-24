@@ -21,15 +21,20 @@ export function categorizeError(err: unknown): CategorizedError {
   const message = err instanceof Error ? err.message : String(err);
   const lowerMessage = message.toLowerCase();
 
-  // 1. Wallet Rejection (User cancels or rejects in wallet modal/extension)
+  // 1. Database Timeout / Query Budget Exceeded (57014, 55P03, 25P03)
   if (
-    /reject|cancel|deny|denied|dismiss|user closed/i.test(lowerMessage) ||
-    lowerMessage.includes("modal closed")
+    lowerMessage.includes("database_deadline_exceeded") ||
+    lowerMessage.includes("database_query_timeout") ||
+    lowerMessage.includes("query_count_budget_exceeded") ||
+    lowerMessage.includes("query_duration_budget_exceeded") ||
+    lowerMessage.includes("statement timeout") ||
+    lowerMessage.includes("lock timeout") ||
+    (err instanceof DatabaseError && (err.code === "57014" || err.code === "55P03" || err.code === "25P03"))
   ) {
     return {
-      category: "wallet_rejection",
-      title: "Transaction Cancelled",
-      copy: "The transaction request was cancelled in your wallet. If you want to proceed, you can safely try signing again.",
+      category: "network_temporary",
+      title: "Database Operation Timed Out",
+      copy: "The database query took too long to complete and was terminated safely. Please retry with a narrower search or filter.",
       safeToRetry: true,
       originalError: err,
     };
@@ -60,6 +65,20 @@ export function categorizeError(err: unknown): CategorizedError {
       title: "Access Denied",
       copy: "You do not have the required permissions to perform this action. Row-level security policies prevent saving these changes.",
       safeToRetry: false,
+      originalError: err,
+    };
+  }
+
+  // 4. Wallet Rejection (User cancels or rejects in wallet modal/extension)
+  if (
+    /reject|cancel|deny|denied|dismiss|user closed/i.test(lowerMessage) ||
+    lowerMessage.includes("modal closed")
+  ) {
+    return {
+      category: "wallet_rejection",
+      title: "Transaction Cancelled",
+      copy: "The transaction request was cancelled in your wallet. If you want to proceed, you can safely try signing again.",
+      safeToRetry: true,
       originalError: err,
     };
   }
