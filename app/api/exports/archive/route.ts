@@ -36,6 +36,7 @@ import type { StellarStarClient } from "@/lib/supabase/client";
 import type { ExportAuditEventRow } from "@/types/supabase";
 import { STELLAR_EXPLORER, STELLAR_NETWORK } from "@/lib/utils/constants";
 import { authenticateWalletRequest } from "@/lib/api/routeGuard";
+import { appendPrivilegedAudit } from "@/lib/audit/privilegedAudit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -74,6 +75,34 @@ async function audit(
     client_ip_hash: hashIp(ip),
     ...record,
   });
+
+  // Privileged tamper-evident audit integration (#455)
+  try {
+    await appendPrivilegedAudit(
+      {
+        actorWallet: wallet,
+        actorRole: "user",
+        action: "export.archive",
+        decision: record.status === "served" ? "allow" : "deny",
+        targetType: "export",
+        targetId: `archive:${wallet}`,
+        requestId,
+        ipAddress: hashIp(ip),
+        metadata: {
+          exportKind: "archive",
+          status: record.status,
+          tripCount: record.trip_count,
+          expenseCount: record.expense_count,
+          byteSize: record.byte_size,
+          contentSha256: record.content_sha256,
+        },
+      },
+      client
+    );
+  } catch (err) {
+    console.error("[ExportArchive] Privileged audit append error:", err);
+  }
+
   return !error;
 }
 

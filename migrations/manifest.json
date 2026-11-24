@@ -503,6 +503,16 @@
       "checksum": "90d931fda983b5f4",
       "sha256": "90d931fda983b5f420d78890bfec92f5c5bf089dd21af2dd707346fb6986f675",
       "description": "Private object managed encryption, access logging, key rotation, and crypto-erasure (#453)"
+    },
+    {
+      "sequence": 51,
+      "id": "0032_tamper_evident_privileged_audits",
+      "version": "0032",
+      "filename": "0032_tamper_evident_privileged_audits.sql",
+      "name": "0032_tamper_evident_privileged_audits",
+      "checksum": "ebb235e650964418",
+      "sha256": "ebb235e65096441802b5dcd8a438dc176196f93ca941159280e01e5ffae8a117",
+      "description": "Tamper-evident privileged audit logs with hash chaining and integrity anchors (#455)"
     }
   ]
 }
