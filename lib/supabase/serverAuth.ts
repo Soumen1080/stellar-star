@@ -1,4 +1,6 @@
 import crypto from "crypto";
+import { publicEnv } from "@/lib/config/publicEnv";
+import { serverEnv } from "@/lib/config/serverEnv";
 
 /**
  * Mints the session JWTs that PostgREST and Realtime verify.
@@ -26,10 +28,10 @@ type JwtKey = { id: string; secret: string; verifyUntil?: number };
 /** Keys are JSON `{ "key-id": "secret" }`; retired keys are removed after
  * their configured overlap. No ambient/static secret fallback is accepted. */
 function getJwtKeys(): { active: JwtKey; verify: JwtKey[] } {
-  const activeId = process.env.JWT_ACTIVE_KEY_ID?.trim();
-  const configured = process.env.JWT_SIGNING_KEYS?.trim();
-  const legacy = process.env.SUPABASE_JWT_SECRET || process.env.JWT_SECRET;
-  if (!activeId && legacy && process.env.NODE_ENV !== "production") {
+  const activeId = serverEnv.jwtActiveKeyId?.trim();
+  const configured = serverEnv.jwtSigningKeys?.trim();
+  const legacy = serverEnv.supabaseJwtSecret || serverEnv.jwtSecret;
+  if (!activeId && legacy && serverEnv.nodeEnv !== "production") {
     return { active: { id: "legacy", secret: legacy }, verify: [{ id: "legacy", secret: legacy }] };
   }
   if (!activeId || !configured) {
@@ -40,7 +42,7 @@ function getJwtKeys(): { active: JwtKey; verify: JwtKey[] } {
   const keys = Object.entries(map).map(([id, secret]) => ({ id, secret }));
   const active = keys.find((key) => key.id === activeId);
   if (!active || !active.secret || active.id.length > 128) throw new Error("The active JWT key ID must identify a configured signing key.");
-  const overlapUntil = Number(process.env.JWT_PREVIOUS_KEYS_UNTIL);
+  const overlapUntil = Number(serverEnv.jwtPreviousKeysUntil);
   const verify = keys.filter((key) => key.id === activeId || (Number.isFinite(overlapUntil) && overlapUntil > Date.now()));
   return { active, verify: verify.map((key) => key.id === activeId ? key : { ...key, verifyUntil: overlapUntil }) };
 }
@@ -49,7 +51,7 @@ function getJwtSecret(): string { return getJwtKeys().active.secret; }
 
 /** The Supabase project ref, parsed from the project URL. Used as the `ref` claim. */
 function getProjectRef(): string | null {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const url = publicEnv.supabaseUrl;
   if (!url) return null;
   const match = /^https?:\/\/([a-z0-9-]+)\.supabase\.(co|in|net)/i.exec(url.trim());
   return match ? match[1] : null;

@@ -117,10 +117,11 @@ jobs:
     timeout-minutes: 20
 
     env:
-      SUPABASE_JWT_SECRET: ${{ secrets.SUPABASE_JWT_SECRET || 'dev-local-jwt-secret-not-for-production-use' }}
-      NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL || 'https://example.supabase.co' }}
-      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'ci-placeholder-key' }}
-      NEXT_PUBLIC_CONTRACT_ID: ${{ secrets.NEXT_PUBLIC_CONTRACT_ID || 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' }}
+      JWT_ACTIVE_KEY_ID: ${{ secrets.JWT_ACTIVE_KEY_ID }}
+      JWT_SIGNING_KEYS: ${{ secrets.JWT_SIGNING_KEYS }}
+      JWT_PREVIOUS_KEYS_UNTIL: ${{ secrets.JWT_PREVIOUS_KEYS_UNTIL }}
+      NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
 
     steps:
       - name: Checkout
@@ -138,12 +139,26 @@ jobs:
       - name: Fail fast on missing required secrets
         shell: bash
         run: |
-          if [ -z "${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}" ] || [ -z "${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}" ] || [ -z "${{ secrets.SUPABASE_JWT_SECRET }}" ]; then
-            if [ "${{ github.event_name }}" = "pull_request" ]; then
-              echo "::warning::Running in pull_request context without repository secrets. Using CI fallback values for build input validation."
-            else
-              echo "::warning::One or more production secrets are missing in repository settings. Using CI placeholder credentials for verification build."
-            fi
+          missing=0
+
+          if [ -z "$NEXT_PUBLIC_SUPABASE_URL" ]; then
+            echo "::error::Missing secret NEXT_PUBLIC_SUPABASE_URL"
+            missing=1
+          fi
+
+          if [ -z "$NEXT_PUBLIC_SUPABASE_ANON_KEY" ]; then
+            echo "::error::Missing secret NEXT_PUBLIC_SUPABASE_ANON_KEY"
+            missing=1
+          fi
+
+          if [ -z "$JWT_ACTIVE_KEY_ID" ] || [ -z "$JWT_SIGNING_KEYS" ]; then
+            echo "::error::Missing secrets JWT_ACTIVE_KEY_ID or JWT_SIGNING_KEYS"
+            missing=1
+          fi
+
+          if [ "$missing" -ne 0 ]; then
+            echo "One or more required secrets are missing."
+            exit 1
           fi
 
       - name: Validate production configuration (CI gate)

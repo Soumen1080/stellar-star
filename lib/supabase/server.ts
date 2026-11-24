@@ -1,15 +1,20 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/types/supabase";
+import { publicEnv } from "@/lib/config/publicEnv";
+import { serverEnv } from "@/lib/config/serverEnv";
 
-if (typeof window !== "undefined") {
+// Server-only module: it can read the service-role key, which must never reach
+// a browser bundle. Guard at runtime rather than depending on the `server-only`
+// package so this stays dependency-free.
+  if (typeof window !== "undefined") {
   throw new Error("lib/supabase/server.ts must not be imported from client code.");
 }
 
 export type ServerClient = SupabaseClient<Database>;
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim() ?? "";
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim() ?? "";
-const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() ?? "";
+const supabaseUrl = publicEnv.supabaseUrl?.trim() ?? "";
+const supabaseAnonKey = publicEnv.supabaseAnonKey?.trim() ?? "";
+const serviceRoleKey = serverEnv.supabaseServiceRoleKey?.trim() ?? "";
 
 export function isServerSupabaseConfigured(): boolean {
   return Boolean(supabaseUrl && supabaseAnonKey) && process.env.NODE_ENV !== "test";
