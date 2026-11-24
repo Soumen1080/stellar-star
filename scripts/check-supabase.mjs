@@ -295,23 +295,60 @@ async function main() {
   section("3b. Schema Migrations");
   const migrationsRes = await rest("schema_migrations?select=*&order=version.asc");
   if (migrationsRes.ok && Array.isArray(migrationsRes.body)) {
-    const appliedVersions = new Set(migrationsRes.body.map((m) => m.version));
-    const migrationsDir = path.join(ROOT, "migrations");
-    let localFiles = [];
-    if (fs.existsSync(migrationsDir)) {
-      localFiles = fs.readdirSync(migrationsDir).filter((f) => f.endsWith(".sql"));
-    }
-    for (const file of localFiles) {
-      const match = /^(\d+)_/i.exec(file);
-      const v = match ? match[1] : file.replace(/\.sql$/, "");
-      if (appliedVersions.has(v)) {
-        pass(`Migration ${file} is applied`);
-      } else {
-        fail(`Migration ${file} is pending on remote database`, "Run scripts/migrate.mjs or execute supabase-setup.sql");
+    const appliedRows = migrationsRes.body;
+    const appliedIds = new Set(appliedRows.map((m) => m.migration_id).filter(Boolean));
+    const appliedNames = new Set(appliedRows.map((m) => m.name).filter(Boolean));
+    const appliedVersions = new Set(appliedRows.map((m) => m.version).filter(Boolean));
+    const appliedChecksumMap = new Map();
+    for (const m of appliedRows) {
+      if (m.migration_id && m.manifest_checksum) {
+        appliedChecksumMap.set(m.migration_id, m.manifest_checksum);
       }
     }
-    if (localFiles.length === 0) {
-      pass("schema_migrations table exists and is reachable");
+
+    const manifestPath = path.join(ROOT, "migrations", "manifest.json");
+    if (fs.existsSync(manifestPath)) {
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+      for (const entry of manifest.migrations) {
+        const isApplied =
+          appliedIds.has(entry.id) ||
+          appliedNames.has(entry.name) ||
+          (appliedVersions.has(entry.version) && appliedRows.length >= manifest.migrations.length);
+
+        if (isApplied) {
+          const remoteChecksum = appliedChecksumMap.get(entry.id);
+          if (remoteChecksum && remoteChecksum !== entry.checksum && remoteChecksum !== entry.sha256) {
+            warn(
+              `Migration ${entry.filename} applied with differing checksum (remote: ${remoteChecksum}, manifest: ${entry.checksum})`
+            );
+          } else {
+            pass(`Migration [${entry.sequence}] ${entry.filename} (${entry.id}) is applied`);
+          }
+        } else {
+          fail(
+            `Migration [${entry.sequence}] ${entry.filename} (${entry.id}) is pending on remote database`,
+            "Run scripts/migrate.mjs or execute supabase-setup.sql"
+          );
+        }
+      }
+    } else {
+      const migrationsDir = path.join(ROOT, "migrations");
+      let localFiles = [];
+      if (fs.existsSync(migrationsDir)) {
+        localFiles = fs.readdirSync(migrationsDir).filter((f) => f.endsWith(".sql"));
+      }
+      for (const file of localFiles) {
+        const match = /^(\d+)_/i.exec(file);
+        const v = match ? match[1] : file.replace(/\.sql$/, "");
+        if (appliedVersions.has(v) || appliedNames.has(file.replace(/\.sql$/, ""))) {
+          pass(`Migration ${file} is applied`);
+        } else {
+          fail(`Migration ${file} is pending on remote database`, "Run scripts/migrate.mjs or execute supabase-setup.sql");
+        }
+      }
+      if (localFiles.length === 0) {
+        pass("schema_migrations table exists and is reachable");
+      }
     }
   } else {
     warn("public.schema_migrations table not found", "Run supabase-setup.sql to create schema_migrations tracking table.");

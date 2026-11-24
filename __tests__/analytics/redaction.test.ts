@@ -96,7 +96,7 @@ describe("Analytics Redaction Engine", () => {
       };
 
       const sanitized = sanitizeAnalyticsEvent(event);
-      expect(sanitized.properties.wallet_type).toBe("freighter");
+      expect((sanitized.properties as any).wallet_type).toBe("freighter");
       expect((sanitized.properties as any).publicKey).toBeUndefined();
       expect(containsSensitiveData(sanitized)).toBe(false);
     });

@@ -159,6 +159,30 @@ export function mergeExpenseUpdates(
   serverExpense: Expense,
   proposedUpdates: Partial<Expense>,
 ): MergeResult {
+  if (serverExpense.voided || baseExpense.voided) {
+    return {
+      success: false,
+      conflict: {
+        fields: ["voided"],
+        reason: "Voided expenses are immutable and cannot be edited.",
+        serverExpense,
+        proposedUpdates,
+      },
+    };
+  }
+
+  const isSettled = serverExpense.settled || baseExpense.settled;
+  if (isSettled && proposedUpdates.totalAmount !== undefined && proposedUpdates.totalAmount !== baseExpense.totalAmount) {
+    return {
+      success: false,
+      conflict: {
+        fields: ["totalAmount"],
+        reason: "Settled expenses cannot be modified in place. Use a linked correction record instead.",
+        serverExpense,
+        proposedUpdates,
+      },
+    };
+  }
   // If server expense has not changed from base, proposed updates apply directly
   if (
     serverExpense.version !== undefined &&
@@ -178,6 +202,53 @@ export function mergeExpenseUpdates(
       proposedUpdates.members !== undefined ||
       proposedUpdates.splitMode !== undefined ||
       proposedUpdates.paidByMemberId !== undefined;
+
+    // Settled share constraints
+    const settledShares = baseExpense.shares.filter((s) => s.paid || hasInstallments(s));
+    const settledTotal = Money.sum(settledShares.map((s) => s.amount));
+
+    if (settledShares.length > 0) {
+      if (proposedUpdates.currency && proposedUpdates.currency !== baseExpense.currency) {
+        return {
+          success: false,
+          conflict: {
+            fields: ["currency"],
+            reason: "Cannot change the currency of an expense with settled payments.",
+            serverExpense,
+            proposedUpdates,
+          },
+        };
+      }
+
+      const parsedTotal = Money.parse(updatedTotal);
+      if (parsedTotal.lessThan(settledTotal)) {
+        return {
+          success: false,
+          conflict: {
+            fields: ["totalAmount"],
+            reason: `Cannot reduce total to ${updatedTotal} because ${settledTotal.format(7)} has already been settled on-chain.`,
+            serverExpense,
+            proposedUpdates,
+          },
+        };
+      }
+
+      if (proposedUpdates.members) {
+        for (const s of settledShares) {
+          if (!proposedUpdates.members.some((m) => m.id === s.memberId)) {
+            return {
+              success: false,
+              conflict: {
+                fields: ["members"],
+                reason: `Cannot remove member "${s.name}" because their share was already settled on-chain.`,
+                serverExpense,
+                proposedUpdates,
+              },
+            };
+          }
+        }
+      }
+    }
 
     const updatedShares = sharesNeedRecompute
       ? recomputeSharesWithSettled(

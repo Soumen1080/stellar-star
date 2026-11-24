@@ -8,6 +8,7 @@ import {
   createServerClientForToken,
   isServerSupabaseConfigured,
 } from "@/lib/supabase/server";
+import { parseJsonBody } from "@/lib/api/bodyLimits";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -32,16 +33,18 @@ export async function POST(req: NextRequest) {
       : null;
     let force = false;
 
-    try {
-      const body = await req.json();
-      if (!token && typeof body?.token === "string") {
-        token = body.token.trim();
-      }
-      if (body?.force === true) {
-        force = true;
-      }
-    } catch {
-      // Body is optional when token is passed via Authorization header
+    // Body is optional when the token is passed in the Authorization header.
+    const parsedBody = await parseJsonBody<{ token?: unknown; force?: unknown }>(req, {
+      route: "/api/auth/refresh",
+      allowEmpty: true,
+    });
+    if (!parsedBody.ok) return parsedBody.response;
+    const body = parsedBody.value;
+    if (!token && typeof body?.token === "string") {
+      token = body.token.trim();
+    }
+    if (body?.force === true) {
+      force = true;
     }
 
     if (!token) {

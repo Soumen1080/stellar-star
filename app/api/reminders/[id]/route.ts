@@ -15,6 +15,10 @@ import {
   REMINDER_ACTIONS,
   type ReminderAction,
 } from "@/lib/reminders/service";
+import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
+import { REMINDER_PREFERENCE_REPLAY_FIELDS, REMINDER_REPLAY_FIELDS, replayFieldsUnder } from "@/lib/idempotency/replay";
+import { REQUEST_ID_HEADER } from "@/lib/observability/requestId";
+import { toPublicErrorResponse } from "@/lib/api/errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -32,13 +36,22 @@ export async function GET(request: NextRequest, { params }: Params) {
     if (!result.ok) return json({ error: result.message }, result.status, auth.requestId);
     return json({ data: result.context }, 200, auth.requestId);
   } catch (err) {
-    return json({ error: err instanceof Error ? err.message : "Failed to load the request." }, 500, auth.requestId);
+    return toPublicErrorResponse(err, {
+      requestId: auth.requestId,
+      fallbackMessage: "Failed to load the request.",
+      route: "/api/reminders/[id]",
+      method: "GET",
+    });
   }
 }
 
 export async function PATCH(request: NextRequest, { params }: Params) {
   const auth = authenticate(request);
   if (!auth.ok) return auth.response;
+
+  // Issue #412: a valid key is required before any work.
+  const idempotency = requireIdempotencyKey(request);
+  if (!idempotency.ok) return idempotency.response;
   const { id } = await params;
   if (!UUID_PATTERN.test(id)) return json({ error: "This payment request is not available." }, 404, auth.requestId);
 
@@ -49,10 +62,29 @@ export async function PATCH(request: NextRequest, { params }: Params) {
   }
 
   try {
-    const result = await applyReminderAction(auth.deps, auth.wallet, id, action as ReminderAction);
-    if (!result.ok) return json({ error: result.message }, result.status, auth.requestId);
-    return json({ data: { reminder: result.reminder, preferences: result.preferences ?? null } }, 200, auth.requestId);
+    return await runIdempotentMutation({
+      request,
+      client: auth.client,
+      key: idempotency.key,
+      replayFields: [
+        ...replayFieldsUnder("data.reminder", REMINDER_REPLAY_FIELDS),
+        ...replayFieldsUnder("data.preferences", REMINDER_PREFERENCE_REPLAY_FIELDS),
+      ],
+      principal: auth.wallet,
+      payload: { action },
+      replayHeaders: { [REQUEST_ID_HEADER]: auth.requestId },
+      execute: async () => {
+        const result = await applyReminderAction(auth.deps, auth.wallet, id, action as ReminderAction);
+        if (!result.ok) return json({ error: result.message }, result.status, auth.requestId);
+        return json({ data: { reminder: result.reminder, preferences: result.preferences ?? null } }, 200, auth.requestId);
+      },
+    });
   } catch (err) {
-    return json({ error: err instanceof Error ? err.message : "Failed to update the request." }, 500, auth.requestId);
+    return toPublicErrorResponse(err, {
+      requestId: auth.requestId,
+      fallbackMessage: "Failed to update the request.",
+      route: "/api/reminders/[id]",
+      method: "PATCH",
+    });
   }
 }

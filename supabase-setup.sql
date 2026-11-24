@@ -66,11 +66,69 @@ COMMENT ON FUNCTION public.current_wallet() IS
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS public.schema_migrations (
-  version     TEXT PRIMARY KEY,
-  name        TEXT NOT NULL,
-  applied_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  checksum    TEXT NOT NULL
+  version           TEXT PRIMARY KEY,
+  name              TEXT NOT NULL,
+  applied_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  checksum          TEXT NOT NULL,
+  migration_id      TEXT,
+  sequence          INT,
+  manifest_checksum TEXT
 );
+
+CREATE INDEX IF NOT EXISTS idx_schema_migrations_name
+  ON public.schema_migrations (name);
+
+CREATE INDEX IF NOT EXISTS idx_schema_migrations_sequence
+  ON public.schema_migrations (sequence);
+
+CREATE INDEX IF NOT EXISTS idx_schema_migrations_migration_id
+  ON public.schema_migrations (migration_id);
+
+CREATE OR REPLACE FUNCTION public.record_migration_v2(
+  p_migration_id TEXT,
+  p_version TEXT,
+  p_name TEXT,
+  p_checksum TEXT,
+  p_sequence INT
+)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+  -- Update existing record if found by version or name
+  UPDATE public.schema_migrations
+  SET migration_id = p_migration_id,
+      sequence = p_sequence,
+      manifest_checksum = p_checksum
+  WHERE name = p_name OR version = p_version;
+
+  -- Insert if not present
+  IF NOT FOUND THEN
+    INSERT INTO public.schema_migrations (
+      version,
+      name,
+      checksum,
+      migration_id,
+      sequence,
+      manifest_checksum,
+      applied_at
+    ) VALUES (
+      p_version,
+      p_name,
+      p_checksum,
+      p_migration_id,
+      p_sequence,
+      p_checksum,
+      NOW()
+    )
+    ON CONFLICT (version) DO UPDATE
+      SET migration_id = EXCLUDED.migration_id,
+          sequence = EXCLUDED.sequence,
+          manifest_checksum = EXCLUDED.manifest_checksum;
+  END IF;
+END;
+$$;
 
 CREATE TABLE IF NOT EXISTS public.users (
   id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -96,7 +154,14 @@ CREATE TABLE IF NOT EXISTS public.expenses (
   created_by_wallet TEXT        NOT NULL,
   member_wallets    TEXT[]      NOT NULL DEFAULT ARRAY[]::TEXT[],
   created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  voided            BOOLEAN     NOT NULL DEFAULT FALSE,
+  voided_at         TIMESTAMPTZ,
+  voided_by_wallet  TEXT,
+  void_reason       TEXT,
+  correction_of_expense_id UUID REFERENCES public.expenses(id) ON DELETE RESTRICT,
+  correction_type   TEXT,
+  correction_reason TEXT
 );
 
 CREATE TABLE IF NOT EXISTS public.trips (
@@ -1826,7 +1891,7 @@ CREATE POLICY settlement_intents_delete_owner ON public.settlement_intents
 -- Append-only record of every portable-archive export request.
 
 CREATE TABLE IF NOT EXISTS public.export_audit_events (
-  id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  id             UUID DEFAULT gen_random_uuid(),
   actor_wallet   TEXT        NOT NULL,
   export_kind    TEXT        NOT NULL CHECK (export_kind IN ('archive')),
   status         TEXT        NOT NULL CHECK (status IN ('served', 'rate_limited', 'forbidden', 'failed')),
@@ -1839,8 +1904,9 @@ CREATE TABLE IF NOT EXISTS public.export_audit_events (
   request_id     TEXT,
   -- Salted hash, not the raw IP: enough to spot abuse, not to track people.
   client_ip_hash TEXT,
-  created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (id, created_at)
+) PARTITION BY RANGE (created_at);
 
 CREATE INDEX IF NOT EXISTS idx_export_audit_events_actor_created_at
   ON public.export_audit_events (actor_wallet, created_at DESC);
@@ -2230,7 +2296,7 @@ $fn$;
 
 CREATE TABLE IF NOT EXISTS public.expense_receipts (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  expense_id UUID REFERENCES public.expenses(id) ON DELETE SET NULL,
+  expense_id UUID REFERENCES public.expenses (id) ON DELETE SET NULL,
   storage_path TEXT NOT NULL UNIQUE,
   file_name TEXT CHECK (file_name IS NULL OR char_length(file_name) <= 120),
   content_type TEXT NOT NULL CHECK (content_type IN (
@@ -2303,7 +2369,7 @@ CREATE INDEX IF NOT EXISTS idx_payment_reminders_sender_created_at
   ON public.payment_reminders (sender_wallet, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS public.reminder_events (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  id UUID DEFAULT gen_random_uuid(),
   reminder_id UUID REFERENCES public.payment_reminders(id) ON DELETE CASCADE,
   actor_wallet TEXT NOT NULL,
   kind TEXT NOT NULL CHECK (kind IN (
@@ -2313,8 +2379,9 @@ CREATE TABLE IF NOT EXISTS public.reminder_events (
   )),
   channel TEXT CHECK (channel IS NULL OR channel IN ('in_app', 'email', 'push')),
   detail TEXT CHECK (detail IS NULL OR char_length(detail) <= 200),
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (id, created_at)
+) PARTITION BY RANGE (created_at);
 CREATE INDEX IF NOT EXISTS idx_reminder_events_reminder_created_at
   ON public.reminder_events (reminder_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_reminder_events_actor_created_at
@@ -2480,6 +2547,288 @@ GRANT EXECUTE ON FUNCTION public.trip_member_role(UUID,TEXT), public.trip_has_pe
   public.expense_has_permission(UUID,TEXT), public.set_trip_member_role(UUID,TEXT,TEXT,TEXT[]),
   public.transfer_trip_ownership(UUID,TEXT), public.add_expense_to_trip(UUID,UUID) TO authenticated;
 
+-- ============================================================================
+-- Configurable trip roles and granular permissions (migration 0008)
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS public.trip_role_audit (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  trip_id UUID NOT NULL REFERENCES public.trips(id) ON DELETE CASCADE,
+  member_id TEXT NOT NULL,
+  previous_role TEXT NOT NULL CHECK (previous_role IN ('owner', 'organizer', 'contributor', 'viewer', 'custom')),
+  next_role TEXT NOT NULL CHECK (next_role IN ('owner', 'organizer', 'contributor', 'viewer', 'custom')),
+  previous_custom_permissions TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+  next_custom_permissions TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+  changed_by_wallet TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS trip_role_audit_trip_created_at_idx ON public.trip_role_audit (trip_id, created_at DESC);
+
+CREATE OR REPLACE FUNCTION public.trip_member_role(p_trip_id UUID, p_wallet TEXT)
+RETURNS TEXT LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+  SELECT COALESCE(member ->> 'role', CASE WHEN upper(btrim(member ->> 'walletAddress')) = upper(btrim(t.created_by_wallet)) THEN 'owner' ELSE 'contributor' END)
+  FROM public.trips t CROSS JOIN LATERAL jsonb_array_elements(COALESCE(t.members, '[]'::jsonb)) member
+  WHERE t.id = p_trip_id AND upper(btrim(COALESCE(member ->> 'walletAddress', ''))) = upper(btrim(COALESCE(p_wallet, ''))) LIMIT 1;
+$$;
+
+CREATE OR REPLACE FUNCTION public.trip_has_permission(p_trip_id UUID, p_permission TEXT)
+RETURNS BOOLEAN LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $fn$
+DECLARE v_wallet TEXT := public.current_wallet(); v_role TEXT; v_permissions JSONB;
+BEGIN
+  IF v_wallet IS NULL OR p_permission NOT IN ('trip.settings.manage','members.manage','expenses.manage','receipts.manage','exports.view','reminders.manage','settlement.proposals.manage') THEN RETURN FALSE; END IF;
+  SELECT COALESCE(member ->> 'role', CASE WHEN upper(btrim(member ->> 'walletAddress')) = upper(btrim(t.created_by_wallet)) THEN 'owner' ELSE 'contributor' END), COALESCE(member -> 'customPermissions', '[]'::jsonb)
+    INTO v_role, v_permissions FROM public.trips t CROSS JOIN LATERAL jsonb_array_elements(COALESCE(t.members, '[]'::jsonb)) member
+   WHERE t.id = p_trip_id AND upper(btrim(COALESCE(member ->> 'walletAddress', ''))) = upper(btrim(v_wallet)) LIMIT 1;
+  IF v_role IN ('owner','organizer') THEN RETURN TRUE; END IF;
+  IF v_role = 'contributor' THEN RETURN p_permission IN ('expenses.manage','receipts.manage','exports.view'); END IF;
+  IF v_role = 'viewer' THEN RETURN p_permission = 'exports.view'; END IF;
+  IF v_role = 'custom' THEN RETURN v_permissions ? p_permission; END IF;
+  RETURN FALSE;
+END;
+$fn$;
+
+CREATE OR REPLACE FUNCTION public.expense_has_permission(p_expense_id UUID, p_permission TEXT)
+RETURNS BOOLEAN LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $fn$
+DECLARE v_wallet TEXT := public.current_wallet();
+BEGIN
+  IF v_wallet IS NULL THEN RETURN FALSE; END IF;
+  IF EXISTS (SELECT 1 FROM public.trips t WHERE t.expense_ids @> ARRAY[p_expense_id::TEXT] AND public.trip_has_permission(t.id, p_permission)) THEN RETURN TRUE; END IF;
+  RETURN EXISTS (SELECT 1 FROM public.expenses e WHERE e.id = p_expense_id AND e.created_by_wallet = v_wallet AND NOT EXISTS (SELECT 1 FROM public.trips t WHERE t.expense_ids @> ARRAY[p_expense_id::TEXT]));
+END;
+$fn$;
+
+CREATE OR REPLACE FUNCTION public.normalize_trip_member_roles()
+RETURNS TRIGGER LANGUAGE plpgsql SET search_path = public AS $fn$
+DECLARE v_member JSONB; v_old JSONB; v_result JSONB := '[]'::jsonb; v_role TEXT; v_permissions JSONB;
+BEGIN
+  IF jsonb_typeof(COALESCE(NEW.members, '[]'::jsonb)) <> 'array' THEN RAISE EXCEPTION 'Trip members must be an array'; END IF;
+  FOR v_member IN SELECT value FROM jsonb_array_elements(COALESCE(NEW.members, '[]'::jsonb)) LOOP
+    v_old := NULL;
+    IF TG_OP = 'UPDATE' THEN SELECT value INTO v_old FROM jsonb_array_elements(COALESCE(OLD.members, '[]'::jsonb)) WHERE value ->> 'id' = v_member ->> 'id' LIMIT 1; END IF;
+    IF TG_OP = 'UPDATE' AND v_old IS NOT NULL AND current_setting('stellar_star.role_change', true) IS DISTINCT FROM 'on' THEN
+      v_member := jsonb_set(v_member, '{role}', to_jsonb(COALESCE(v_old ->> 'role', CASE WHEN upper(btrim(COALESCE(v_old ->> 'walletAddress',''))) = upper(btrim(OLD.created_by_wallet)) THEN 'owner' ELSE 'contributor' END)));
+      v_member := v_member - 'customPermissions' || CASE WHEN v_old ? 'customPermissions' THEN jsonb_build_object('customPermissions', v_old -> 'customPermissions') ELSE '{}'::jsonb END;
+    ELSIF TG_OP = 'UPDATE' AND v_old IS NULL THEN
+      v_member := v_member - 'customPermissions' || jsonb_build_object('role', 'contributor');
+    END IF;
+    v_role := COALESCE(v_member ->> 'role', CASE WHEN upper(btrim(COALESCE(v_member ->> 'walletAddress',''))) = upper(btrim(NEW.created_by_wallet)) THEN 'owner' ELSE 'contributor' END);
+    IF v_role NOT IN ('owner','organizer','contributor','viewer','custom') THEN RAISE EXCEPTION 'Invalid trip role'; END IF;
+    v_member := jsonb_set(v_member, '{role}', to_jsonb(v_role)); v_permissions := COALESCE(v_member -> 'customPermissions', '[]'::jsonb);
+    IF v_role = 'custom' AND (jsonb_typeof(v_permissions) <> 'array' OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(v_permissions) p WHERE p NOT IN ('trip.settings.manage','members.manage','expenses.manage','receipts.manage','exports.view','reminders.manage','settlement.proposals.manage'))) THEN RAISE EXCEPTION 'Invalid custom trip permission'; END IF;
+    IF v_role <> 'custom' THEN v_member := v_member - 'customPermissions'; END IF;
+    v_result := v_result || jsonb_build_array(v_member);
+  END LOOP;
+  IF NOT EXISTS (SELECT 1 FROM jsonb_array_elements(v_result) member WHERE member ->> 'role' = 'owner' AND btrim(COALESCE(member ->> 'walletAddress','')) <> '') THEN RAISE EXCEPTION 'A trip must retain at least one owner; transfer ownership before demoting or removing the final owner'; END IF;
+  NEW.members := v_result; RETURN NEW;
+END;
+$fn$;
+DROP TRIGGER IF EXISTS trg_015_trips_normalize_roles ON public.trips;
+CREATE TRIGGER trg_015_trips_normalize_roles BEFORE INSERT OR UPDATE OF members ON public.trips FOR EACH ROW EXECUTE FUNCTION public.normalize_trip_member_roles();
+
+CREATE OR REPLACE FUNCTION public.set_trip_member_role(p_trip_id UUID, p_member_id TEXT, p_role TEXT, p_custom_permissions TEXT[] DEFAULT ARRAY[]::TEXT[])
+RETURNS public.trips LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $fn$
+DECLARE v_trip public.trips; v_target JSONB; v_previous_role TEXT; v_previous_permissions TEXT[]; v_owners INT; v_members JSONB;
+BEGIN
+  IF p_role NOT IN ('owner','organizer','contributor','viewer','custom') THEN RAISE EXCEPTION 'INVALID_ROLE'; END IF;
+  IF p_role = 'custom' AND EXISTS (SELECT 1 FROM unnest(COALESCE(p_custom_permissions, ARRAY[]::TEXT[])) p WHERE p NOT IN ('trip.settings.manage','members.manage','expenses.manage','receipts.manage','exports.view','reminders.manage','settlement.proposals.manage')) THEN RAISE EXCEPTION 'INVALID_CUSTOM_PERMISSION'; END IF;
+  SELECT * INTO v_trip FROM public.trips WHERE id = p_trip_id FOR UPDATE; IF NOT FOUND THEN RAISE EXCEPTION 'TRIP_NOT_FOUND'; END IF;
+  IF public.trip_member_role(p_trip_id, public.current_wallet()) IS DISTINCT FROM 'owner' THEN RAISE EXCEPTION 'ROLE_CHANGE_FORBIDDEN'; END IF;
+  SELECT member INTO v_target FROM jsonb_array_elements(v_trip.members) member WHERE member ->> 'id' = p_member_id LIMIT 1; IF v_target IS NULL THEN RAISE EXCEPTION 'MEMBER_NOT_FOUND'; END IF;
+  IF p_role = 'owner' AND btrim(COALESCE(v_target ->> 'walletAddress','')) = '' THEN RAISE EXCEPTION 'OWNER_REQUIRES_WALLET'; END IF;
+  v_previous_role := COALESCE(v_target ->> 'role','contributor'); SELECT COALESCE(array_agg(value), ARRAY[]::TEXT[]) INTO v_previous_permissions FROM jsonb_array_elements_text(COALESCE(v_target -> 'customPermissions','[]'::jsonb)) value;
+  SELECT count(*) INTO v_owners FROM jsonb_array_elements(v_trip.members) member WHERE COALESCE(member ->> 'role','contributor') = 'owner' AND btrim(COALESCE(member ->> 'walletAddress','')) <> '';
+  IF v_previous_role = 'owner' AND p_role <> 'owner' AND v_owners = 1 THEN RAISE EXCEPTION 'LAST_OWNER'; END IF;
+  SELECT jsonb_agg(CASE WHEN member ->> 'id' = p_member_id THEN (member - 'customPermissions') || jsonb_build_object('role',p_role) || CASE WHEN p_role = 'custom' THEN jsonb_build_object('customPermissions',to_jsonb(COALESCE(p_custom_permissions,ARRAY[]::TEXT[]))) ELSE '{}'::jsonb END ELSE member END) INTO v_members FROM jsonb_array_elements(v_trip.members) member;
+  PERFORM set_config('stellar_star.role_change','on',true); UPDATE public.trips SET members = v_members WHERE id = p_trip_id RETURNING * INTO v_trip;
+  INSERT INTO public.trip_role_audit(trip_id,member_id,previous_role,next_role,previous_custom_permissions,next_custom_permissions,changed_by_wallet) VALUES(p_trip_id,p_member_id,v_previous_role,p_role,v_previous_permissions,CASE WHEN p_role = 'custom' THEN COALESCE(p_custom_permissions,ARRAY[]::TEXT[]) ELSE ARRAY[]::TEXT[] END,public.current_wallet());
+  RETURN v_trip;
+END;
+$fn$;
+
+CREATE OR REPLACE FUNCTION public.add_expense_to_trip(p_trip_id UUID, p_expense_id UUID)
+RETURNS TEXT[] LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $fn$
+DECLARE v_ids TEXT[];
+BEGIN
+  IF NOT public.trip_has_permission(p_trip_id,'expenses.manage') THEN RAISE EXCEPTION 'EXPENSE_LINK_FORBIDDEN'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM public.expenses WHERE id=p_expense_id) THEN RAISE EXCEPTION 'EXPENSE_NOT_FOUND'; END IF;
+  UPDATE public.trips SET expense_ids = ARRAY(SELECT DISTINCT unnest(expense_ids || ARRAY[p_expense_id::TEXT])) WHERE id=p_trip_id RETURNING expense_ids INTO v_ids; RETURN v_ids;
+END;
+$fn$;
+
+ALTER TABLE public.trip_role_audit ENABLE ROW LEVEL SECURITY;
+CREATE POLICY trip_role_audit_select_members ON public.trip_role_audit FOR SELECT TO authenticated USING (public.trip_has_permission(trip_id,'exports.view'));
+DROP POLICY IF EXISTS trips_update_members ON public.trips;
+CREATE POLICY trips_update_authorized ON public.trips FOR UPDATE TO authenticated USING (public.trip_has_permission(id,'trip.settings.manage')) WITH CHECK (public.trip_has_permission(id,'trip.settings.manage'));
+DROP POLICY IF EXISTS expenses_update_members ON public.expenses;
+CREATE POLICY expenses_update_authorized ON public.expenses FOR UPDATE TO authenticated USING (public.expense_has_permission(id,'expenses.manage')) WITH CHECK (public.expense_has_permission(id,'expenses.manage'));
+DROP POLICY IF EXISTS expenses_delete_creator ON public.expenses;
+CREATE POLICY expenses_delete_authorized ON public.expenses FOR DELETE TO authenticated USING (public.expense_has_permission(id,'expenses.manage'));
+DROP POLICY IF EXISTS trip_invites_insert_members ON public.trip_invites;
+CREATE POLICY trip_invites_insert_authorized ON public.trip_invites FOR INSERT TO authenticated WITH CHECK (created_by_wallet = public.current_wallet() AND public.trip_has_permission(trip_id,'members.manage'));
+DROP POLICY IF EXISTS trip_invites_update_creator ON public.trip_invites;
+CREATE POLICY trip_invites_update_authorized ON public.trip_invites FOR UPDATE TO authenticated USING (public.trip_has_permission(trip_id,'members.manage')) WITH CHECK (public.trip_has_permission(trip_id,'members.manage'));
+GRANT SELECT ON public.trip_role_audit TO authenticated;
+GRANT EXECUTE ON FUNCTION public.trip_member_role(UUID,TEXT), public.trip_has_permission(UUID,TEXT), public.expense_has_permission(UUID,TEXT), public.set_trip_member_role(UUID,TEXT,TEXT,TEXT[]), public.add_expense_to_trip(UUID,UUID) TO authenticated;
+
+
+-- ============================================================================
+-- EXPENSE CORRECTIONS, VOIDS & AUDIT TRAIL (#316)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS public.expense_audit_events (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  expense_id UUID NOT NULL REFERENCES public.expenses(id) ON DELETE RESTRICT,
+  action TEXT NOT NULL CHECK (action IN ('voided', 'correction_created', 'reversal_created', 'adjustment_created')),
+  actor_wallet TEXT NOT NULL,
+  reason TEXT NOT NULL CHECK (char_length(btrim(reason)) BETWEEN 1 AND 1000),
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_expense_audit_events_expense_id
+  ON public.expense_audit_events (expense_id, created_at DESC);
+
+CREATE OR REPLACE FUNCTION public.prevent_destructive_expense_operations()
+RETURNS TRIGGER LANGUAGE plpgsql AS $fn$
+DECLARE
+  v_is_settled BOOLEAN;
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    v_is_settled := OLD.settled OR EXISTS (
+      SELECT 1 FROM jsonb_array_elements(OLD.shares) s
+      WHERE COALESCE((s->>'paid')::BOOLEAN, FALSE) = TRUE
+        OR (s->'installments' IS NOT NULL AND jsonb_array_length(s->'installments') > 0)
+    );
+    IF v_is_settled THEN
+      RAISE EXCEPTION 'A settled expense cannot be deleted. Use a linked correction or offset to preserve financial history.' USING ERRCODE = '42501';
+    END IF;
+    IF EXISTS (SELECT 1 FROM public.expenses WHERE correction_of_expense_id = OLD.id) THEN
+      RAISE EXCEPTION 'An expense with linked corrections cannot be deleted.' USING ERRCODE = '42501';
+    END IF;
+    RETURN OLD;
+  END IF;
+
+  IF TG_OP = 'UPDATE' THEN
+    IF OLD.voided = TRUE THEN
+      IF NEW.title IS DISTINCT FROM OLD.title
+        OR NEW.total_amount IS DISTINCT FROM OLD.total_amount
+        OR NEW.shares IS DISTINCT FROM OLD.shares
+        OR NEW.settled IS DISTINCT FROM OLD.settled THEN
+        RAISE EXCEPTION 'A voided expense is immutable.' USING ERRCODE = '42501';
+      END IF;
+    END IF;
+
+    IF NEW.voided = TRUE AND OLD.voided = FALSE THEN
+      v_is_settled := OLD.settled OR EXISTS (
+        SELECT 1 FROM jsonb_array_elements(OLD.shares) s
+        WHERE COALESCE((s->>'paid')::BOOLEAN, FALSE) = TRUE
+          OR (s->'installments' IS NOT NULL AND jsonb_array_length(s->'installments') > 0)
+      );
+      IF v_is_settled THEN
+        RAISE EXCEPTION 'A settled or partially paid expense cannot be voided; use a linked correction instead.' USING ERRCODE = '42501';
+      END IF;
+    END IF;
+  END IF;
+
+  RETURN NEW;
+END;
+$fn$;
+
+DROP TRIGGER IF EXISTS trg_prevent_destructive_expense_ops ON public.expenses;
+CREATE TRIGGER trg_prevent_destructive_expense_ops
+  BEFORE UPDATE OR DELETE ON public.expenses
+  FOR EACH ROW EXECUTE FUNCTION public.prevent_destructive_expense_operations();
+
+CREATE OR REPLACE FUNCTION public.record_expense_correction_audit_event()
+RETURNS TRIGGER LANGUAGE plpgsql AS $fn$
+BEGIN
+  IF TG_OP = 'UPDATE' AND NEW.voided = TRUE AND OLD.voided = FALSE THEN
+    INSERT INTO public.expense_audit_events (expense_id, action, actor_wallet, reason, metadata)
+    VALUES (NEW.id, 'voided', NEW.voided_by_wallet, NEW.void_reason, jsonb_build_object('total_amount', NEW.total_amount));
+  ELSIF TG_OP = 'INSERT' AND NEW.correction_of_expense_id IS NOT NULL THEN
+    INSERT INTO public.expense_audit_events (expense_id, action, actor_wallet, reason, metadata)
+    VALUES (
+      NEW.id,
+      CASE WHEN NEW.correction_type = 'reversal' THEN 'reversal_created' ELSE 'adjustment_created' END,
+      NEW.created_by_wallet,
+      NEW.correction_reason,
+      jsonb_build_object('correction_of_expense_id', NEW.correction_of_expense_id, 'correction_type', NEW.correction_type)
+    );
+  END IF;
+  RETURN NEW;
+END;
+$fn$;
+
+DROP TRIGGER IF EXISTS trg_expense_correction_audit ON public.expenses;
+CREATE TRIGGER trg_expense_correction_audit
+  AFTER INSERT OR UPDATE ON public.expenses
+  FOR EACH ROW EXECUTE FUNCTION public.record_expense_correction_audit_event();
+
+CREATE OR REPLACE FUNCTION public.void_expense(p_expense_id UUID, p_reason TEXT)
+RETURNS public.expenses LANGUAGE plpgsql SECURITY INVOKER AS $fn$
+DECLARE
+  v_expense public.expenses%ROWTYPE;
+  v_caller TEXT;
+  v_trimmed_reason TEXT;
+  v_is_settled BOOLEAN;
+  v_is_authorized BOOLEAN;
+BEGIN
+  v_trimmed_reason := btrim(COALESCE(p_reason, ''));
+  IF char_length(v_trimmed_reason) < 1 OR char_length(v_trimmed_reason) > 1000 THEN
+    RAISE EXCEPTION 'A void reason between 1 and 1000 characters is required.' USING ERRCODE = '22023';
+  END IF;
+
+  v_caller := public.current_wallet();
+  IF v_caller IS NULL OR v_caller = '' THEN
+    RAISE EXCEPTION 'Authentication required.' USING ERRCODE = '42501';
+  END IF;
+
+  SELECT * INTO v_expense FROM public.expenses WHERE id = p_expense_id FOR UPDATE;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Expense not found.' USING ERRCODE = 'P0002';
+  END IF;
+
+  IF v_expense.voided THEN
+    RAISE EXCEPTION 'Expense is already voided.' USING ERRCODE = '42501';
+  END IF;
+
+  v_is_authorized := (
+    upper(v_expense.created_by_wallet) = upper(v_caller)
+    OR EXISTS (
+      SELECT 1 FROM jsonb_array_elements(v_expense.members) m
+      WHERE m->>'id' = v_expense.paid_by_member_id AND upper(m->>'walletAddress') = upper(v_caller)
+    )
+    OR public.expense_has_permission(p_expense_id, 'expenses.manage')
+  );
+  IF NOT v_is_authorized THEN
+    RAISE EXCEPTION 'You are not authorized to void this expense.' USING ERRCODE = '42501';
+  END IF;
+
+  v_is_settled := v_expense.settled OR EXISTS (
+    SELECT 1 FROM jsonb_array_elements(v_expense.shares) s
+    WHERE COALESCE((s->>'paid')::BOOLEAN, FALSE) = TRUE
+      OR (s->'installments' IS NOT NULL AND jsonb_array_length(s->'installments') > 0)
+  );
+  IF v_is_settled THEN
+    RAISE EXCEPTION 'A settled or partially paid expense cannot be voided; use a linked correction instead.' USING ERRCODE = '42501';
+  END IF;
+
+  UPDATE public.expenses
+  SET voided = TRUE,
+      voided_at = NOW(),
+      voided_by_wallet = v_caller,
+      void_reason = v_trimmed_reason,
+      updated_at = NOW()
+  WHERE id = p_expense_id
+  RETURNING * INTO v_expense;
+
+  RETURN v_expense;
+END;
+$fn$;
+
+ALTER TABLE public.expense_audit_events ENABLE ROW LEVEL SECURITY;
+GRANT SELECT, INSERT ON public.expense_audit_events TO authenticated;
+GRANT EXECUTE ON FUNCTION public.void_expense(UUID, TEXT) TO authenticated;
+
 INSERT INTO public.schema_migrations (version, name, checksum)
 VALUES
   ('0001', '0001_baseline', 'baseline_initial_checksum'),
@@ -2489,114 +2838,250 @@ VALUES
   ('0005', '0005_verify_trip_invite_rpc', 'verify_trip_invite_v1'),
   ('0006', '0006_settlement_request_ids', 'settlement_request_ids_v1'),
   ('0007', '0007_composite_query_indexes', 'composite_query_indexes_v1'),
-  ('0008', '0008_trip_roles_and_permissions', 'trip_roles_permissions_v1'),
-  ('0016', '0016_trip_roles_and_permissions', 'trip_roles_permissions_v2')
+  ('0008', '0008_trip_roles_and_permissions', 'trip_roles_permissions_v1')
 ON CONFLICT (version) DO NOTHING;
 
--- ============================================================================
--- Stellar-star Migration 0009: Receipt attachments with private storage
--- (issue #318)
--- ============================================================================
--- Receipts are private documents. The files live in a PRIVATE storage bucket
--- reachable only with the service-role key; clients never get a public URL,
--- only a signed link minted by the server after a membership check.
---
--- This table is the metadata and the access-control anchor: clients may READ
--- rows for expenses they are a member of (same rule as expenses), and nobody
--- but the server writes them.
+-- 0019: Shared household coordination research prototype. Keep in sync with
+-- migrations/0019_shared_household_coordination.sql.
+ALTER TABLE public.trips
+  ADD COLUMN IF NOT EXISTS household_coordination_enabled BOOLEAN NOT NULL DEFAULT FALSE;
 
-CREATE TABLE IF NOT EXISTS public.expense_receipts (
-  id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  -- SET NULL, not CASCADE: deleting an expense must not orphan the stored file
-  -- silently. A NULL expense_id is picked up by the retention sweep, which
-  -- deletes the object and tombstones the row.
-  expense_id         UUID REFERENCES public.expenses (id) ON DELETE SET NULL,
-  storage_path       TEXT        NOT NULL UNIQUE,
-  file_name          TEXT        CHECK (file_name IS NULL OR char_length(file_name) <= 120),
-  content_type       TEXT        NOT NULL CHECK (content_type IN (
-                       'image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif', 'application/pdf'
-                     )),
-  size_bytes         INT         NOT NULL CHECK (size_bytes > 0),
-  checksum_sha256    TEXT        NOT NULL CHECK (checksum_sha256 ~ '^[0-9a-f]{64}$'),
-  caption            TEXT        CHECK (caption IS NULL OR char_length(caption) <= 200),
-  status             TEXT        NOT NULL DEFAULT 'active'
-                       CHECK (status IN ('active', 'quarantined', 'removed')),
-  scan_result        JSONB       NOT NULL DEFAULT '{}'::jsonb,
-  uploaded_by_wallet TEXT        NOT NULL,
-  created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  retain_until       TIMESTAMPTZ NOT NULL,
-  removed_at         TIMESTAMPTZ,
-  removed_by_wallet  TEXT,
-  removal_reason     TEXT        CHECK (removal_reason IS NULL OR removal_reason IN ('user', 'retention', 'expense_deleted'))
+CREATE TABLE IF NOT EXISTS public.household_chores (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  trip_id UUID NOT NULL REFERENCES public.trips(id) ON DELETE CASCADE,
+  title TEXT NOT NULL CHECK (length(btrim(title)) BETWEEN 1 AND 120),
+  details TEXT CHECK (details IS NULL OR length(details) <= 500),
+  cadence TEXT NOT NULL CHECK (cadence IN ('weekly', 'biweekly', 'monthly')),
+  rotation_wallets TEXT[] NOT NULL CHECK (cardinality(rotation_wallets) > 0),
+  rotation_cursor INTEGER NOT NULL DEFAULT 0 CHECK (rotation_cursor >= 0),
+  CHECK (rotation_cursor < cardinality(rotation_wallets)),
+  next_due_on DATE NOT NULL,
+  active BOOLEAN NOT NULL DEFAULT TRUE,
+  created_by_wallet TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS household_chores_trip_active_due_idx
+  ON public.household_chores (trip_id, active, next_due_on);
+DROP TRIGGER IF EXISTS trg_016_household_chores_updated_at ON public.household_chores;
+CREATE TRIGGER trg_016_household_chores_updated_at
+  BEFORE UPDATE ON public.household_chores
+  FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+CREATE TABLE IF NOT EXISTS public.household_chore_completions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  chore_id UUID NOT NULL REFERENCES public.household_chores(id) ON DELETE CASCADE,
+  trip_id UUID NOT NULL REFERENCES public.trips(id) ON DELETE CASCADE,
+  completed_by_wallet TEXT NOT NULL,
+  due_on DATE NOT NULL,
+  supply_expense_id UUID REFERENCES public.expenses(id) ON DELETE SET NULL,
+  completed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (chore_id, due_on)
+);
+CREATE INDEX IF NOT EXISTS household_chore_completions_trip_completed_idx
+  ON public.household_chore_completions (trip_id, completed_at DESC);
+
+CREATE TABLE IF NOT EXISTS public.household_chore_preferences (
+  trip_id UUID NOT NULL REFERENCES public.trips(id) ON DELETE CASCADE,
+  wallet_address TEXT NOT NULL,
+  opted_out BOOLEAN NOT NULL DEFAULT FALSE,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (trip_id, wallet_address)
 );
 
--- Listing an expense's receipts, newest first.
-CREATE INDEX IF NOT EXISTS idx_expense_receipts_expense_created_at
-  ON public.expense_receipts (expense_id, created_at DESC);
-
--- The retention sweep scans live rows by expiry.
-CREATE INDEX IF NOT EXISTS idx_expense_receipts_retain_until
-  ON public.expense_receipts (retain_until)
-  WHERE status <> 'removed';
-
--- The same bytes attached twice to one expense is a mistake, not two receipts.
-CREATE UNIQUE INDEX IF NOT EXISTS expense_receipts_live_checksum_key
-  ON public.expense_receipts (expense_id, checksum_sha256)
-  WHERE status <> 'removed';
-
-ALTER TABLE public.expense_receipts ENABLE ROW LEVEL SECURITY;
-
--- Read-only for members of the parent expense. No INSERT/UPDATE/DELETE
--- policies: every write goes through the server routes, which authorize the
--- caller first and then act with the service role.
-DROP POLICY IF EXISTS expense_receipts_select_members ON public.expense_receipts;
-CREATE POLICY expense_receipts_select_members ON public.expense_receipts
-  FOR SELECT TO authenticated
-  USING (
-    public.current_wallet() IS NOT NULL
-    AND EXISTS (
-      SELECT 1 FROM public.expenses e
-      WHERE e.id = expense_receipts.expense_id
-        AND e.member_wallets @> ARRAY[public.current_wallet()]
-    )
-  );
-
-GRANT SELECT ON public.expense_receipts TO authenticated;
-
--- ─── Private storage bucket ─────────────────────────────────────────────────
--- Guarded so the migration also applies to a plain Postgres without Supabase
--- Storage (CI, local restores). No storage.objects policies are created, so
--- anon/authenticated cannot list, read or write the bucket at all.
-DO $bucket$
+CREATE OR REPLACE FUNCTION public.guard_household_coordination_setting()
+RETURNS TRIGGER LANGUAGE plpgsql SECURITY INVOKER SET search_path = public AS $fn$
 BEGIN
-  IF to_regclass('storage.buckets') IS NULL THEN
-    RETURN;
+  IF NEW.household_coordination_enabled IS DISTINCT FROM OLD.household_coordination_enabled
+     AND public.trip_member_role(OLD.id, public.current_wallet()) IS DISTINCT FROM 'owner' THEN
+    RAISE EXCEPTION 'HOUSEHOLD_COORDINATION_OWNER_ONLY' USING ERRCODE = '42501';
   END IF;
+  RETURN NEW;
+END;
+$fn$;
+DROP TRIGGER IF EXISTS trg_016_household_coordination_owner ON public.trips;
+CREATE TRIGGER trg_016_household_coordination_owner
+  BEFORE UPDATE OF household_coordination_enabled ON public.trips
+  FOR EACH ROW EXECUTE FUNCTION public.guard_household_coordination_setting();
 
-  IF EXISTS (SELECT 1 FROM information_schema.columns
-             WHERE table_schema = 'storage' AND table_name = 'buckets'
-               AND column_name = 'allowed_mime_types') THEN
-    INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
-    VALUES (
-      'expense-receipts', 'expense-receipts', FALSE, 4194304,
-      ARRAY['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif', 'application/pdf']
-    )
-    ON CONFLICT (id) DO UPDATE
-      SET public = FALSE,
-          file_size_limit = EXCLUDED.file_size_limit,
-          allowed_mime_types = EXCLUDED.allowed_mime_types;
-  ELSE
-    INSERT INTO storage.buckets (id, name, public)
-    VALUES ('expense-receipts', 'expense-receipts', FALSE)
-    ON CONFLICT (id) DO UPDATE SET public = FALSE;
+CREATE OR REPLACE FUNCTION public.complete_household_chore(
+  p_chore_id UUID, p_due_on DATE, p_supply_expense_id UUID DEFAULT NULL
+)
+RETURNS UUID LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $fn$
+DECLARE
+  v_chore public.household_chores%ROWTYPE;
+  v_trip public.trips%ROWTYPE;
+  v_wallet TEXT := public.current_wallet();
+  v_assignee TEXT;
+  v_rotation_index INTEGER;
+  v_offset INTEGER;
+  v_completion_id UUID;
+BEGIN
+  IF v_wallet IS NULL THEN RAISE EXCEPTION 'HOUSEHOLD_AUTH_REQUIRED' USING ERRCODE = '42501'; END IF;
+  SELECT * INTO v_chore FROM public.household_chores
+  WHERE id = p_chore_id AND active FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'HOUSEHOLD_CHORE_NOT_FOUND'; END IF;
+  SELECT * INTO v_trip FROM public.trips WHERE id = v_chore.trip_id FOR UPDATE;
+  IF NOT FOUND OR NOT v_trip.household_coordination_enabled
+     OR NOT (v_trip.member_wallets @> ARRAY[v_wallet]) THEN
+    RAISE EXCEPTION 'HOUSEHOLD_MODULE_UNAVAILABLE' USING ERRCODE = '42501';
   END IF;
-END
-$bucket$;
+  IF EXISTS (
+    SELECT 1 FROM public.household_chore_completions
+    WHERE chore_id = v_chore.id AND due_on = p_due_on
+  ) THEN
+    SELECT id INTO v_completion_id FROM public.household_chore_completions
+    WHERE chore_id = v_chore.id AND due_on = p_due_on;
+    RETURN v_completion_id;
+  END IF;
+  IF p_due_on IS DISTINCT FROM v_chore.next_due_on THEN RAISE EXCEPTION 'HOUSEHOLD_CHORE_NOT_DUE'; END IF;
+  IF EXISTS (
+    SELECT 1 FROM public.household_chore_preferences
+    WHERE trip_id = v_chore.trip_id AND upper(wallet_address) = upper(v_wallet) AND opted_out
+  ) THEN RAISE EXCEPTION 'HOUSEHOLD_MEMBER_OPTED_OUT' USING ERRCODE = '42501'; END IF;
+  IF p_supply_expense_id IS NOT NULL AND NOT (
+    v_trip.expense_ids @> ARRAY[p_supply_expense_id::TEXT]
+    AND EXISTS (SELECT 1 FROM public.expenses WHERE id = p_supply_expense_id)
+  ) THEN RAISE EXCEPTION 'HOUSEHOLD_EXPENSE_NOT_IN_TRIP'; END IF;
+
+  FOR v_offset IN 0..cardinality(v_chore.rotation_wallets) - 1 LOOP
+    v_rotation_index := (v_chore.rotation_cursor + v_offset) % cardinality(v_chore.rotation_wallets);
+    v_assignee := v_chore.rotation_wallets[v_rotation_index + 1];
+    IF EXISTS (
+      SELECT 1 FROM unnest(v_trip.member_wallets) member_wallet
+      WHERE upper(member_wallet) = upper(v_assignee)
+    ) AND NOT EXISTS (
+      SELECT 1 FROM public.household_chore_preferences preference
+      WHERE preference.trip_id = v_chore.trip_id
+        AND upper(preference.wallet_address) = upper(v_assignee)
+        AND preference.opted_out
+    ) THEN EXIT; END IF;
+    v_assignee := NULL;
+  END LOOP;
+  IF v_assignee IS NULL THEN RAISE EXCEPTION 'HOUSEHOLD_NO_ELIGIBLE_ASSIGNEE'; END IF;
+  IF upper(v_assignee) <> upper(v_wallet) THEN
+    RAISE EXCEPTION 'HOUSEHOLD_CHORE_ASSIGNED_TO_ANOTHER_MEMBER' USING ERRCODE = '42501';
+  END IF;
+  INSERT INTO public.household_chore_completions (
+    chore_id, trip_id, completed_by_wallet, due_on, supply_expense_id
+  ) VALUES (v_chore.id, v_chore.trip_id, v_wallet, p_due_on, p_supply_expense_id)
+  ON CONFLICT (chore_id, due_on) DO NOTHING
+  RETURNING id INTO v_completion_id;
+  IF v_completion_id IS NOT NULL THEN
+    UPDATE public.household_chores
+    SET rotation_cursor = (v_rotation_index + 1) % cardinality(v_chore.rotation_wallets),
+        next_due_on = CASE v_chore.cadence
+          WHEN 'weekly' THEN p_due_on + 7
+          WHEN 'biweekly' THEN p_due_on + 14
+          ELSE (p_due_on + INTERVAL '1 month')::DATE
+        END
+    WHERE id = v_chore.id;
+  ELSE
+    SELECT id INTO v_completion_id FROM public.household_chore_completions
+    WHERE chore_id = v_chore.id AND due_on = p_due_on;
+  END IF;
+  RETURN v_completion_id;
+END;
+$fn$;
+
+ALTER TABLE public.household_chores ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.household_chore_completions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.household_chore_preferences ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS household_chores_select_members ON public.household_chores;
+CREATE POLICY household_chores_select_members ON public.household_chores FOR SELECT TO authenticated
+USING (EXISTS (
+  SELECT 1 FROM public.trips trip WHERE trip.id = household_chores.trip_id
+    AND trip.household_coordination_enabled AND trip.member_wallets @> ARRAY[public.current_wallet()]
+));
+DROP POLICY IF EXISTS household_chores_insert_members ON public.household_chores;
+CREATE POLICY household_chores_insert_members ON public.household_chores FOR INSERT TO authenticated
+WITH CHECK (
+  created_by_wallet = public.current_wallet()
+  AND EXISTS (
+    SELECT 1 FROM public.trips trip WHERE trip.id = household_chores.trip_id
+      AND trip.household_coordination_enabled AND trip.member_wallets @> ARRAY[public.current_wallet()]
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM unnest(household_chores.rotation_wallets) rotation_wallet
+    WHERE NOT EXISTS (
+      SELECT 1 FROM public.trips trip WHERE trip.id = household_chores.trip_id
+        AND trip.member_wallets @> ARRAY[rotation_wallet]
+    )
+  )
+);
+DROP POLICY IF EXISTS household_chores_update_creators ON public.household_chores;
+CREATE POLICY household_chores_update_creators ON public.household_chores FOR UPDATE TO authenticated
+USING (created_by_wallet = public.current_wallet() AND EXISTS (
+  SELECT 1 FROM public.trips trip WHERE trip.id = household_chores.trip_id
+    AND trip.household_coordination_enabled AND trip.member_wallets @> ARRAY[public.current_wallet()]
+))
+WITH CHECK (created_by_wallet = public.current_wallet() AND EXISTS (
+  SELECT 1 FROM public.trips trip WHERE trip.id = household_chores.trip_id
+    AND trip.household_coordination_enabled AND trip.member_wallets @> ARRAY[public.current_wallet()]
+));
+DROP POLICY IF EXISTS household_chores_delete_creators ON public.household_chores;
+
+DROP POLICY IF EXISTS household_chore_completions_select_members ON public.household_chore_completions;
+CREATE POLICY household_chore_completions_select_members ON public.household_chore_completions FOR SELECT TO authenticated
+USING (EXISTS (
+  SELECT 1 FROM public.trips trip WHERE trip.id = household_chore_completions.trip_id
+    AND trip.household_coordination_enabled AND trip.member_wallets @> ARRAY[public.current_wallet()]
+));
+DROP POLICY IF EXISTS household_chore_preferences_select_members ON public.household_chore_preferences;
+CREATE POLICY household_chore_preferences_select_members ON public.household_chore_preferences FOR SELECT TO authenticated
+USING (EXISTS (
+  SELECT 1 FROM public.trips trip WHERE trip.id = household_chore_preferences.trip_id
+    AND trip.household_coordination_enabled AND trip.member_wallets @> ARRAY[public.current_wallet()]
+));
+DROP POLICY IF EXISTS household_chore_preferences_insert_self ON public.household_chore_preferences;
+CREATE POLICY household_chore_preferences_insert_self ON public.household_chore_preferences FOR INSERT TO authenticated
+WITH CHECK (upper(wallet_address) = upper(public.current_wallet()) AND EXISTS (
+  SELECT 1 FROM public.trips trip WHERE trip.id = household_chore_preferences.trip_id
+    AND trip.household_coordination_enabled AND trip.member_wallets @> ARRAY[public.current_wallet()]
+));
+DROP POLICY IF EXISTS household_chore_preferences_update_self ON public.household_chore_preferences;
+CREATE POLICY household_chore_preferences_update_self ON public.household_chore_preferences FOR UPDATE TO authenticated
+USING (upper(wallet_address) = upper(public.current_wallet()) AND EXISTS (
+  SELECT 1 FROM public.trips trip WHERE trip.id = household_chore_preferences.trip_id
+    AND trip.household_coordination_enabled AND trip.member_wallets @> ARRAY[public.current_wallet()]
+))
+WITH CHECK (upper(wallet_address) = upper(public.current_wallet()) AND EXISTS (
+  SELECT 1 FROM public.trips trip WHERE trip.id = household_chore_preferences.trip_id
+    AND trip.household_coordination_enabled AND trip.member_wallets @> ARRAY[public.current_wallet()]
+));
+
+GRANT SELECT, INSERT ON public.household_chores TO authenticated;
+GRANT UPDATE (active) ON public.household_chores TO authenticated;
+GRANT SELECT ON public.household_chore_completions TO authenticated;
+GRANT SELECT, INSERT, UPDATE ON public.household_chore_preferences TO authenticated;
+REVOKE ALL ON FUNCTION public.complete_household_chore(UUID, DATE, UUID) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.complete_household_chore(UUID, DATE, UUID) TO authenticated;
+
+DO $publication$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'supabase_realtime') THEN
+    IF NOT EXISTS (SELECT 1 FROM pg_publication_tables WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = 'household_chores') THEN
+      ALTER PUBLICATION supabase_realtime ADD TABLE public.household_chores;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_publication_tables WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = 'household_chore_completions') THEN
+      ALTER PUBLICATION supabase_realtime ADD TABLE public.household_chore_completions;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_publication_tables WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = 'household_chore_preferences') THEN
+      ALTER PUBLICATION supabase_realtime ADD TABLE public.household_chore_preferences;
+    END IF;
+  END IF;
+END;
+$publication$;
 
 INSERT INTO public.schema_migrations (version, name, checksum)
-VALUES ('0009', '0009_expense_receipts', 'expense_receipts_v1')
+VALUES ('0019', '0019_shared_household_coordination', 'household_coordination_v1')
 ON CONFLICT (version) DO NOTHING;
 
+
+-- ============================================================================
+-- Cumulative Addition from 0008_expense_categories_tags_search.sql
+-- ============================================================================
 
 -- ============================================================================
 -- Stellar-star Migration 0008: Expense categories, tags & filterable history
@@ -2835,6 +3320,10 @@ INSERT INTO public.schema_migrations (version, name, checksum)
 VALUES ('0008', '0008_expense_categories_tags_search', 'expense_categories_tags_search_v1')
 ON CONFLICT (version) DO NOTHING;
 
+
+-- ============================================================================
+-- Cumulative Addition from 0008_trip_templates.sql
+-- ============================================================================
 
 -- ============================================================================
 -- Stellar-star Migration 0008: Trip templates & duplicate-from-history (#321)
@@ -3159,6 +3648,10 @@ INSERT INTO public.schema_migrations (version, name, checksum)
 VALUES ('0008', '0008_trip_templates', 'trip_templates_v1')
 ON CONFLICT (version) DO NOTHING;
 
+
+-- ============================================================================
+-- Cumulative Addition from 0009_contacts_member_profiles.sql
+-- ============================================================================
 
 -- ============================================================================
 -- Stellar-star Migration 0009: Reusable contacts & member profiles (#322)
@@ -3567,370 +4060,1401 @@ ON CONFLICT (version) DO NOTHING;
 
 
 -- ============================================================================
--- Stellar-star Migration 0010: Multi-currency entry & FX provenance (#323)
+-- Cumulative Addition from 0010_recurring_expenses.sql
 -- ============================================================================
--- Records the full provenance of a converted expense so it can be shown in the
--- expense history, and makes every part of it immutable once saved:
---
---   entered_amount        what the user typed, in `currency` (exact decimal)
---   currency              the entered display currency (existing)
---   exchange_rate         the locked quote's rate (existing)
---   exchange_rate_source  which provider produced the quote
---   exchange_rate_timestamp  when the quote was fetched (existing)
---   total_amount          converted amount in the settlement asset (existing)
---   settlement_asset      Stellar asset the expense settles in ('native' = XLM)
---
--- Rows written before this migration have NULL entered_amount/source and are
--- treated as native-settled, which is what every historical expense was.
 
-ALTER TABLE public.expenses
-  ADD COLUMN IF NOT EXISTS entered_amount       TEXT,
-  ADD COLUMN IF NOT EXISTS exchange_rate_source TEXT,
-  ADD COLUMN IF NOT EXISTS settlement_asset     TEXT NOT NULL DEFAULT 'native';
+-- ============================================================================
+-- Stellar-star Migration 0010: Recurring expense templates & scheduled drafts
+-- (issue #319)
+-- ============================================================================
+-- Rent, utilities and subscriptions repeat. A template describes the series;
+-- a scheduled job (or the trip page) turns each due occurrence into a DRAFT.
+-- A draft is a suggestion: it becomes an expense only when a member reviews it
+-- in the normal expense form and saves it. Nothing in this schema can move
+-- money or request a wallet signature.
 
--- Same identity freeze as 0005, extended to the new provenance columns: a
--- member may edit an expense's title or split, never the quote behind it.
-CREATE OR REPLACE FUNCTION public.freeze_row_identity()
+-- ─── Templates ──────────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS public.recurring_expense_templates (
+  id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  trip_id            UUID REFERENCES public.trips (id) ON DELETE CASCADE,
+  title              TEXT        NOT NULL CHECK (char_length(btrim(title)) BETWEEN 1 AND 120),
+  description        TEXT        CHECK (description IS NULL OR char_length(description) <= 100),
+  category           TEXT        CHECK (category IS NULL OR category IN (
+                       'food', 'groceries', 'lodging', 'transport', 'activities', 'shopping',
+                       'utilities', 'rent', 'subscriptions', 'health', 'other'
+                     )),
+  tags               TEXT[]      NOT NULL DEFAULT ARRAY[]::TEXT[] CHECK (cardinality(tags) <= 10),
+  currency           TEXT        NOT NULL DEFAULT 'XLM',
+  amount_kind        TEXT        NOT NULL CHECK (amount_kind IN ('fixed', 'variable')),
+  amount             TEXT        CHECK (amount IS NULL OR amount ~ '^[0-9]+(\.[0-9]{1,7})?$'),
+  split_mode         TEXT        NOT NULL CHECK (split_mode IN ('equal', 'custom')),
+  paid_by_member_id  TEXT        NOT NULL,
+  members            JSONB       NOT NULL DEFAULT '[]'::jsonb,
+  cadence_unit       TEXT        NOT NULL CHECK (cadence_unit IN ('day', 'week', 'month', 'year')),
+  cadence_interval   INT         NOT NULL CHECK (cadence_interval BETWEEN 1 AND 365),
+  start_date         DATE        NOT NULL,
+  end_date           DATE,
+  -- Earliest date the generator may produce; moved forward on resume so a
+  -- pause is never back-filled.
+  generate_from      DATE        NOT NULL,
+  reminder_lead_days INT         CHECK (reminder_lead_days IS NULL OR reminder_lead_days BETWEEN 0 AND 30),
+  status             TEXT        NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'paused', 'ended')),
+  version            INT         NOT NULL DEFAULT 1,
+  created_by_wallet  TEXT        NOT NULL,
+  member_wallets     TEXT[]      NOT NULL DEFAULT ARRAY[]::TEXT[],
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT recurring_templates_dates_check CHECK (end_date IS NULL OR end_date >= start_date),
+  CONSTRAINT recurring_templates_fixed_amount_check CHECK (amount_kind <> 'fixed' OR amount IS NOT NULL)
+);
+
+CREATE INDEX IF NOT EXISTS idx_recurring_templates_member_wallets
+  ON public.recurring_expense_templates USING GIN (member_wallets);
+CREATE INDEX IF NOT EXISTS idx_recurring_templates_trip
+  ON public.recurring_expense_templates (trip_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_recurring_templates_active
+  ON public.recurring_expense_templates (id) WHERE status = 'active';
+
+-- Same integrity pipeline as expenses/trips: identity frozen, access array
+-- derived from members (never trusted from the client), updated_at stamped.
+DROP TRIGGER IF EXISTS trg_01_recurring_templates_freeze_identity ON public.recurring_expense_templates;
+CREATE TRIGGER trg_01_recurring_templates_freeze_identity
+  BEFORE UPDATE ON public.recurring_expense_templates
+  FOR EACH ROW EXECUTE FUNCTION public.freeze_row_identity();
+
+DROP TRIGGER IF EXISTS trg_02_recurring_templates_sync_member_wallets ON public.recurring_expense_templates;
+CREATE TRIGGER trg_02_recurring_templates_sync_member_wallets
+  BEFORE INSERT OR UPDATE ON public.recurring_expense_templates
+  FOR EACH ROW EXECUTE FUNCTION public.sync_member_wallets();
+
+DROP TRIGGER IF EXISTS trg_03_recurring_templates_set_updated_at ON public.recurring_expense_templates;
+CREATE TRIGGER trg_03_recurring_templates_set_updated_at
+  BEFORE UPDATE ON public.recurring_expense_templates
+  FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+ALTER TABLE public.recurring_expense_templates ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS recurring_templates_select_members ON public.recurring_expense_templates;
+CREATE POLICY recurring_templates_select_members ON public.recurring_expense_templates
+  FOR SELECT TO authenticated
+  USING (public.current_wallet() IS NOT NULL AND member_wallets @> ARRAY[public.current_wallet()]);
+
+DROP POLICY IF EXISTS recurring_templates_insert_own ON public.recurring_expense_templates;
+CREATE POLICY recurring_templates_insert_own ON public.recurring_expense_templates
+  FOR INSERT TO authenticated
+  WITH CHECK (public.current_wallet() IS NOT NULL AND created_by_wallet = public.current_wallet());
+
+DROP POLICY IF EXISTS recurring_templates_update_members ON public.recurring_expense_templates;
+CREATE POLICY recurring_templates_update_members ON public.recurring_expense_templates
+  FOR UPDATE TO authenticated
+  USING (public.current_wallet() IS NOT NULL AND member_wallets @> ARRAY[public.current_wallet()])
+  WITH CHECK (public.current_wallet() IS NOT NULL AND member_wallets @> ARRAY[public.current_wallet()]);
+
+-- No DELETE policy: a series is ended, not deleted, so the drafts and expenses
+-- it produced keep a valid source.
+
+-- ─── Occurrence exceptions (skip / edit one future occurrence) ──────────────
+
+CREATE TABLE IF NOT EXISTS public.recurring_expense_exceptions (
+  id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  template_id       UUID        NOT NULL REFERENCES public.recurring_expense_templates (id) ON DELETE CASCADE,
+  occurrence_date   DATE        NOT NULL,
+  action            TEXT        NOT NULL CHECK (action IN ('skip', 'override')),
+  overrides         JSONB       NOT NULL DEFAULT '{}'::jsonb,
+  created_by_wallet TEXT        NOT NULL,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT recurring_exceptions_one_per_occurrence UNIQUE (template_id, occurrence_date)
+);
+
+ALTER TABLE public.recurring_expense_exceptions ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS recurring_exceptions_members ON public.recurring_expense_exceptions;
+CREATE POLICY recurring_exceptions_members ON public.recurring_expense_exceptions
+  FOR ALL TO authenticated
+  USING (
+    public.current_wallet() IS NOT NULL
+    AND EXISTS (
+      SELECT 1 FROM public.recurring_expense_templates t
+      WHERE t.id = recurring_expense_exceptions.template_id
+        AND t.member_wallets @> ARRAY[public.current_wallet()]
+    )
+  )
+  WITH CHECK (
+    public.current_wallet() IS NOT NULL
+    AND created_by_wallet = public.current_wallet()
+    AND EXISTS (
+      SELECT 1 FROM public.recurring_expense_templates t
+      WHERE t.id = recurring_expense_exceptions.template_id
+        AND t.member_wallets @> ARRAY[public.current_wallet()]
+    )
+  );
+
+-- ─── Drafts ─────────────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS public.expense_drafts (
+  id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  template_id        UUID        NOT NULL REFERENCES public.recurring_expense_templates (id),
+  template_version   INT         NOT NULL,
+  trip_id            UUID,
+  occurrence_date    DATE        NOT NULL,
+  payload            JSONB       NOT NULL,
+  status             TEXT        NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'saved', 'dismissed')),
+  expense_id         UUID REFERENCES public.expenses (id) ON DELETE SET NULL,
+  member_wallets     TEXT[]      NOT NULL DEFAULT ARRAY[]::TEXT[],
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  resolved_at        TIMESTAMPTZ,
+  resolved_by_wallet TEXT,
+  -- The idempotency key: one draft per occurrence, however often the job runs.
+  CONSTRAINT expense_drafts_one_per_occurrence UNIQUE (template_id, occurrence_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_expense_drafts_member_wallets
+  ON public.expense_drafts USING GIN (member_wallets);
+CREATE INDEX IF NOT EXISTS idx_expense_drafts_trip_occurrence
+  ON public.expense_drafts (trip_id, occurrence_date);
+
+-- Access and scope come from the template, never from the inserting client;
+-- once created, the snapshot (payload, source, date) is immutable.
+CREATE OR REPLACE FUNCTION public.prepare_expense_draft()
 RETURNS TRIGGER
 LANGUAGE plpgsql
 AS $fn$
 DECLARE
-  old_json JSONB;
-  new_json JSONB;
+  tmpl RECORD;
 BEGIN
-  old_json := to_jsonb(OLD);
-  new_json := to_jsonb(NEW);
-
-  new_json := new_json
-    || jsonb_build_object('id', old_json -> 'id')
-    || jsonb_build_object('created_at', old_json -> 'created_at')
-    || jsonb_build_object('created_by_wallet', old_json -> 'created_by_wallet');
-
-  -- The original fiat/XLM snapshot is part of the debt. Freeze it even when
-  -- exchange_rate is NULL (for native XLM expenses), and freeze the source and
-  -- timestamp together with the rate so the provenance cannot be rewritten.
-  new_json := new_json
-    || jsonb_build_object('total_amount', old_json -> 'total_amount')
-    || jsonb_build_object('currency', old_json -> 'currency')
-    || jsonb_build_object('exchange_rate', old_json -> 'exchange_rate')
-    || jsonb_build_object('exchange_rate_timestamp', old_json -> 'exchange_rate_timestamp')
-    || jsonb_build_object('exchange_rate_source', old_json -> 'exchange_rate_source')
-    || jsonb_build_object('entered_amount', old_json -> 'entered_amount')
-    || jsonb_build_object('settlement_asset', old_json -> 'settlement_asset');
-
-  RETURN jsonb_populate_record(NEW, new_json);
+  IF TG_OP = 'INSERT' THEN
+    SELECT trip_id, member_wallets INTO tmpl
+      FROM public.recurring_expense_templates
+     WHERE id = NEW.template_id;
+    NEW.trip_id := tmpl.trip_id;
+    NEW.member_wallets := COALESCE(tmpl.member_wallets, ARRAY[]::TEXT[]);
+    NEW.status := 'pending';
+    NEW.expense_id := NULL;
+    NEW.resolved_at := NULL;
+    NEW.resolved_by_wallet := NULL;
+  ELSE
+    NEW.id := OLD.id;
+    NEW.template_id := OLD.template_id;
+    NEW.template_version := OLD.template_version;
+    NEW.trip_id := OLD.trip_id;
+    NEW.occurrence_date := OLD.occurrence_date;
+    NEW.payload := OLD.payload;
+    NEW.member_wallets := OLD.member_wallets;
+    NEW.created_at := OLD.created_at;
+  END IF;
+  RETURN NEW;
 END;
 $fn$;
+
+DROP TRIGGER IF EXISTS trg_01_expense_drafts_prepare ON public.expense_drafts;
+CREATE TRIGGER trg_01_expense_drafts_prepare
+  BEFORE INSERT OR UPDATE ON public.expense_drafts
+  FOR EACH ROW EXECUTE FUNCTION public.prepare_expense_draft();
+
+ALTER TABLE public.expense_drafts ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS expense_drafts_select_members ON public.expense_drafts;
+CREATE POLICY expense_drafts_select_members ON public.expense_drafts
+  FOR SELECT TO authenticated
+  USING (public.current_wallet() IS NOT NULL AND member_wallets @> ARRAY[public.current_wallet()]);
+
+-- member_wallets is copied from the template by the trigger above, so this
+-- check means "the inserting wallet is a member of the source template".
+DROP POLICY IF EXISTS expense_drafts_insert_members ON public.expense_drafts;
+CREATE POLICY expense_drafts_insert_members ON public.expense_drafts
+  FOR INSERT TO authenticated
+  WITH CHECK (public.current_wallet() IS NOT NULL AND member_wallets @> ARRAY[public.current_wallet()]);
+
+DROP POLICY IF EXISTS expense_drafts_update_members ON public.expense_drafts;
+CREATE POLICY expense_drafts_update_members ON public.expense_drafts
+  FOR UPDATE TO authenticated
+  USING (public.current_wallet() IS NOT NULL AND member_wallets @> ARRAY[public.current_wallet()])
+  WITH CHECK (public.current_wallet() IS NOT NULL AND member_wallets @> ARRAY[public.current_wallet()]);
+
+GRANT SELECT, INSERT, UPDATE ON public.recurring_expense_templates TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.recurring_expense_exceptions TO authenticated;
+GRANT SELECT, INSERT, UPDATE ON public.expense_drafts TO authenticated;
+
+INSERT INTO public.schema_migrations (version, name, checksum)
+VALUES ('0010', '0010_recurring_expenses', 'recurring_expenses_v1')
+ON CONFLICT (version) DO NOTHING;
+
+
+-- ============================================================================
+-- Cumulative Addition from 0011_trip_budgets.sql
+-- ============================================================================
+
+-- ============================================================================
+-- Stellar-star Migration 0011: Trip budgets & spending alerts (issue #320)
+-- ============================================================================
+-- Budgets are display-only targets. They never touch amounts, shares or
+-- settlement; every check below is about visibility and alert bookkeeping.
+
+CREATE TABLE IF NOT EXISTS public.trip_budgets (
+  trip_id           UUID PRIMARY KEY REFERENCES public.trips (id) ON DELETE CASCADE,
+  currency          TEXT        NOT NULL DEFAULT 'XLM',
+  total_amount      TEXT        CHECK (total_amount IS NULL OR total_amount ~ '^[0-9]+(\.[0-9]{1,7})?$'),
+  category_caps     JSONB       NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(category_caps) = 'object'),
+  thresholds        INT[]       NOT NULL DEFAULT ARRAY[50, 80, 100]
+                      CHECK (cardinality(thresholds) <= 6 AND 0 < ALL (thresholds) AND 200 >= ALL (thresholds)),
+  version           INT         NOT NULL DEFAULT 1,
+  created_by_wallet TEXT        NOT NULL,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+DROP TRIGGER IF EXISTS trg_01_trip_budgets_set_updated_at ON public.trip_budgets;
+CREATE TRIGGER trg_01_trip_budgets_set_updated_at
+  BEFORE UPDATE ON public.trip_budgets
+  FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+-- One row per threshold crossing. `cleared_at` is set when spend falls back
+-- below the threshold, re-arming it; the partial unique index guarantees a
+-- crossing fires exactly once even when several members' browsers evaluate it
+-- at the same moment.
+CREATE TABLE IF NOT EXISTS public.budget_alerts (
+  id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  trip_id           UUID        NOT NULL REFERENCES public.trips (id) ON DELETE CASCADE,
+  scope             TEXT        NOT NULL,
+  threshold         INT         NOT NULL CHECK (threshold > 0),
+  spent_at_crossing TEXT        NOT NULL,
+  fired_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  cleared_at        TIMESTAMPTZ
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS budget_alerts_one_active_crossing
+  ON public.budget_alerts (trip_id, scope, threshold)
+  WHERE cleared_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS idx_budget_alerts_trip_fired_at
+  ON public.budget_alerts (trip_id, fired_at DESC);
+
+-- Per-member mute. A member can only mute (or unmute) themselves.
+CREATE TABLE IF NOT EXISTS public.budget_alert_mutes (
+  trip_id       UUID        NOT NULL REFERENCES public.trips (id) ON DELETE CASCADE,
+  member_wallet TEXT        NOT NULL,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (trip_id, member_wallet)
+);
+
+ALTER TABLE public.trip_budgets ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.budget_alerts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.budget_alert_mutes ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS trip_budgets_members ON public.trip_budgets;
+CREATE POLICY trip_budgets_members ON public.trip_budgets
+  FOR ALL TO authenticated
+  USING (
+    public.current_wallet() IS NOT NULL
+    AND EXISTS (SELECT 1 FROM public.trips t
+                WHERE t.id = trip_budgets.trip_id AND t.member_wallets @> ARRAY[public.current_wallet()])
+  )
+  WITH CHECK (
+    public.current_wallet() IS NOT NULL
+    AND EXISTS (SELECT 1 FROM public.trips t
+                WHERE t.id = trip_budgets.trip_id AND t.member_wallets @> ARRAY[public.current_wallet()])
+  );
+
+DROP POLICY IF EXISTS budget_alerts_members ON public.budget_alerts;
+CREATE POLICY budget_alerts_members ON public.budget_alerts
+  FOR ALL TO authenticated
+  USING (
+    public.current_wallet() IS NOT NULL
+    AND EXISTS (SELECT 1 FROM public.trips t
+                WHERE t.id = budget_alerts.trip_id AND t.member_wallets @> ARRAY[public.current_wallet()])
+  )
+  WITH CHECK (
+    public.current_wallet() IS NOT NULL
+    AND EXISTS (SELECT 1 FROM public.trips t
+                WHERE t.id = budget_alerts.trip_id AND t.member_wallets @> ARRAY[public.current_wallet()])
+  );
+
+DROP POLICY IF EXISTS budget_alert_mutes_self ON public.budget_alert_mutes;
+CREATE POLICY budget_alert_mutes_self ON public.budget_alert_mutes
+  FOR ALL TO authenticated
+  USING (public.current_wallet() IS NOT NULL AND member_wallet = public.current_wallet())
+  WITH CHECK (
+    public.current_wallet() IS NOT NULL
+    AND member_wallet = public.current_wallet()
+    AND EXISTS (SELECT 1 FROM public.trips t
+                WHERE t.id = budget_alert_mutes.trip_id AND t.member_wallets @> ARRAY[public.current_wallet()])
+  );
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.trip_budgets TO authenticated;
+GRANT SELECT, INSERT, UPDATE ON public.budget_alerts TO authenticated;
+GRANT SELECT, INSERT, DELETE ON public.budget_alert_mutes TO authenticated;
+
+INSERT INTO public.schema_migrations (version, name, checksum)
+VALUES ('0011', '0011_trip_budgets', 'trip_budgets_v1')
+ON CONFLICT (version) DO NOTHING;
+
+
+-- ============================================================================
+-- Cumulative Addition from 0014_settlement_proposals.sql
+-- ============================================================================
+
+-- ============================================================================
+-- Stellar-star Migration 0014: Settlement proposals and confirmation (#328)
+-- ============================================================================
+-- Before payments begin, a member can freeze a "proposed settlement": the
+-- exact expense versions, balances, assets and transfers it covers, with a
+-- creator, an expiry and a deterministic content hash
+-- (lib/settlement/proposal.ts). Members approve it, reject it with a reason,
+-- or request an edit.
+--
+-- The hash is recomputed from `snapshot` by every reader; a row whose snapshot
+-- does not hash to `content_hash` is treated as invalid, so a tampered
+-- snapshot can never collect approvals. Each response records the hash it
+-- answered, so an approval only ever counts for the exact snapshot approved.
+--
+-- Stored lifecycle is open | revoked | superseded | invalidated. "approved",
+-- "rejected", "expired" and "invalidated by a material change" are derived
+-- from the responses, `expires_at` and the live expenses.
+
+CREATE TABLE IF NOT EXISTS public.settlement_proposals (
+  id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  trip_id        TEXT        NOT NULL,
+  creator_wallet TEXT        NOT NULL,
+  content_hash   TEXT        NOT NULL CHECK (content_hash ~ '^[0-9a-f]{64}$'),
+  snapshot       JSONB       NOT NULL CHECK (jsonb_typeof(snapshot) = 'object'),
+  status         TEXT        NOT NULL DEFAULT 'open'
+                   CHECK (status IN ('open', 'revoked', 'superseded', 'invalidated')),
+  expires_at     TIMESTAMPTZ NOT NULL,
+  revoked_reason TEXT        CHECK (revoked_reason IS NULL OR char_length(revoked_reason) <= 500),
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT settlement_proposals_hash_unique UNIQUE (content_hash)
+);
+
+-- At most one open proposal per trip: proposing again supersedes, never stacks.
+CREATE UNIQUE INDEX IF NOT EXISTS settlement_proposals_one_open_per_trip
+  ON public.settlement_proposals (trip_id)
+  WHERE status = 'open';
+CREATE INDEX IF NOT EXISTS idx_settlement_proposals_trip_created_at
+  ON public.settlement_proposals (trip_id, created_at DESC);
+
+-- Append-only: a member's latest response is the one that counts.
+CREATE TABLE IF NOT EXISTS public.settlement_proposal_responses (
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  proposal_id  UUID        NOT NULL REFERENCES public.settlement_proposals (id) ON DELETE CASCADE,
+  member_id    TEXT        NOT NULL,
+  wallet       TEXT        NOT NULL,
+  decision     TEXT        NOT NULL CHECK (decision IN ('approve', 'reject', 'request_edit')),
+  reason       TEXT        CHECK (reason IS NULL OR char_length(reason) <= 500),
+  content_hash TEXT        NOT NULL CHECK (content_hash ~ '^[0-9a-f]{64}$'),
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT settlement_proposal_responses_reason_required
+    CHECK (decision = 'approve' OR (reason IS NOT NULL AND char_length(btrim(reason)) > 0))
+);
+
+CREATE INDEX IF NOT EXISTS idx_settlement_proposal_responses_proposal_created_at
+  ON public.settlement_proposal_responses (proposal_id, created_at);
+
+DROP TRIGGER IF EXISTS trg_01_settlement_proposals_set_updated_at ON public.settlement_proposals;
+CREATE TRIGGER trg_01_settlement_proposals_set_updated_at
+  BEFORE UPDATE ON public.settlement_proposals
+  FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+-- ─── ROW LEVEL SECURITY ──────────────────────────────────────────────────────
+ALTER TABLE public.settlement_proposals ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.settlement_proposal_responses ENABLE ROW LEVEL SECURITY;
+
+-- Trip members see and create proposals for their trips.
+DROP POLICY IF EXISTS settlement_proposals_select_member ON public.settlement_proposals;
+CREATE POLICY settlement_proposals_select_member ON public.settlement_proposals
+  FOR SELECT TO authenticated
+  USING (EXISTS (
+    SELECT 1 FROM public.trips t
+     WHERE t.id::TEXT = trip_id AND public.current_wallet() = ANY (t.member_wallets)
+  ));
+
+DROP POLICY IF EXISTS settlement_proposals_insert_member ON public.settlement_proposals;
+CREATE POLICY settlement_proposals_insert_member ON public.settlement_proposals
+  FOR INSERT TO authenticated
+  WITH CHECK (
+    creator_wallet = public.current_wallet()
+    AND status = 'open'
+    AND EXISTS (
+      SELECT 1 FROM public.trips t
+       WHERE t.id::TEXT = trip_id AND public.current_wallet() = ANY (t.member_wallets)
+    )
+  );
+
+-- Members may move an open proposal to superseded/invalidated (proposing again,
+-- or recording a detected material change); only the creator may revoke.
+-- The snapshot and hash themselves are frozen by the trigger below.
+DROP POLICY IF EXISTS settlement_proposals_update_member ON public.settlement_proposals;
+CREATE POLICY settlement_proposals_update_member ON public.settlement_proposals
+  FOR UPDATE TO authenticated
+  USING (EXISTS (
+    SELECT 1 FROM public.trips t
+     WHERE t.id::TEXT = trip_id AND public.current_wallet() = ANY (t.member_wallets)
+  ))
+  WITH CHECK (status <> 'revoked' OR creator_wallet = public.current_wallet());
+
+CREATE OR REPLACE FUNCTION public.freeze_settlement_proposal()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $fn$
+BEGIN
+  IF NEW.snapshot IS DISTINCT FROM OLD.snapshot
+     OR NEW.content_hash IS DISTINCT FROM OLD.content_hash
+     OR NEW.trip_id IS DISTINCT FROM OLD.trip_id
+     OR NEW.creator_wallet IS DISTINCT FROM OLD.creator_wallet
+     OR NEW.expires_at IS DISTINCT FROM OLD.expires_at THEN
+    RAISE EXCEPTION 'A settlement proposal snapshot is frozen; propose again instead.'
+      USING ERRCODE = '42501';
+  END IF;
+  IF OLD.status <> 'open' AND NEW.status IS DISTINCT FROM OLD.status THEN
+    RAISE EXCEPTION 'Only an open proposal can change status.' USING ERRCODE = '42501';
+  END IF;
+  RETURN NEW;
+END;
+$fn$;
+
+DROP TRIGGER IF EXISTS trg_00_settlement_proposals_freeze ON public.settlement_proposals;
+CREATE TRIGGER trg_00_settlement_proposals_freeze
+  BEFORE UPDATE ON public.settlement_proposals
+  FOR EACH ROW EXECUTE FUNCTION public.freeze_settlement_proposal();
+
+DROP POLICY IF EXISTS settlement_proposal_responses_select_member ON public.settlement_proposal_responses;
+CREATE POLICY settlement_proposal_responses_select_member ON public.settlement_proposal_responses
+  FOR SELECT TO authenticated
+  USING (EXISTS (
+    SELECT 1 FROM public.settlement_proposals p
+      JOIN public.trips t ON t.id::TEXT = p.trip_id
+     WHERE p.id = proposal_id AND public.current_wallet() = ANY (t.member_wallets)
+  ));
+
+-- A member answers only for themselves, and only an open proposal.
+DROP POLICY IF EXISTS settlement_proposal_responses_insert_self ON public.settlement_proposal_responses;
+CREATE POLICY settlement_proposal_responses_insert_self ON public.settlement_proposal_responses
+  FOR INSERT TO authenticated
+  WITH CHECK (
+    wallet = public.current_wallet()
+    AND EXISTS (
+      SELECT 1 FROM public.settlement_proposals p
+        JOIN public.trips t ON t.id::TEXT = p.trip_id
+       WHERE p.id = proposal_id
+         AND p.status = 'open'
+         AND p.expires_at > NOW()
+         AND p.content_hash = settlement_proposal_responses.content_hash
+         AND public.current_wallet() = ANY (t.member_wallets)
+    )
+  );
+
+GRANT SELECT, INSERT, UPDATE ON public.settlement_proposals TO authenticated;
+GRANT SELECT, INSERT ON public.settlement_proposal_responses TO authenticated;
 
 NOTIFY pgrst, 'reload schema';
 
 INSERT INTO public.schema_migrations (version, name, checksum)
-VALUES ('0010', '0010_fx_quote_provenance', 'fx_quote_provenance_v1')
+VALUES ('0014', '0014_settlement_proposals', 'settlement_proposals_v1')
 ON CONFLICT (version) DO NOTHING;
 
 
-INSERT INTO public.schema_migrations (version, name, checksum)
-VALUES ('0012', '0012_receipt_capture_prerequisites', 'receipt_capture_prerequisites_v1')
-ON CONFLICT (version) DO NOTHING;
-
--- Preserve current granular permissions after historical prerequisite replay.
 -- ============================================================================
--- Stellar-star Migration 0016: Configurable trip roles and granular permissions
+-- Cumulative Addition from 0018_expense_disputes.sql
 -- ============================================================================
--- Role assignments live beside each member in trips.members. The database
--- functions below are the source of truth for RLS and for the API RPCs.
 
-CREATE TABLE IF NOT EXISTS public.trip_role_audit (
+-- #329 Disputes are off-chain review state. They never rewrite expenses,
+-- installments, transaction hashes, or contract events.
+CREATE TABLE IF NOT EXISTS public.expense_disputes (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  trip_id UUID NOT NULL REFERENCES public.trips(id) ON DELETE CASCADE,
-  member_id TEXT NOT NULL,
-  previous_role TEXT NOT NULL CHECK (previous_role IN ('owner', 'organizer', 'contributor', 'viewer', 'custom')),
-  next_role TEXT NOT NULL CHECK (next_role IN ('owner', 'organizer', 'contributor', 'viewer', 'custom')),
-  previous_custom_permissions TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
-  next_custom_permissions TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
-  changed_by_wallet TEXT NOT NULL,
+  trip_id TEXT NOT NULL,
+  expense_id UUID NOT NULL REFERENCES public.expenses(id) ON DELETE RESTRICT,
+  share_member_id TEXT NOT NULL,
+  opened_by_wallet TEXT NOT NULL,
+  category TEXT NOT NULL CHECK (category IN ('incorrect_amount','incorrect_split','not_shared','duplicate','already_paid','missing_context','other')),
+  comment TEXT NOT NULL CHECK (char_length(btrim(comment)) BETWEEN 1 AND 2000),
+  -- References to private receipt records only; raw evidence is never public.
+  evidence_receipt_ids UUID[] NOT NULL DEFAULT ARRAY[]::UUID[] CHECK (cardinality(evidence_receipt_ids) <= 5),
+  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','upheld','resolved')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  resolved_at TIMESTAMPTZ,
+  CONSTRAINT expense_disputes_resolution_state CHECK ((status = 'open' AND resolved_at IS NULL) OR (status IN ('upheld','resolved') AND resolved_at IS NOT NULL))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS expense_disputes_one_open_per_share
+  ON public.expense_disputes (expense_id, share_member_id) WHERE status IN ('open','upheld');
+CREATE INDEX IF NOT EXISTS expense_disputes_trip_created ON public.expense_disputes (trip_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS public.expense_dispute_events (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  dispute_id UUID NOT NULL REFERENCES public.expense_disputes(id) ON DELETE RESTRICT,
+  actor_wallet TEXT NOT NULL,
+  action TEXT NOT NULL CHECK (action IN ('opened','upheld','dismissed','adjusted')),
+  reason TEXT NOT NULL CHECK (char_length(btrim(reason)) BETWEEN 1 AND 1000),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+CREATE INDEX IF NOT EXISTS expense_dispute_events_dispute_created ON public.expense_dispute_events (dispute_id, created_at);
 
-CREATE INDEX IF NOT EXISTS trip_role_audit_trip_created_at_idx
-  ON public.trip_role_audit (trip_id, created_at DESC);
+CREATE OR REPLACE FUNCTION public.record_expense_dispute_opened()
+RETURNS TRIGGER LANGUAGE plpgsql AS $fn$
+BEGIN
+  INSERT INTO public.expense_dispute_events (dispute_id, actor_wallet, action, reason)
+    VALUES (NEW.id, NEW.opened_by_wallet, 'opened', NEW.comment);
+  RETURN NEW;
+END; $fn$;
+DROP TRIGGER IF EXISTS trg_expense_dispute_opened_event ON public.expense_disputes;
+CREATE TRIGGER trg_expense_dispute_opened_event AFTER INSERT ON public.expense_disputes
+  FOR EACH ROW EXECUTE FUNCTION public.record_expense_dispute_opened();
 
-CREATE OR REPLACE FUNCTION public.trip_member_role(p_trip_id UUID, p_wallet TEXT)
-RETURNS TEXT
-LANGUAGE SQL
-STABLE
-SECURITY DEFINER
-SET search_path = public
-AS $fn$
-  SELECT COALESCE(
-    member ->> 'role',
-    CASE
-      WHEN upper(btrim(member ->> 'walletAddress')) = upper(btrim(t.created_by_wallet))
-      THEN 'owner'
-      ELSE 'contributor'
-    END
-  )
-  FROM public.trips t
-  CROSS JOIN LATERAL jsonb_array_elements(COALESCE(t.members, '[]'::jsonb)) member
-  WHERE t.id = p_trip_id
-    AND upper(btrim(COALESCE(p_wallet, ''))) =
-        upper(btrim(COALESCE(public.current_wallet(), '')))
-    AND upper(btrim(COALESCE(member ->> 'walletAddress', ''))) = upper(btrim(COALESCE(p_wallet, '')))
-  LIMIT 1;
-$fn$;
+ALTER TABLE public.expense_disputes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.expense_dispute_events ENABLE ROW LEVEL SECURITY;
 
-CREATE OR REPLACE FUNCTION public.trip_has_permission(p_trip_id UUID, p_permission TEXT)
-RETURNS BOOLEAN
+DROP POLICY IF EXISTS expense_disputes_select_members ON public.expense_disputes;
+CREATE POLICY expense_disputes_select_members ON public.expense_disputes FOR SELECT TO authenticated
+  USING (EXISTS (SELECT 1 FROM public.trips t WHERE t.id::TEXT = trip_id AND public.current_wallet() = ANY(t.member_wallets)));
+DROP POLICY IF EXISTS expense_disputes_insert_subject_member ON public.expense_disputes;
+CREATE POLICY expense_disputes_insert_subject_member ON public.expense_disputes FOR INSERT TO authenticated
+  WITH CHECK (opened_by_wallet = public.current_wallet()
+    AND status = 'open' AND resolved_at IS NULL
+    AND EXISTS (SELECT 1 FROM public.expenses e WHERE e.id = expense_id
+      AND public.current_wallet() = ANY(e.member_wallets)
+      AND e.members @> jsonb_build_array(jsonb_build_object('id', share_member_id))
+      AND e.shares @> jsonb_build_array(jsonb_build_object('memberId', share_member_id))
+      AND EXISTS (SELECT 1 FROM jsonb_array_elements(e.members) m WHERE m->>'id' = share_member_id AND upper(m->>'walletAddress') = upper(public.current_wallet()))));
+
+CREATE OR REPLACE FUNCTION public.validate_expense_dispute_evidence()
+RETURNS TRIGGER LANGUAGE plpgsql AS $fn$
+DECLARE receipt_id UUID;
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM public.expenses e, jsonb_array_elements(e.shares) s
+    WHERE e.id = NEW.expense_id AND s->>'memberId' = NEW.share_member_id
+      AND COALESCE((s->>'paid')::BOOLEAN, FALSE) = FALSE) THEN
+    RAISE EXCEPTION 'Only an unpaid share can be disputed.' USING ERRCODE = '42501';
+  END IF;
+  FOREACH receipt_id IN ARRAY NEW.evidence_receipt_ids LOOP
+    IF NOT EXISTS (SELECT 1 FROM public.expense_receipts r WHERE r.id = receipt_id
+      AND r.expense_id = NEW.expense_id AND r.status = 'active'
+      AND (r.uploaded_by_wallet = public.current_wallet()
+        OR public.expense_has_permission(NEW.expense_id, 'receipts.manage'))) THEN
+      RAISE EXCEPTION 'Evidence must reference an active private receipt available to you for this expense.' USING ERRCODE = '42501';
+    END IF;
+  END LOOP;
+  RETURN NEW;
+END; $fn$;
+DROP TRIGGER IF EXISTS trg_expense_dispute_evidence ON public.expense_disputes;
+CREATE TRIGGER trg_expense_dispute_evidence BEFORE INSERT ON public.expense_disputes
+  FOR EACH ROW EXECUTE FUNCTION public.validate_expense_dispute_evidence();
+
+-- Only trip owners/organizers with expense management permission may resolve.
+DROP POLICY IF EXISTS expense_disputes_update_resolver ON public.expense_disputes;
+CREATE POLICY expense_disputes_update_resolver ON public.expense_disputes FOR UPDATE TO authenticated
+  USING (public.expense_has_permission(expense_id, 'expenses.manage'))
+  WITH CHECK (public.expense_has_permission(expense_id, 'expenses.manage') AND status IN ('upheld','resolved') AND resolved_at IS NOT NULL);
+
+DROP POLICY IF EXISTS expense_dispute_events_select_members ON public.expense_dispute_events;
+CREATE POLICY expense_dispute_events_select_members ON public.expense_dispute_events FOR SELECT TO authenticated
+  USING (EXISTS (SELECT 1 FROM public.expense_disputes d JOIN public.trips t ON t.id::TEXT = d.trip_id
+    WHERE d.id = dispute_id AND public.current_wallet() = ANY(t.member_wallets)));
+DROP POLICY IF EXISTS expense_dispute_events_insert_actor ON public.expense_dispute_events;
+CREATE POLICY expense_dispute_events_insert_actor ON public.expense_dispute_events FOR INSERT TO authenticated
+  WITH CHECK (actor_wallet = public.current_wallet() AND EXISTS (
+    SELECT 1 FROM public.expense_disputes d WHERE d.id = dispute_id AND d.status = 'open'
+      AND ((action = 'opened' AND d.opened_by_wallet = public.current_wallet())
+        OR (action <> 'opened' AND public.expense_has_permission(d.expense_id, 'expenses.manage')))));
+
+-- Resolution event + state transition are atomic; a resolved state can never
+-- exist without its action and reason in the append-only event log.
+CREATE OR REPLACE FUNCTION public.resolve_expense_dispute(p_dispute_id UUID, p_action TEXT, p_reason TEXT)
+RETURNS VOID LANGUAGE plpgsql SECURITY INVOKER AS $fn$
+DECLARE d public.expense_disputes%ROWTYPE;
+BEGIN
+  IF p_action NOT IN ('upheld','dismissed','adjusted') OR char_length(btrim(COALESCE(p_reason,''))) NOT BETWEEN 1 AND 1000 THEN
+    RAISE EXCEPTION 'A valid resolution action and reason are required.' USING ERRCODE = '22023';
+  END IF;
+  SELECT * INTO d FROM public.expense_disputes WHERE id = p_dispute_id AND status = 'open' FOR UPDATE;
+  IF NOT FOUND OR NOT public.expense_has_permission(d.expense_id, 'expenses.manage') THEN
+    RAISE EXCEPTION 'You are not allowed to resolve this dispute.' USING ERRCODE = '42501';
+  END IF;
+  INSERT INTO public.expense_dispute_events (dispute_id, actor_wallet, action, reason)
+    VALUES (d.id, public.current_wallet(), p_action, btrim(p_reason));
+  UPDATE public.expense_disputes SET status = CASE WHEN p_action = 'upheld' THEN 'upheld' ELSE 'resolved' END,
+    resolved_at = NOW() WHERE id = d.id;
+END; $fn$;
+
+CREATE OR REPLACE FUNCTION public.freeze_expense_dispute_history()
+RETURNS TRIGGER LANGUAGE plpgsql AS $fn$
+BEGIN
+  IF TG_OP = 'DELETE' THEN RAISE EXCEPTION 'Disputes are retained as an audit record.' USING ERRCODE = '42501'; END IF;
+  IF NEW.trip_id IS DISTINCT FROM OLD.trip_id OR NEW.expense_id IS DISTINCT FROM OLD.expense_id
+    OR NEW.share_member_id IS DISTINCT FROM OLD.share_member_id OR NEW.opened_by_wallet IS DISTINCT FROM OLD.opened_by_wallet
+    OR NEW.category IS DISTINCT FROM OLD.category OR NEW.comment IS DISTINCT FROM OLD.comment
+    OR NEW.evidence_receipt_ids IS DISTINCT FROM OLD.evidence_receipt_ids
+    OR OLD.status <> 'open' OR NEW.status NOT IN ('upheld','resolved') OR NEW.resolved_at IS NULL THEN
+    RAISE EXCEPTION 'Disputes are immutable; resolution must be recorded as an event.' USING ERRCODE = '42501';
+  END IF;
+  RETURN NEW;
+END; $fn$;
+DROP TRIGGER IF EXISTS trg_expense_dispute_freeze ON public.expense_disputes;
+CREATE TRIGGER trg_expense_dispute_freeze BEFORE UPDATE OR DELETE ON public.expense_disputes
+  FOR EACH ROW EXECUTE FUNCTION public.freeze_expense_dispute_history();
+
+CREATE OR REPLACE FUNCTION public.freeze_expense_dispute_events()
+RETURNS TRIGGER LANGUAGE plpgsql AS $fn$
+BEGIN RAISE EXCEPTION 'Dispute events are append-only.' USING ERRCODE = '42501'; END; $fn$;
+DROP TRIGGER IF EXISTS trg_expense_dispute_events_freeze ON public.expense_dispute_events;
+CREATE TRIGGER trg_expense_dispute_events_freeze BEFORE UPDATE OR DELETE ON public.expense_dispute_events
+  FOR EACH ROW EXECUTE FUNCTION public.freeze_expense_dispute_events();
+
+GRANT SELECT, INSERT, UPDATE ON public.expense_disputes TO authenticated;
+GRANT SELECT, INSERT ON public.expense_dispute_events TO authenticated;
+GRANT EXECUTE ON FUNCTION public.resolve_expense_dispute(UUID, TEXT, TEXT) TO authenticated;
+REVOKE ALL ON FUNCTION public.validate_expense_dispute_evidence() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.freeze_expense_dispute_history() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.freeze_expense_dispute_events() FROM PUBLIC;
+NOTIFY pgrst, 'reload schema';
+INSERT INTO public.schema_migrations (version, name, checksum)
+VALUES ('0018', '0018_expense_disputes', 'expense_disputes_v1')
+ON CONFLICT (version) DO NOTHING;
+
+
+-- ============================================================================
+-- Cumulative Addition from 0018_support_console_and_audit.sql
+-- ============================================================================
+
+-- ============================================================================
+-- Migration 0018: Incident-Response & Support Console and Audit Logs (#314)
+-- ============================================================================
+-- 1. Creates support_audit_logs to log every staff customer data lookup.
+-- 2. Creates support_corrective_actions for dual-control (Four-Eyes Principle)
+--    exceptional financial state modifications.
+-- 3. Enables RLS and performance indexes.
+
+-- ─── 1. SUPPORT AUDIT LOGS ───────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS public.support_audit_logs (
+  id               UUID DEFAULT gen_random_uuid(),
+  staff_identifier TEXT NOT NULL,
+  query_type       TEXT NOT NULL,
+  query_value      TEXT NOT NULL,
+  results_count    INT  NOT NULL DEFAULT 0,
+  ip_address       TEXT NOT NULL,
+  user_agent       TEXT,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (id, created_at)
+) PARTITION BY RANGE (created_at);
+
+CREATE INDEX IF NOT EXISTS idx_support_audit_logs_created_at
+  ON public.support_audit_logs (created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_support_audit_logs_staff
+  ON public.support_audit_logs (staff_identifier);
+
+ALTER TABLE public.support_audit_logs ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS support_audit_logs_select_authenticated ON public.support_audit_logs;
+CREATE POLICY support_audit_logs_select_authenticated ON public.support_audit_logs
+  FOR SELECT TO authenticated USING (true);
+
+DROP POLICY IF EXISTS support_audit_logs_insert_authenticated ON public.support_audit_logs;
+CREATE POLICY support_audit_logs_insert_authenticated ON public.support_audit_logs
+  FOR INSERT TO authenticated WITH CHECK (true);
+
+GRANT SELECT, INSERT ON public.support_audit_logs TO authenticated;
+
+-- ─── 2. DUAL-CONTROL CORRECTIVE ACTIONS ──────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS public.support_corrective_actions (
+  id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  action_type      TEXT NOT NULL,
+  target_id        TEXT NOT NULL,
+  target_type      TEXT NOT NULL,
+  ticket_ref       TEXT NOT NULL,
+  reason           TEXT NOT NULL,
+  details          JSONB NOT NULL DEFAULT '{}'::jsonb,
+  proposed_by      TEXT NOT NULL,
+  proposed_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  approved_by      TEXT,
+  approved_at      TIMESTAMPTZ,
+  status           TEXT NOT NULL CHECK (status IN ('pending_approval', 'approved', 'executed', 'rejected', 'expired')),
+  execution_result JSONB,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_support_corrective_actions_status
+  ON public.support_corrective_actions (status, proposed_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_support_corrective_actions_ticket
+  ON public.support_corrective_actions (ticket_ref);
+
+ALTER TABLE public.support_corrective_actions ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS support_corrective_actions_select_authenticated ON public.support_corrective_actions;
+CREATE POLICY support_corrective_actions_select_authenticated ON public.support_corrective_actions
+  FOR SELECT TO authenticated USING (true);
+
+DROP POLICY IF EXISTS support_corrective_actions_insert_authenticated ON public.support_corrective_actions;
+CREATE POLICY support_corrective_actions_insert_authenticated ON public.support_corrective_actions
+  FOR INSERT TO authenticated WITH CHECK (true);
+
+DROP POLICY IF EXISTS support_corrective_actions_update_authenticated ON public.support_corrective_actions;
+CREATE POLICY support_corrective_actions_update_authenticated ON public.support_corrective_actions
+  FOR UPDATE TO authenticated USING (true) WITH CHECK (true);
+
+GRANT SELECT, INSERT, UPDATE ON public.support_corrective_actions TO authenticated;
+
+-- ─── 3. RECORD MIGRATION ─────────────────────────────────────────────────────
+
+INSERT INTO public.schema_migrations (version, name, checksum)
+VALUES ('0018', '0018_support_console_and_audit', 'support_console_and_audit_314_v1')
+ON CONFLICT (version) DO NOTHING;
+
+
+-- ============================================================================
+-- Cumulative Addition from 0011_export_audit_events.sql
+-- ============================================================================
+
+-- ============================================================================
+-- Stellar-star Migration 0011: Export audit log (#324)
+-- ============================================================================
+-- Every portable-archive export request — served or refused — appends one row.
+-- The archive route writes it with the caller's own session, before any data
+-- is returned, and refuses the export if the write fails (fail closed).
+--
+-- Append-only: INSERT and SELECT policies only, so under RLS a wallet can read
+-- its own export history but nobody can edit or delete it.
+
+CREATE TABLE IF NOT EXISTS public.export_audit_events (
+  id             UUID DEFAULT gen_random_uuid(),
+  actor_wallet   TEXT        NOT NULL,
+  export_kind    TEXT        NOT NULL CHECK (export_kind IN ('archive')),
+  status         TEXT        NOT NULL CHECK (status IN ('served', 'rate_limited', 'forbidden', 'failed')),
+  trip_ids       TEXT[]      NOT NULL DEFAULT ARRAY[]::TEXT[],
+  trip_count     INT         NOT NULL DEFAULT 0 CHECK (trip_count >= 0),
+  expense_count  INT         NOT NULL DEFAULT 0 CHECK (expense_count >= 0),
+  byte_size      INT         NOT NULL DEFAULT 0 CHECK (byte_size >= 0),
+  -- SHA-256 of the archive body, so a file can later be matched to its record.
+  content_sha256 TEXT,
+  request_id     TEXT,
+  -- Salted hash, not the raw IP: enough to spot abuse, not to track people.
+  client_ip_hash TEXT,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (id, created_at)
+) PARTITION BY RANGE (created_at);
+
+CREATE INDEX IF NOT EXISTS idx_export_audit_events_actor_created_at
+  ON public.export_audit_events (actor_wallet, created_at DESC);
+
+ALTER TABLE public.export_audit_events ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS export_audit_events_select_actor ON public.export_audit_events;
+CREATE POLICY export_audit_events_select_actor ON public.export_audit_events
+  FOR SELECT USING (actor_wallet = public.current_wallet());
+
+DROP POLICY IF EXISTS export_audit_events_insert_actor ON public.export_audit_events;
+CREATE POLICY export_audit_events_insert_actor ON public.export_audit_events
+  FOR INSERT WITH CHECK (actor_wallet = public.current_wallet());
+
+GRANT SELECT, INSERT ON public.export_audit_events TO authenticated;
+
+NOTIFY pgrst, 'reload schema';
+
+INSERT INTO public.schema_migrations (version, name, checksum)
+VALUES ('0011', '0011_export_audit_events', 'export_audit_events_v1')
+ON CONFLICT (version) DO NOTHING;
+
+
+-- ============================================================================
+-- Cumulative Addition from 0012_share_installments.sql
+-- ============================================================================
+
+-- ============================================================================
+-- Stellar-star Migration 0012: Partial settlement installments (issue #325)
+-- ============================================================================
+-- A share can now be settled over several on-chain payments. Each payment is
+-- appended to the share's `installments` array inside `expenses.shares`; the
+-- share flips to `paid` only when the installments sum to exactly what it owes.
+--
+-- `record_share_installment` is the only write path, and it is atomic:
+--   * `SELECT ... FOR UPDATE` serializes concurrent installments on one expense,
+--     so two payments racing for the same remaining balance cannot both fit.
+--   * Amounts are compared in integer stroops (NUMERIC, never float).
+--   * An installment that would exceed the remaining balance is rejected with
+--     SQLSTATE 23514 (check_violation). There is no implicit credit.
+--   * Re-recording a transaction hash already on the share is a no-op, which
+--     keeps retry-after-submit and cross-device reconciliation idempotent.
+--
+-- Every statement is idempotent. Existing shares are untouched: a share with
+-- no `installments` key behaves exactly as before.
+
+CREATE OR REPLACE FUNCTION public.record_share_installment(
+  p_expense_id  UUID,
+  p_member_id   TEXT,
+  p_installment JSONB
+)
+RETURNS SETOF public.expenses
 LANGUAGE plpgsql
-STABLE
 SECURITY DEFINER
 SET search_path = public
 AS $fn$
 DECLARE
-  v_wallet TEXT := public.current_wallet();
-  v_role TEXT;
-  v_permissions JSONB;
+  v_expense        public.expenses;
+  v_shares         JSONB;
+  v_share          JSONB;
+  v_updated_shares JSONB := '[]'::jsonb;
+  v_installments   JSONB;
+  v_tx_hash        TEXT;
+  v_amount_stroops NUMERIC;
+  v_owed_stroops   NUMERIC;
+  v_paid_stroops   NUMERIC;
+  v_found          BOOLEAN := false;
+  v_duplicate      BOOLEAN := false;
+  v_all_paid       BOOLEAN := true;
+  v_len            INT;
+  v_idx            INT;
 BEGIN
-  IF v_wallet IS NULL OR p_permission IS NULL OR p_permission NOT IN (
-    'trip.settings.manage', 'members.manage', 'expenses.manage',
-    'receipts.manage', 'exports.view', 'reminders.manage',
-    'settlement.proposals.manage'
-  ) THEN
-    RETURN FALSE;
+  v_tx_hash := lower(trim(p_installment ->> 'txHash'));
+  IF v_tx_hash IS NULL OR v_tx_hash !~ '^[0-9a-f]{64}$' THEN
+    RAISE EXCEPTION 'Installment txHash must be a 64-character hex transaction hash'
+      USING ERRCODE = '22023';
   END IF;
 
-  SELECT
-    COALESCE(
-      member ->> 'role',
-      CASE
-        WHEN upper(btrim(member ->> 'walletAddress')) = upper(btrim(t.created_by_wallet))
-        THEN 'owner'
-        ELSE 'contributor'
-      END
-    ),
-    COALESCE(member -> 'customPermissions', '[]'::jsonb)
-  INTO v_role, v_permissions
-  FROM public.trips t
-  CROSS JOIN LATERAL jsonb_array_elements(COALESCE(t.members, '[]'::jsonb)) member
-  WHERE t.id = p_trip_id
-    AND upper(btrim(COALESCE(member ->> 'walletAddress', ''))) = upper(btrim(v_wallet))
-  LIMIT 1;
-
-  IF v_role IN ('owner', 'organizer') THEN
-    RETURN TRUE;
-  ELSIF v_role = 'contributor' THEN
-    RETURN p_permission IN ('expenses.manage', 'receipts.manage', 'exports.view');
-  ELSIF v_role = 'viewer' THEN
-    RETURN p_permission = 'exports.view';
-  ELSIF v_role = 'custom' THEN
-    RETURN jsonb_typeof(v_permissions) = 'array' AND v_permissions ? p_permission;
+  IF (p_installment ->> 'amountStroops') IS NULL
+     OR (p_installment ->> 'amountStroops') !~ '^[0-9]{1,20}$' THEN
+    RAISE EXCEPTION 'Installment amountStroops must be a non-negative integer string'
+      USING ERRCODE = '22023';
   END IF;
-  RETURN FALSE;
+  v_amount_stroops := (p_installment ->> 'amountStroops')::NUMERIC;
+  IF v_amount_stroops <= 0 THEN
+    RAISE EXCEPTION 'Installment amount must be greater than zero' USING ERRCODE = '23514';
+  END IF;
+
+  SELECT * INTO v_expense
+    FROM public.expenses
+   WHERE id = p_expense_id
+     FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Expense not found' USING ERRCODE = 'P0002';
+  END IF;
+
+  -- Only a member of the expense may record a payment against it.
+  IF public.current_wallet() IS NULL
+     OR NOT (public.current_wallet() = ANY (v_expense.member_wallets)) THEN
+    RAISE EXCEPTION 'Not a member of this expense' USING ERRCODE = '42501';
+  END IF;
+
+  v_shares := COALESCE(v_expense.shares, '[]'::jsonb);
+  v_len := jsonb_array_length(v_shares);
+
+  FOR v_idx IN 0..(v_len - 1) LOOP
+    v_share := v_shares -> v_idx;
+
+    IF (v_share ->> 'memberId') = p_member_id THEN
+      v_found := true;
+      v_installments := COALESCE(v_share -> 'installments', '[]'::jsonb);
+
+      IF EXISTS (
+        SELECT 1 FROM jsonb_array_elements(v_installments) AS i
+         WHERE lower(i ->> 'txHash') = v_tx_hash
+      ) THEN
+        v_duplicate := true;
+      ELSE
+        IF COALESCE((v_share ->> 'paid')::boolean, false) THEN
+          RAISE EXCEPTION 'Share is already fully settled' USING ERRCODE = '23514';
+        END IF;
+
+        v_owed_stroops := (v_share ->> 'amount')::NUMERIC * 10000000;
+        SELECT COALESCE(SUM((i ->> 'amountStroops')::NUMERIC), 0)
+          INTO v_paid_stroops
+          FROM jsonb_array_elements(v_installments) AS i;
+
+        IF v_paid_stroops + v_amount_stroops > v_owed_stroops THEN
+          RAISE EXCEPTION 'OVERPAYMENT: installment of % stroops exceeds remaining % stroops',
+            v_amount_stroops, v_owed_stroops - v_paid_stroops
+            USING ERRCODE = '23514';
+        END IF;
+
+        v_paid_stroops := v_paid_stroops + v_amount_stroops;
+        v_installments := v_installments || jsonb_build_array(
+          p_installment || jsonb_build_object('txHash', v_tx_hash)
+        );
+        v_share := v_share || jsonb_build_object(
+          'installments', v_installments,
+          'paidStroops', v_paid_stroops::TEXT,
+          'paid', v_paid_stroops = v_owed_stroops
+        );
+        IF v_paid_stroops = v_owed_stroops THEN
+          v_share := v_share || jsonb_build_object('txHash', v_tx_hash);
+        END IF;
+      END IF;
+    END IF;
+
+    IF NOT COALESCE((v_share ->> 'paid')::boolean, false) THEN
+      v_all_paid := false;
+    END IF;
+
+    v_updated_shares := v_updated_shares || jsonb_build_array(v_share);
+  END LOOP;
+
+  IF NOT v_found THEN
+    RAISE EXCEPTION 'Share not found on this expense' USING ERRCODE = 'P0002';
+  END IF;
+
+  IF v_duplicate THEN
+    RETURN QUERY SELECT * FROM public.expenses WHERE id = p_expense_id;
+    RETURN;
+  END IF;
+
+  RETURN QUERY UPDATE public.expenses
+     SET shares = v_updated_shares,
+         settled = v_all_paid,
+         version = version + 1
+   WHERE id = p_expense_id
+   RETURNING *;
 END;
 $fn$;
 
-CREATE OR REPLACE FUNCTION public.expense_has_permission(p_expense_id UUID, p_permission TEXT)
-RETURNS BOOLEAN
-LANGUAGE plpgsql
+GRANT EXECUTE ON FUNCTION public.record_share_installment(UUID, TEXT, JSONB) TO authenticated;
+
+NOTIFY pgrst, 'reload schema';
+
+INSERT INTO public.schema_migrations (version, name, checksum)
+VALUES ('0012', '0012_share_installments', 'share_installments_v1')
+ON CONFLICT (version) DO NOTHING;
+
+
+-- ============================================================================
+-- Cumulative Addition from 0013_privacy_retention_deletion.sql
+-- ============================================================================
+
+-- ============================================================================
+-- Migration 0013: Privacy, Data Retention & Account Deletion (#310)
+-- ============================================================================
+-- 1. Creates deleted_accounts registry to invalidate stale sessions, realtime
+--    subscriptions, and storage access for deleted accounts.
+-- 2. Updates public.current_wallet() to fail closed (return NULL) for deleted accounts.
+-- 3. Provides stored procedure public.delete_user_account for atomic off-chain erasure.
+
+CREATE TABLE IF NOT EXISTS public.deleted_accounts (
+  wallet_address TEXT PRIMARY KEY,
+  deleted_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  reason         TEXT NOT NULL DEFAULT 'user_request'
+);
+
+CREATE INDEX IF NOT EXISTS idx_deleted_accounts_deleted_at
+  ON public.deleted_accounts (deleted_at DESC);
+
+ALTER TABLE public.deleted_accounts ENABLE ROW LEVEL SECURITY;
+
+-- Service role and authenticated users can read deletion status
+DROP POLICY IF EXISTS "deleted_accounts_select_all" ON public.deleted_accounts;
+CREATE POLICY "deleted_accounts_select_all" ON public.deleted_accounts
+  FOR SELECT USING (true);
+
+-- Only authenticated users for their own wallet can record deletion
+DROP POLICY IF EXISTS "deleted_accounts_insert_self" ON public.deleted_accounts;
+CREATE POLICY "deleted_accounts_insert_self" ON public.deleted_accounts
+  FOR INSERT WITH CHECK (
+    wallet_address = NULLIF(COALESCE(current_setting('request.jwt.claims', true)::jsonb ->> 'wallet_address', ''), '')
+  );
+
+GRANT SELECT, INSERT ON public.deleted_accounts TO anon, authenticated;
+
+-- ── Hardened current_wallet() ────────────────────────────────────────────────
+-- Fails closed immediately for any session whose wallet is in deleted_accounts.
+-- This revokes access across PostgREST RLS, Realtime subscriptions, and storage.
+CREATE OR REPLACE FUNCTION public.current_wallet()
+RETURNS TEXT
+LANGUAGE SQL
 STABLE
+AS $fn$
+  SELECT CASE
+    WHEN EXISTS (
+      SELECT 1 FROM public.deleted_accounts
+       WHERE wallet_address = NULLIF(COALESCE(current_setting('request.jwt.claims', true)::jsonb ->> 'wallet_address', ''), '')
+    ) THEN NULL
+    ELSE NULLIF(COALESCE(current_setting('request.jwt.claims', true)::jsonb ->> 'wallet_address', ''), '')
+  END;
+$fn$;
+
+-- ── Atomic Deletion Stored Procedure ─────────────────────────────────────────
+CREATE OR REPLACE FUNCTION public.delete_user_account(p_wallet_address TEXT)
+RETURNS JSONB
+LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, pg_temp
 AS $fn$
 DECLARE
-  v_wallet TEXT := public.current_wallet();
+  v_caller TEXT := public.current_wallet();
+  v_target TEXT := btrim(p_wallet_address);
 BEGIN
-  IF v_wallet IS NULL OR p_permission IS NULL THEN
-    RETURN FALSE;
+  -- Caller must be the account owner or executing via service_role (v_caller IS NULL)
+  IF v_caller IS NOT NULL AND v_caller <> v_target THEN
+    RAISE EXCEPTION 'Unauthorized: cannot delete another user account' USING ERRCODE = '42501';
   END IF;
 
-  IF EXISTS (
-    SELECT 1
-    FROM public.trips t
-    WHERE t.expense_ids @> ARRAY[p_expense_id::TEXT]
-      AND public.trip_has_permission(t.id, p_permission)
-  ) THEN
-    RETURN TRUE;
-  END IF;
+  -- 1. Insert into deleted_accounts
+  INSERT INTO public.deleted_accounts (wallet_address, deleted_at, reason)
+  VALUES (v_target, NOW(), 'user_request')
+  ON CONFLICT (wallet_address) DO UPDATE
+    SET deleted_at = NOW();
 
-  RETURN EXISTS (
-    SELECT 1 FROM public.expenses e
-    WHERE e.id = p_expense_id
-      AND NOT EXISTS (
-        SELECT 1 FROM public.trips t WHERE t.expense_ids @> ARRAY[p_expense_id::TEXT]
-      )
-      AND (
-        e.created_by_wallet = v_wallet
-        OR (
-          p_permission = 'receipts.manage'
-          AND EXISTS (
-            SELECT 1 FROM jsonb_array_elements(COALESCE(e.members, '[]'::jsonb)) member
-            WHERE member ->> 'id' = e.paid_by_member_id
-              AND upper(btrim(COALESCE(member ->> 'walletAddress', ''))) = upper(btrim(v_wallet))
-          )
-        )
-      )
+  -- 2. Delete user profile
+  DELETE FROM public.users WHERE wallet_address = v_target;
+
+  -- 3. Delete owned contacts
+  DELETE FROM public.contacts WHERE owner_wallet = v_target;
+
+  -- 4. Revoke active invites
+  UPDATE public.trip_invites
+     SET revoked = true,
+         revoked_at = NOW()
+   WHERE created_by_wallet = v_target
+     AND revoked = false;
+
+  -- 5. Mark uploaded receipts as removed
+  UPDATE public.expense_receipts
+     SET status = 'removed',
+         removal_reason = 'user',
+         removed_at = NOW(),
+         removed_by_wallet = v_target
+   WHERE uploaded_by_wallet = v_target
+     AND status <> 'removed';
+
+  -- 6. Delete challenges
+  DELETE FROM public.auth_challenges WHERE address = v_target;
+
+  RETURN jsonb_build_object(
+    'success', true,
+    'wallet_address', v_target,
+    'deleted_at', NOW()
   );
 END;
 $fn$;
 
-CREATE OR REPLACE FUNCTION public.normalize_trip_member_roles()
-RETURNS TRIGGER
-LANGUAGE plpgsql
-SET search_path = public
-AS $fn$
-DECLARE
-  v_member JSONB;
-  v_old JSONB;
-  v_result JSONB := '[]'::jsonb;
-  v_role TEXT;
-  v_permissions JSONB;
+REVOKE EXECUTE ON FUNCTION public.delete_user_account(TEXT) FROM anon;
+GRANT EXECUTE ON FUNCTION public.delete_user_account(TEXT) TO authenticated;
+
+-- Record migration
+INSERT INTO public.schema_migrations (version, name, checksum)
+VALUES ('0013', '0013_privacy_retention_deletion', 'privacy_retention_310_v1')
+ON CONFLICT (version) DO NOTHING;
+
+
+-- ============================================================================
+-- Cumulative Addition from 0019_expense_corrections_and_voids.sql
+-- ============================================================================
+
+-- 0019_expense_corrections_and_voids.sql
+-- #316: Add reversals and corrections instead of destructive edits
+-- Financial history should remain understandable after a mistake.
+-- Replace the temptation to mutate or delete settled data with linked correction records.
+
+-- 1. Add void and linked-correction columns to public.expenses
+ALTER TABLE public.expenses
+  ADD COLUMN IF NOT EXISTS voided BOOLEAN NOT NULL DEFAULT FALSE,
+  ADD COLUMN IF NOT EXISTS voided_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS voided_by_wallet TEXT,
+  ADD COLUMN IF NOT EXISTS void_reason TEXT,
+  ADD COLUMN IF NOT EXISTS correction_of_expense_id UUID REFERENCES public.expenses(id) ON DELETE RESTRICT,
+  ADD COLUMN IF NOT EXISTS correction_type TEXT,
+  ADD COLUMN IF NOT EXISTS correction_reason TEXT;
+
+-- 2. Constraints for voided and linked-correction fields
+DO $$
 BEGIN
-  IF jsonb_typeof(COALESCE(NEW.members, '[]'::jsonb)) <> 'array' THEN
-    RAISE EXCEPTION 'Trip members must be an array';
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'expenses_void_check'
+  ) THEN
+    ALTER TABLE public.expenses
+      ADD CONSTRAINT expenses_void_check CHECK (
+        (voided = FALSE AND void_reason IS NULL AND voided_at IS NULL AND voided_by_wallet IS NULL) OR
+        (voided = TRUE AND void_reason IS NOT NULL AND char_length(btrim(void_reason)) BETWEEN 1 AND 1000 AND voided_at IS NOT NULL AND voided_by_wallet IS NOT NULL)
+      );
   END IF;
-
-  FOR v_member IN SELECT value FROM jsonb_array_elements(COALESCE(NEW.members, '[]'::jsonb)) LOOP
-    v_old := NULL;
-    IF TG_OP = 'UPDATE' THEN
-      SELECT value INTO v_old
-      FROM jsonb_array_elements(COALESCE(OLD.members, '[]'::jsonb))
-      WHERE value ->> 'id' = v_member ->> 'id'
-      LIMIT 1;
-    END IF;
-
-    IF TG_OP = 'UPDATE'
-       AND v_old IS NOT NULL
-       AND current_setting('stellar_star.role_change', true) IS DISTINCT FROM 'on' THEN
-      v_member := jsonb_set(
-        v_member,
-        '{role}',
-        to_jsonb(COALESCE(
-          v_old ->> 'role',
-          CASE
-            WHEN upper(btrim(COALESCE(v_old ->> 'walletAddress', ''))) = upper(btrim(OLD.created_by_wallet))
-            THEN 'owner'
-            ELSE 'contributor'
-          END
-        ))
-      );
-      v_member := (v_member - 'customPermissions') ||
-        CASE WHEN v_old ? 'customPermissions'
-          THEN jsonb_build_object('customPermissions', v_old -> 'customPermissions')
-          ELSE '{}'::jsonb
-        END;
-    ELSIF TG_OP = 'UPDATE' AND v_old IS NULL THEN
-      v_member := (v_member - 'customPermissions') || jsonb_build_object('role', 'contributor');
-    ELSIF TG_OP = 'INSERT' THEN
-      v_member := (v_member - 'customPermissions') || jsonb_build_object(
-        'role',
-        CASE
-          WHEN upper(btrim(COALESCE(v_member ->> 'walletAddress', ''))) = upper(btrim(NEW.created_by_wallet))
-          THEN 'owner'
-          ELSE 'contributor'
-        END
-      );
-    END IF;
-
-    v_role := COALESCE(
-      v_member ->> 'role',
-      CASE
-        WHEN upper(btrim(COALESCE(v_member ->> 'walletAddress', ''))) = upper(btrim(NEW.created_by_wallet))
-        THEN 'owner'
-        ELSE 'contributor'
-      END
-    );
-    IF v_role NOT IN ('owner', 'organizer', 'contributor', 'viewer', 'custom') THEN
-      RAISE EXCEPTION 'Invalid trip role';
-    END IF;
-
-    v_member := jsonb_set(v_member, '{role}', to_jsonb(v_role));
-    v_permissions := COALESCE(v_member -> 'customPermissions', '[]'::jsonb);
-    IF v_role = 'custom' THEN
-      IF jsonb_typeof(v_permissions) <> 'array'
-         OR EXISTS (
-           SELECT 1 FROM jsonb_array_elements_text(v_permissions) permission
-           WHERE permission IS NULL OR permission NOT IN (
-             'trip.settings.manage', 'members.manage', 'expenses.manage',
-             'receipts.manage', 'exports.view', 'reminders.manage',
-             'settlement.proposals.manage'
-           )
-         ) THEN
-        RAISE EXCEPTION 'Invalid custom trip permission';
-      END IF;
-    ELSE
-      v_member := v_member - 'customPermissions';
-    END IF;
-
-    v_result := v_result || jsonb_build_array(v_member);
-  END LOOP;
 
   IF NOT EXISTS (
-    SELECT 1 FROM jsonb_array_elements(v_result) member
-    WHERE member ->> 'role' = 'owner'
-      AND btrim(COALESCE(member ->> 'walletAddress', '')) <> ''
+    SELECT 1 FROM pg_constraint WHERE conname = 'expenses_correction_type_check'
   ) THEN
-    RAISE EXCEPTION 'A trip must retain at least one owner; transfer ownership before demoting or removing the final owner';
+    ALTER TABLE public.expenses
+      ADD CONSTRAINT expenses_correction_type_check CHECK (
+        correction_type IS NULL OR correction_type IN ('reversal', 'adjustment', 'offset')
+      );
   END IF;
 
-  NEW.members := v_result;
-  RETURN NEW;
-END;
-$fn$;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'expenses_correction_link_check'
+  ) THEN
+    ALTER TABLE public.expenses
+      ADD CONSTRAINT expenses_correction_link_check CHECK (
+        (correction_of_expense_id IS NULL AND correction_type IS NULL AND correction_reason IS NULL) OR
+        (correction_of_expense_id IS NOT NULL AND correction_type IS NOT NULL AND correction_reason IS NOT NULL AND char_length(btrim(correction_reason)) BETWEEN 1 AND 1000)
+      );
+  END IF;
 
-CREATE OR REPLACE FUNCTION public.guard_trip_update()
-RETURNS TRIGGER
-LANGUAGE plpgsql
-SET search_path = public
-AS $fn$
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'expenses_no_self_correction_check'
+  ) THEN
+    ALTER TABLE public.expenses
+      ADD CONSTRAINT expenses_no_self_correction_check CHECK (
+        correction_of_expense_id IS NULL OR correction_of_expense_id <> id
+      );
+  END IF;
+END $$;
+
+-- 3. Indexes for fast lookup of voided expenses and linked correction chains
+CREATE INDEX IF NOT EXISTS idx_expenses_voided
+  ON public.expenses (voided) WHERE voided = TRUE;
+CREATE INDEX IF NOT EXISTS idx_expenses_correction_of
+  ON public.expenses (correction_of_expense_id) WHERE correction_of_expense_id IS NOT NULL;
+
+-- 4. Immutable append-only audit event log for void and correction events
+CREATE TABLE IF NOT EXISTS public.expense_audit_events (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  expense_id UUID NOT NULL REFERENCES public.expenses(id) ON DELETE RESTRICT,
+  action TEXT NOT NULL CHECK (action IN ('voided', 'correction_created', 'reversal_created', 'adjustment_created')),
+  actor_wallet TEXT NOT NULL,
+  reason TEXT NOT NULL CHECK (char_length(btrim(reason)) BETWEEN 1 AND 1000),
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_expense_audit_events_expense_id
+  ON public.expense_audit_events (expense_id, created_at DESC);
+
+-- 5. Prevent destructive mutations on settled data and frozen voided rows
+CREATE OR REPLACE FUNCTION public.prevent_destructive_expense_operations()
+RETURNS TRIGGER LANGUAGE plpgsql AS $fn$
 DECLARE
-  v_internal_role_change BOOLEAN :=
-    current_setting('stellar_star.role_change', true) = 'on';
-  v_self_join BOOLEAN :=
-    public.trip_member_role(OLD.id, public.current_wallet()) IS NULL
-    AND public.current_wallet() IS NOT NULL
-    AND EXISTS (
-      SELECT 1
-      FROM jsonb_array_elements(COALESCE(NEW.members, '[]'::jsonb)) member
-      WHERE upper(btrim(COALESCE(member ->> 'walletAddress', ''))) =
-            upper(btrim(public.current_wallet()))
-    )
-    AND (to_jsonb(NEW) - 'members' - 'member_wallets' - 'updated_at')
-          IS NOT DISTINCT FROM
-        (to_jsonb(OLD) - 'members' - 'member_wallets' - 'updated_at');
+  v_is_settled BOOLEAN;
 BEGIN
-  IF NEW.members IS DISTINCT FROM OLD.members AND NOT v_internal_role_change
-     AND NOT v_self_join
-     AND NOT public.trip_has_permission(OLD.id, 'members.manage') THEN
-    RAISE EXCEPTION 'TRIP_MEMBERS_FORBIDDEN' USING ERRCODE = '42501';
+  IF TG_OP = 'DELETE' THEN
+    v_is_settled := OLD.settled OR EXISTS (
+      SELECT 1 FROM jsonb_array_elements(OLD.shares) s
+      WHERE COALESCE((s->>'paid')::BOOLEAN, FALSE) = TRUE
+        OR (s->'installments' IS NOT NULL AND jsonb_array_length(s->'installments') > 0)
+    );
+    IF v_is_settled THEN
+      RAISE EXCEPTION 'A settled expense cannot be deleted. Use a linked correction or offset to preserve financial history.' USING ERRCODE = '42501';
+    END IF;
+    IF EXISTS (SELECT 1 FROM public.expenses WHERE correction_of_expense_id = OLD.id) THEN
+      RAISE EXCEPTION 'An expense with linked corrections cannot be deleted.' USING ERRCODE = '42501';
+    END IF;
+    RETURN OLD;
   END IF;
 
-  IF NEW.expense_ids IS DISTINCT FROM OLD.expense_ids
-     AND NOT v_internal_role_change
-     AND NOT public.trip_has_permission(OLD.id, 'expenses.manage') THEN
-    RAISE EXCEPTION 'EXPENSE_LINK_FORBIDDEN' USING ERRCODE = '42501';
+  IF TG_OP = 'UPDATE' THEN
+    -- A voided expense is completely frozen
+    IF OLD.voided = TRUE THEN
+      IF NEW.title IS DISTINCT FROM OLD.title
+        OR NEW.description IS DISTINCT FROM OLD.description
+        OR NEW.total_amount IS DISTINCT FROM OLD.total_amount
+        OR NEW.currency IS DISTINCT FROM OLD.currency
+        OR NEW.split_mode IS DISTINCT FROM OLD.split_mode
+        OR NEW.paid_by_member_id IS DISTINCT FROM OLD.paid_by_member_id
+        OR NEW.members IS DISTINCT FROM OLD.members
+        OR NEW.shares IS DISTINCT FROM OLD.shares
+        OR NEW.settled IS DISTINCT FROM OLD.settled
+        OR NEW.voided IS DISTINCT FROM OLD.voided
+        OR NEW.void_reason IS DISTINCT FROM OLD.void_reason THEN
+        RAISE EXCEPTION 'A voided expense is immutable.' USING ERRCODE = '42501';
+      END IF;
+    END IF;
+
+    -- Voiding an unsettled expense transition check
+    IF NEW.voided = TRUE AND OLD.voided = FALSE THEN
+      v_is_settled := OLD.settled OR EXISTS (
+        SELECT 1 FROM jsonb_array_elements(OLD.shares) s
+        WHERE COALESCE((s->>'paid')::BOOLEAN, FALSE) = TRUE
+          OR (s->'installments' IS NOT NULL AND jsonb_array_length(s->'installments') > 0)
+      );
+      IF v_is_settled THEN
+        RAISE EXCEPTION 'A settled or partially paid expense cannot be voided; use a linked correction instead.' USING ERRCODE = '42501';
+      END IF;
+    END IF;
+
+    -- Settled expenses cannot have their financial facts mutated in place
+    v_is_settled := OLD.settled OR EXISTS (
+      SELECT 1 FROM jsonb_array_elements(OLD.shares) s
+      WHERE COALESCE((s->>'paid')::BOOLEAN, FALSE) = TRUE
+        OR (s->'installments' IS NOT NULL AND jsonb_array_length(s->'installments') > 0)
+    );
+    IF v_is_settled AND NEW.voided = FALSE THEN
+      IF NEW.total_amount IS DISTINCT FROM OLD.total_amount
+        OR NEW.split_mode IS DISTINCT FROM OLD.split_mode
+        OR NEW.paid_by_member_id IS DISTINCT FROM OLD.paid_by_member_id
+        OR NEW.members IS DISTINCT FROM OLD.members
+        OR NEW.currency IS DISTINCT FROM OLD.currency
+        OR NEW.settlement_asset IS DISTINCT FROM OLD.settlement_asset THEN
+        RAISE EXCEPTION 'Settled expenses cannot be mutated in place; create a linked correction instead.' USING ERRCODE = '42501';
+      END IF;
+    END IF;
   END IF;
 
-  IF (to_jsonb(NEW) - 'members' - 'member_wallets' - 'expense_ids' - 'updated_at')
-       IS DISTINCT FROM
-     (to_jsonb(OLD) - 'members' - 'member_wallets' - 'expense_ids' - 'updated_at')
-     AND NOT v_internal_role_change
-     AND NOT public.trip_has_permission(OLD.id, 'trip.settings.manage') THEN
-    RAISE EXCEPTION 'TRIP_SETTINGS_FORBIDDEN' USING ERRCODE = '42501';
+  RETURN NEW;
+END;
+$fn$;
+
+DROP TRIGGER IF EXISTS trg_prevent_destructive_expense_ops ON public.expenses;
+CREATE TRIGGER trg_prevent_destructive_expense_ops
+  BEFORE UPDATE OR DELETE ON public.expenses
+  FOR EACH ROW EXECUTE FUNCTION public.prevent_destructive_expense_operations();
+
+-- 6. Freeze audit events table as append-only
+CREATE OR REPLACE FUNCTION public.freeze_expense_audit_events()
+RETURNS TRIGGER LANGUAGE plpgsql AS $fn$
+BEGIN
+  RAISE EXCEPTION 'Expense audit events are append-only.' USING ERRCODE = '42501';
+END;
+$fn$;
+
+DROP TRIGGER IF EXISTS trg_expense_audit_events_freeze ON public.expense_audit_events;
+CREATE TRIGGER trg_expense_audit_events_freeze
+  BEFORE UPDATE OR DELETE ON public.expense_audit_events
+  FOR EACH ROW EXECUTE FUNCTION public.freeze_expense_audit_events();
+
+-- 7. Trigger to automatically record audit events on void or correction creation
+CREATE OR REPLACE FUNCTION public.record_expense_correction_audit_event()
+RETURNS TRIGGER LANGUAGE plpgsql AS $fn$
+BEGIN
+  IF TG_OP = 'UPDATE' AND NEW.voided = TRUE AND OLD.voided = FALSE THEN
+    INSERT INTO public.expense_audit_events (expense_id, action, actor_wallet, reason, metadata)
+    VALUES (
+      NEW.id,
+      'voided',
+      NEW.voided_by_wallet,
+      NEW.void_reason,
+      jsonb_build_object('total_amount', NEW.total_amount, 'voided_at', NEW.voided_at)
+    );
+  ELSIF TG_OP = 'INSERT' AND NEW.correction_of_expense_id IS NOT NULL THEN
+    INSERT INTO public.expense_audit_events (expense_id, action, actor_wallet, reason, metadata)
+    VALUES (
+      NEW.id,
+      CASE WHEN NEW.correction_type = 'reversal' THEN 'reversal_created' ELSE 'adjustment_created' END,
+      NEW.created_by_wallet,
+      NEW.correction_reason,
+      jsonb_build_object(
+        'correction_of_expense_id', NEW.correction_of_expense_id,
+        'correction_type', NEW.correction_type,
+        'total_amount', NEW.total_amount
+      )
+    );
   END IF;
   RETURN NEW;
 END;
 $fn$;
 
-DROP TRIGGER IF EXISTS trg_014_trips_guard_authorization ON public.trips;
-CREATE TRIGGER trg_014_trips_guard_authorization
-  BEFORE UPDATE ON public.trips
-  FOR EACH ROW EXECUTE FUNCTION public.guard_trip_update();
+DROP TRIGGER IF EXISTS trg_expense_correction_audit ON public.expenses;
+CREATE TRIGGER trg_expense_correction_audit
+  AFTER INSERT OR UPDATE ON public.expenses
+  FOR EACH ROW EXECUTE FUNCTION public.record_expense_correction_audit_event();
 
-DROP TRIGGER IF EXISTS trg_015_trips_normalize_roles ON public.trips;
-CREATE TRIGGER trg_015_trips_normalize_roles
-  BEFORE INSERT OR UPDATE OF members ON public.trips
-  FOR EACH ROW EXECUTE FUNCTION public.normalize_trip_member_roles();
+-- 8. Atomic void_expense RPC function
+CREATE OR REPLACE FUNCTION public.void_expense(p_expense_id UUID, p_reason TEXT)
+RETURNS public.expenses LANGUAGE plpgsql SECURITY INVOKER AS $fn$
+DECLARE
+  v_expense public.expenses%ROWTYPE;
+  v_caller TEXT;
+  v_trimmed_reason TEXT;
+  v_is_settled BOOLEAN;
+  v_is_authorized BOOLEAN;
+BEGIN
+  v_trimmed_reason := btrim(COALESCE(p_reason, ''));
+  IF char_length(v_trimmed_reason) < 1 OR char_length(v_trimmed_reason) > 1000 THEN
+    RAISE EXCEPTION 'A void reason between 1 and 1000 characters is required.' USING ERRCODE = '22023';
+  END IF;
 
+  v_caller := public.current_wallet();
+  IF v_caller IS NULL OR v_caller = '' THEN
+    RAISE EXCEPTION 'Authentication required.' USING ERRCODE = '42501';
+  END IF;
+
+  SELECT * INTO v_expense FROM public.expenses WHERE id = p_expense_id FOR UPDATE;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Expense not found.' USING ERRCODE = 'P0002';
+  END IF;
+
+  IF v_expense.voided THEN
+    RAISE EXCEPTION 'Expense is already voided.' USING ERRCODE = '42501';
+  END IF;
+
+  -- Check permissions: caller is creator, payer, or has expenses.manage permission
+  v_is_authorized := (
+    upper(v_expense.created_by_wallet) = upper(v_caller)
+    OR EXISTS (
+      SELECT 1 FROM jsonb_array_elements(v_expense.members) m
+      WHERE m->>'id' = v_expense.paid_by_member_id AND upper(m->>'walletAddress') = upper(v_caller)
+    )
+    OR public.expense_has_permission(p_expense_id, 'expenses.manage')
+  );
+  IF NOT v_is_authorized THEN
+    RAISE EXCEPTION 'You are not authorized to void this expense.' USING ERRCODE = '42501';
+  END IF;
+
+  -- Check settled status
+  v_is_settled := v_expense.settled OR EXISTS (
+    SELECT 1 FROM jsonb_array_elements(v_expense.shares) s
+    WHERE COALESCE((s->>'paid')::BOOLEAN, FALSE) = TRUE
+      OR (s->'installments' IS NOT NULL AND jsonb_array_length(s->'installments') > 0)
+  );
+  IF v_is_settled THEN
+    RAISE EXCEPTION 'A settled or partially paid expense cannot be voided; use a linked correction instead.' USING ERRCODE = '42501';
+  END IF;
+
+  UPDATE public.expenses
+  SET voided = TRUE,
+      voided_at = NOW(),
+      voided_by_wallet = v_caller,
+      void_reason = v_trimmed_reason,
+      updated_at = NOW()
+  WHERE id = p_expense_id
+  RETURNING * INTO v_expense;
+
+  RETURN v_expense;
+END;
+$fn$;
+
+-- 9. Row level security and permissions
+ALTER TABLE public.expense_audit_events ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS expense_audit_events_select_members ON public.expense_audit_events;
+CREATE POLICY expense_audit_events_select_members ON public.expense_audit_events
+  FOR SELECT TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.expenses e
+      WHERE e.id = expense_id
+        AND (public.current_wallet() = ANY(e.member_wallets) OR upper(e.created_by_wallet) = upper(public.current_wallet()))
+    )
+  );
+
+DROP POLICY IF EXISTS expense_audit_events_insert_system ON public.expense_audit_events;
+CREATE POLICY expense_audit_events_insert_system ON public.expense_audit_events
+  FOR INSERT TO authenticated
+  WITH CHECK (upper(actor_wallet) = upper(public.current_wallet()));
+
+GRANT SELECT, INSERT ON public.expense_audit_events TO authenticated;
+GRANT EXECUTE ON FUNCTION public.void_expense(UUID, TEXT) TO authenticated;
+REVOKE ALL ON FUNCTION public.prevent_destructive_expense_operations() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.freeze_expense_audit_events() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.record_expense_correction_audit_event() FROM PUBLIC;
+
+NOTIFY pgrst, 'reload schema';
+
+INSERT INTO public.schema_migrations (version, name, checksum)
+VALUES ('0019', '0019_expense_corrections_and_voids', 'expense_corrections_and_voids_v1')
+ON CONFLICT (version) DO NOTHING;
+
+
+-- ============================================================================
+-- Cumulative Addition from 0012_security_review_hardening.sql
+-- ============================================================================
+
+-- ============================================================================
+-- Migration 0012: Security Review Hardening & Authorization Controls (#309)
+-- ============================================================================
+-- Addresses Findings SEC-F01, SEC-F02, SEC-F03, SEC-F05 from the Security Audit:
+-- 1. Restricts mark_share_paid and mark_shares_paid_batch to authenticated members / service role.
+-- 2. Restricts update_expense_versioned to authenticated members of the expense.
+-- 3. Pins search_path = public, pg_temp on all SECURITY DEFINER functions.
+-- 4. Enforces claiming wallet match on claim_trip_invite.
+-- 5. Prevents non-owner trip members from directly mutating trip membership.
+
+-- 1. Hardened update_expense_versioned
 CREATE OR REPLACE FUNCTION public.update_expense_versioned(
   p_id UUID,
   p_expected_version INT,
@@ -3947,405 +5471,2611 @@ CREATE OR REPLACE FUNCTION public.update_expense_versioned(
 RETURNS SETOF public.expenses
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, pg_temp
 AS $fn$
 DECLARE
   v_current_version INT;
+  v_expense public.expenses;
+  v_caller TEXT := public.current_wallet();
 BEGIN
-  IF NOT public.expense_has_permission(p_id, 'expenses.manage') THEN
-    RAISE EXCEPTION 'EXPENSE_UPDATE_FORBIDDEN' USING ERRCODE = '42501';
+  SELECT * INTO v_expense
+    FROM public.expenses
+   WHERE id = p_id
+     FOR UPDATE;
+     
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Expense not found';
   END IF;
 
-  SELECT version INTO v_current_version
-  FROM public.expenses
-  WHERE id = p_id
-  FOR UPDATE;
-  IF NOT FOUND THEN RAISE EXCEPTION 'Expense not found'; END IF;
-  IF v_current_version <> p_expected_version THEN
-    RAISE EXCEPTION 'Version conflict: expected %, got %', p_expected_version, v_current_version
-      USING ERRCODE = '40001';
+  -- SEC-F02: Verify caller is an authorized member if authenticated
+  IF v_caller IS NOT NULL AND NOT (v_expense.member_wallets @> ARRAY[v_caller]) THEN
+    RAISE EXCEPTION 'Unauthorized: only expense members can update this expense' USING ERRCODE = '42501';
   END IF;
-
+  
+  IF v_expense.version <> p_expected_version THEN
+    RAISE EXCEPTION 'Version conflict: expected %, got %', p_expected_version, v_expense.version USING ERRCODE = '40001';
+  END IF;
+  
   RETURN QUERY UPDATE public.expenses
-  SET title = COALESCE(p_title, title),
-      description = COALESCE(p_description, description),
-      split_mode = COALESCE(p_split_mode, split_mode),
-      paid_by_member_id = COALESCE(p_paid_by_member_id, paid_by_member_id),
-      members = COALESCE(p_members, members),
-      shares = COALESCE(p_shares, shares),
-      settled = COALESCE(p_settled, settled),
-      version = version + 1
-  WHERE id = p_id
-  RETURNING *;
+     SET title = COALESCE(p_title, title),
+         description = COALESCE(p_description, description),
+         split_mode = COALESCE(p_split_mode, split_mode),
+         paid_by_member_id = COALESCE(p_paid_by_member_id, paid_by_member_id),
+         members = COALESCE(p_members, members),
+         shares = COALESCE(p_shares, shares),
+         settled = COALESCE(p_settled, settled),
+         version = version + 1
+   WHERE id = p_id
+   RETURNING *;
 END;
 $fn$;
 
-CREATE OR REPLACE FUNCTION public.set_trip_member_role(
-  p_trip_id UUID,
+REVOKE EXECUTE ON FUNCTION public.update_expense_versioned(UUID, INT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, JSONB, JSONB, BOOLEAN) FROM anon;
+GRANT EXECUTE ON FUNCTION public.update_expense_versioned(UUID, INT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, JSONB, JSONB, BOOLEAN) TO authenticated;
+
+-- 2. Hardened mark_share_paid
+CREATE OR REPLACE FUNCTION public.mark_share_paid(
+  p_expense_id UUID,
   p_member_id TEXT,
-  p_role TEXT,
-  p_custom_permissions TEXT[] DEFAULT ARRAY[]::TEXT[]
+  p_tx_hash TEXT,
+  p_on_chain BOOLEAN DEFAULT true
 )
-RETURNS public.trips
+RETURNS SETOF public.expenses
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, pg_temp
 AS $fn$
 DECLARE
-  v_trip public.trips;
-  v_target JSONB;
-  v_previous_role TEXT;
-  v_previous_permissions TEXT[];
-  v_owner_count INT;
-  v_members JSONB;
-  v_next_permissions TEXT[] := ARRAY[]::TEXT[];
+  v_expense public.expenses;
+  v_shares JSONB;
+  v_share JSONB;
+  v_updated_shares JSONB := '[]'::jsonb;
+  v_found BOOLEAN := false;
+  v_all_paid BOOLEAN := true;
+  v_len INT;
+  v_idx INT;
+  v_caller TEXT := public.current_wallet();
 BEGIN
-  IF p_role NOT IN ('owner', 'organizer', 'contributor', 'viewer', 'custom') THEN
-    RAISE EXCEPTION 'INVALID_ROLE';
-  END IF;
-  IF p_role = 'custom' AND EXISTS (
-    SELECT 1 FROM unnest(COALESCE(p_custom_permissions, ARRAY[]::TEXT[])) permission
-    WHERE permission IS NULL OR permission NOT IN (
-      'trip.settings.manage', 'members.manage', 'expenses.manage',
-      'receipts.manage', 'exports.view', 'reminders.manage',
-      'settlement.proposals.manage'
-    )
-  ) THEN
-    RAISE EXCEPTION 'INVALID_CUSTOM_PERMISSION';
+  SELECT * INTO v_expense
+    FROM public.expenses
+   WHERE id = p_expense_id
+     FOR UPDATE;
+     
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Expense not found';
   END IF;
 
-  SELECT * INTO v_trip FROM public.trips WHERE id = p_trip_id FOR UPDATE;
-  IF NOT FOUND THEN RAISE EXCEPTION 'TRIP_NOT_FOUND'; END IF;
-  IF public.trip_member_role(p_trip_id, public.current_wallet()) IS DISTINCT FROM 'owner' THEN
-    RAISE EXCEPTION 'ROLE_CHANGE_FORBIDDEN';
+  -- SEC-F01: Verify caller is an authorized member or creditor of this expense
+  IF v_caller IS NOT NULL AND NOT (v_expense.member_wallets @> ARRAY[v_caller]) THEN
+    RAISE EXCEPTION 'Unauthorized: caller is not a participant in this expense' USING ERRCODE = '42501';
   END IF;
-  SELECT member INTO v_target
-  FROM jsonb_array_elements(v_trip.members) member
-  WHERE member ->> 'id' = p_member_id
-  LIMIT 1;
-  IF v_target IS NULL THEN RAISE EXCEPTION 'MEMBER_NOT_FOUND'; END IF;
-  IF p_role = 'owner' AND btrim(COALESCE(v_target ->> 'walletAddress', '')) = '' THEN
-    RAISE EXCEPTION 'OWNER_REQUIRES_WALLET';
+  
+  v_shares := v_expense.shares;
+  v_len := jsonb_array_length(v_shares);
+  
+  IF v_shares IS NULL OR v_len = 0 THEN
+    RETURN QUERY SELECT * FROM public.expenses WHERE id = p_expense_id;
+    RETURN;
   END IF;
-
-  v_previous_role := COALESCE(
-    v_target ->> 'role',
-    CASE
-      WHEN upper(btrim(COALESCE(v_target ->> 'walletAddress', ''))) = upper(btrim(v_trip.created_by_wallet))
-      THEN 'owner'
-      ELSE 'contributor'
-    END
-  );
-  SELECT COALESCE(array_agg(value), ARRAY[]::TEXT[])
-  INTO v_previous_permissions
-  FROM jsonb_array_elements_text(COALESCE(v_target -> 'customPermissions', '[]'::jsonb)) value;
-  IF p_role = 'custom' THEN v_next_permissions := COALESCE(p_custom_permissions, ARRAY[]::TEXT[]); END IF;
-
-  SELECT count(*) INTO v_owner_count
-  FROM jsonb_array_elements(v_trip.members) member
-  WHERE COALESCE(
-    member ->> 'role',
-    CASE
-      WHEN upper(btrim(COALESCE(member ->> 'walletAddress', ''))) = upper(btrim(v_trip.created_by_wallet))
-      THEN 'owner'
-      ELSE 'contributor'
-    END
-  ) = 'owner'
-    AND btrim(COALESCE(member ->> 'walletAddress', '')) <> '';
-  IF v_previous_role = 'owner' AND p_role <> 'owner' AND v_owner_count = 1 THEN
-    RAISE EXCEPTION 'OWNERSHIP_TRANSFER_REQUIRED';
+  
+  FOR v_idx IN 0..(v_len - 1) LOOP
+    v_share := v_shares -> v_idx;
+    
+    IF (v_share ->> 'memberId') = p_member_id THEN
+      v_found := true;
+      v_share := v_share || jsonb_build_object('paid', true, 'txHash', p_tx_hash);
+    END IF;
+    
+    IF NOT (v_share ->> 'paid')::boolean THEN
+      v_all_paid := false;
+    END IF;
+    
+    v_updated_shares := v_updated_shares || jsonb_build_array(v_share);
+  END LOOP;
+  
+  IF v_found THEN
+    RETURN QUERY UPDATE public.expenses
+       SET shares = v_updated_shares,
+           settled = v_all_paid,
+           version = version + 1
+     WHERE id = p_expense_id
+     RETURNING *;
+  ELSE
+    RETURN QUERY SELECT * FROM public.expenses WHERE id = p_expense_id;
   END IF;
-  IF v_previous_role = p_role AND v_previous_permissions = v_next_permissions THEN
-    RETURN v_trip;
-  END IF;
-
-  SELECT jsonb_agg(
-    CASE WHEN member ->> 'id' = p_member_id THEN
-      (member - 'customPermissions') || jsonb_build_object('role', p_role) ||
-      CASE WHEN p_role = 'custom'
-        THEN jsonb_build_object('customPermissions', to_jsonb(v_next_permissions))
-        ELSE '{}'::jsonb
-      END
-    ELSE member END
-  ) INTO v_members
-  FROM jsonb_array_elements(v_trip.members) member;
-
-  PERFORM set_config('stellar_star.role_change', 'on', true);
-  UPDATE public.trips SET members = v_members WHERE id = p_trip_id RETURNING * INTO v_trip;
-
-  INSERT INTO public.trip_role_audit (
-    trip_id, member_id, previous_role, next_role,
-    previous_custom_permissions, next_custom_permissions, changed_by_wallet
-  ) VALUES (
-    p_trip_id, p_member_id, v_previous_role, p_role,
-    v_previous_permissions, v_next_permissions, public.current_wallet()
-  );
-  RETURN v_trip;
 END;
 $fn$;
 
-CREATE OR REPLACE FUNCTION public.transfer_trip_ownership(p_trip_id UUID, p_new_owner_member_id TEXT)
-RETURNS public.trips
+REVOKE EXECUTE ON FUNCTION public.mark_share_paid(UUID, TEXT, TEXT, BOOLEAN) FROM anon;
+GRANT EXECUTE ON FUNCTION public.mark_share_paid(UUID, TEXT, TEXT, BOOLEAN) TO authenticated;
+
+-- 3. Hardened mark_shares_paid_batch
+CREATE OR REPLACE FUNCTION public.mark_shares_paid_batch(
+  p_updates JSONB,
+  p_tx_hash TEXT
+)
+RETURNS SETOF public.expenses
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, pg_temp
 AS $fn$
 DECLARE
-  v_trip public.trips;
-  v_actor_member JSONB;
-  v_target_member JSONB;
-  v_actor_id TEXT;
-  v_actor_previous_role TEXT;
-  v_target_previous_role TEXT;
-  v_actor_previous_permissions TEXT[];
-  v_target_previous_permissions TEXT[];
-  v_members JSONB;
+  v_update JSONB;
+  v_expense_id UUID;
+  v_member_id TEXT;
+  v_expense public.expenses;
+  v_caller TEXT := public.current_wallet();
 BEGIN
-  SELECT * INTO v_trip FROM public.trips WHERE id = p_trip_id FOR UPDATE;
-  IF NOT FOUND THEN RAISE EXCEPTION 'TRIP_NOT_FOUND'; END IF;
-  IF public.trip_member_role(p_trip_id, public.current_wallet()) IS DISTINCT FROM 'owner' THEN
-    RAISE EXCEPTION 'OWNERSHIP_TRANSFER_FORBIDDEN';
-  END IF;
-
-  SELECT member INTO v_actor_member
-  FROM jsonb_array_elements(v_trip.members) member
-  WHERE upper(btrim(COALESCE(member ->> 'walletAddress', ''))) =
-        upper(btrim(public.current_wallet()))
-    AND COALESCE(member ->> 'role', 'owner') = 'owner'
-  LIMIT 1;
-  SELECT member INTO v_target_member
-  FROM jsonb_array_elements(v_trip.members) member
-  WHERE member ->> 'id' = p_new_owner_member_id
-  LIMIT 1;
-  IF v_actor_member IS NULL OR v_target_member IS NULL
-     OR btrim(COALESCE(v_target_member ->> 'walletAddress', '')) = '' THEN
-    RAISE EXCEPTION 'MEMBER_NOT_FOUND';
-  END IF;
-  v_actor_id := v_actor_member ->> 'id';
-  IF v_actor_id = p_new_owner_member_id THEN RAISE EXCEPTION 'ALREADY_OWNER'; END IF;
-
-  v_actor_previous_role := COALESCE(v_actor_member ->> 'role', 'owner');
-  v_target_previous_role := COALESCE(
-    v_target_member ->> 'role',
-    CASE
-      WHEN upper(btrim(COALESCE(v_target_member ->> 'walletAddress', ''))) = upper(btrim(v_trip.created_by_wallet))
-      THEN 'owner'
-      ELSE 'contributor'
-    END
-  );
-  SELECT COALESCE(array_agg(value), ARRAY[]::TEXT[]) INTO v_actor_previous_permissions
-  FROM jsonb_array_elements_text(COALESCE(v_actor_member -> 'customPermissions', '[]'::jsonb)) value;
-  SELECT COALESCE(array_agg(value), ARRAY[]::TEXT[]) INTO v_target_previous_permissions
-  FROM jsonb_array_elements_text(COALESCE(v_target_member -> 'customPermissions', '[]'::jsonb)) value;
-
-  SELECT jsonb_agg(CASE
-    WHEN member ->> 'id' = v_actor_id THEN (member - 'customPermissions') || jsonb_build_object('role', 'organizer')
-    WHEN member ->> 'id' = p_new_owner_member_id THEN (member - 'customPermissions') || jsonb_build_object('role', 'owner')
-    ELSE member
-  END) INTO v_members
-  FROM jsonb_array_elements(v_trip.members) member;
-
-  PERFORM set_config('stellar_star.role_change', 'on', true);
-  UPDATE public.trips SET members = v_members WHERE id = p_trip_id RETURNING * INTO v_trip;
-
-  INSERT INTO public.trip_role_audit (
-    trip_id, member_id, previous_role, next_role,
-    previous_custom_permissions, next_custom_permissions, changed_by_wallet
-  ) VALUES
-    (p_trip_id, v_actor_id, v_actor_previous_role, 'organizer',
-     v_actor_previous_permissions, ARRAY[]::TEXT[], public.current_wallet()),
-    (p_trip_id, p_new_owner_member_id, v_target_previous_role, 'owner',
-     v_target_previous_permissions, ARRAY[]::TEXT[], public.current_wallet());
-  RETURN v_trip;
+  FOR v_update IN SELECT * FROM jsonb_array_elements(p_updates) LOOP
+    v_expense_id := (v_update ->> 'expenseId')::UUID;
+    v_member_id := v_update ->> 'memberId';
+    
+    SELECT * INTO v_expense FROM public.expenses WHERE id = v_expense_id;
+    IF FOUND AND (v_caller IS NULL OR (v_expense.member_wallets @> ARRAY[v_caller])) THEN
+      PERFORM public.mark_share_paid(v_expense_id, v_member_id, p_tx_hash, true);
+    END IF;
+  END LOOP;
+  
+  RETURN QUERY
+  SELECT * FROM public.expenses
+   WHERE id IN (
+     SELECT (u ->> 'expenseId')::UUID
+       FROM jsonb_array_elements(p_updates) AS u
+   );
 END;
 $fn$;
 
-CREATE OR REPLACE FUNCTION public.add_expense_to_trip(p_trip_id UUID, p_expense_id UUID)
-RETURNS TEXT[]
+REVOKE EXECUTE ON FUNCTION public.mark_shares_paid_batch(JSONB, TEXT) FROM anon;
+GRANT EXECUTE ON FUNCTION public.mark_shares_paid_batch(JSONB, TEXT) TO authenticated;
+
+-- 4. Pin search_path on auth challenge and rate-limiting procedures
+CREATE OR REPLACE FUNCTION public.record_auth_challenge(
+  p_address TEXT,
+  p_nonce TEXT,
+  p_expiration BIGINT,
+  p_max_pending INT DEFAULT 5
+)
+RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, pg_temp
 AS $fn$
 DECLARE
-  v_ids TEXT[];
+  v_count INT;
+  v_oldest_nonce TEXT;
 BEGIN
-  IF NOT public.trip_has_permission(p_trip_id, 'expenses.manage') THEN
-    RAISE EXCEPTION 'EXPENSE_LINK_FORBIDDEN' USING ERRCODE = '42501';
+  DELETE FROM public.auth_challenges
+   WHERE expiration <= (EXTRACT(EPOCH FROM NOW()) * 1000)::BIGINT;
+
+  SELECT COUNT(*) INTO v_count
+    FROM public.auth_challenges
+   WHERE address = p_address;
+
+  IF v_count >= p_max_pending THEN
+    SELECT nonce INTO v_oldest_nonce
+      FROM public.auth_challenges
+     WHERE address = p_address
+     ORDER BY created_at ASC
+     LIMIT 1;
+
+    DELETE FROM public.auth_challenges WHERE nonce = v_oldest_nonce;
   END IF;
-  IF NOT EXISTS (SELECT 1 FROM public.expenses WHERE id = p_expense_id) THEN
-    RAISE EXCEPTION 'EXPENSE_NOT_FOUND';
+
+  INSERT INTO public.auth_challenges (nonce, address, expiration)
+  VALUES (p_nonce, p_address, p_expiration)
+  ON CONFLICT (nonce) DO UPDATE
+    SET expiration = EXCLUDED.expiration;
+
+  RETURN TRUE;
+END;
+$fn$;
+
+CREATE OR REPLACE FUNCTION public.consume_auth_challenge(
+  p_address TEXT,
+  p_nonce TEXT,
+  p_now BIGINT
+)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $fn$
+DECLARE
+  v_deleted_count INT;
+BEGIN
+  DELETE FROM public.auth_challenges
+   WHERE nonce = p_nonce
+     AND address = p_address
+     AND expiration > p_now;
+
+  GET DIAGNOSTICS v_deleted_count = ROW_COUNT;
+  RETURN v_deleted_count > 0;
+END;
+$fn$;
+
+CREATE OR REPLACE FUNCTION public.check_rate_limit(
+  p_key TEXT,
+  p_limit INT,
+  p_window_ms BIGINT,
+  p_now BIGINT
+)
+RETURNS JSON
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $fn$
+DECLARE
+  v_count INT;
+  v_window_start BIGINT;
+  v_reset_ms BIGINT;
+  v_allowed BOOLEAN;
+BEGIN
+  SELECT count, window_start
+    INTO v_count, v_window_start
+    FROM public.auth_rate_limits
+   WHERE key = p_key
+     FOR UPDATE;
+
+  IF NOT FOUND OR (p_now - v_window_start) >= p_window_ms THEN
+    INSERT INTO public.auth_rate_limits (key, count, window_start, updated_at)
+    VALUES (p_key, 1, p_now, NOW())
+    ON CONFLICT (key) DO UPDATE
+      SET count = 1,
+          window_start = p_now,
+          updated_at = NOW();
+
+    v_count := 1;
+    v_window_start := p_now;
+  ELSE
+    v_count := v_count + 1;
+    UPDATE public.auth_rate_limits
+       SET count = v_count,
+           updated_at = NOW()
+     WHERE key = p_key;
   END IF;
+
+  v_allowed := v_count <= p_limit;
+  v_reset_ms := GREATEST(0, (v_window_start + p_window_ms) - p_now);
+
+  RETURN json_build_object(
+    'allowed', v_allowed,
+    'count', v_count,
+    'resetMs', v_reset_ms
+  );
+END;
+$fn$;
+
+-- 5. Pin search_path on claim_trip_invite and enforce wallet verification
+CREATE OR REPLACE FUNCTION public.claim_trip_invite(
+  p_token_hash TEXT,
+  p_claiming_wallet TEXT,
+  p_selected_member_id TEXT DEFAULT NULL,
+  p_expected_trip_id TEXT DEFAULT NULL
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $fn$
+DECLARE
+  v_invite RECORD;
+  v_trip RECORD;
+  v_target_member_id TEXT;
+  v_target_member_name TEXT;
+  v_members JSONB;
+  v_updated_members JSONB := '[]'::jsonb;
+  v_member JSONB;
+  v_found BOOLEAN := FALSE;
+  v_already_claimed BOOLEAN := FALSE;
+  v_normalized_wallet TEXT;
+  v_existing_wallet TEXT;
+  v_idx INT;
+  v_len INT;
+  v_caller TEXT := public.current_wallet();
+BEGIN
+  IF p_claiming_wallet IS NULL OR btrim(p_claiming_wallet) = '' THEN
+    RAISE EXCEPTION 'Claiming wallet address is required';
+  END IF;
+  v_normalized_wallet := upper(btrim(p_claiming_wallet));
+
+  -- SEC-F03: When authenticated, prevent claiming a slot for a different wallet
+  IF v_caller IS NOT NULL AND upper(btrim(v_caller)) <> v_normalized_wallet THEN
+    RAISE EXCEPTION 'Unauthorized: claiming wallet does not match session' USING ERRCODE = '42501';
+  END IF;
+
+  SELECT *
+    INTO v_invite
+    FROM public.trip_invites
+   WHERE token_hash = p_token_hash
+     FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'INVITE_NOT_FOUND: Invalid or unrecognized invitation token';
+  END IF;
+
+  IF v_invite.revoked THEN
+    RAISE EXCEPTION 'INVITE_REVOKED: This invitation has been revoked';
+  END IF;
+
+  IF v_invite.expires_at <= NOW() THEN
+    RAISE EXCEPTION 'INVITE_EXPIRED: This invitation has expired';
+  END IF;
+
+  IF v_invite.uses >= v_invite.max_uses THEN
+    RAISE EXCEPTION 'INVITE_EXHAUSTED: This invitation has already reached its maximum uses';
+  END IF;
+
+  IF p_expected_trip_id IS NOT NULL AND btrim(p_expected_trip_id) <> '' THEN
+    IF v_invite.trip_id <> btrim(p_expected_trip_id) THEN
+      RAISE EXCEPTION 'TRIP_MISMATCH: Invitation token does not belong to the specified trip';
+    END IF;
+  END IF;
+
+  SELECT *
+    INTO v_trip
+    FROM public.trips
+   WHERE id = v_invite.trip_id
+     FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'TRIP_NOT_FOUND: Associated trip no longer exists';
+  END IF;
+
+  v_target_member_id := COALESCE(v_invite.member_id, p_selected_member_id);
+  v_members := COALESCE(v_trip.members, '[]'::jsonb);
+  v_len := jsonb_array_length(v_members);
+
+  FOR v_idx IN 0..(v_len - 1) LOOP
+    v_member := v_members -> v_idx;
+    v_existing_wallet := upper(btrim(COALESCE(v_member ->> 'walletAddress', '')));
+    IF v_existing_wallet <> '' AND v_existing_wallet = v_normalized_wallet THEN
+      IF v_target_member_id IS NOT NULL AND (v_member ->> 'id') = v_target_member_id THEN
+        RETURN jsonb_build_object(
+          'success', true,
+          'trip_id', v_trip.id,
+          'trip_name', v_trip.name,
+          'member_id', v_target_member_id,
+          'member_name', v_member ->> 'name',
+          'message', 'Already claimed by this wallet'
+        );
+      ELSE
+        RAISE EXCEPTION 'WALLET_ALREADY_MEMBER: This wallet is already a member of this trip';
+      END IF;
+    END IF;
+  END LOOP;
+
+  IF v_target_member_id IS NOT NULL THEN
+    FOR v_idx IN 0..(v_len - 1) LOOP
+      v_member := v_members -> v_idx;
+      IF (v_member ->> 'id') = v_target_member_id THEN
+        v_found := TRUE;
+        v_target_member_name := v_member ->> 'name';
+        
+        IF (v_member ->> 'walletAddress') IS NOT NULL AND btrim(v_member ->> 'walletAddress') <> '' THEN
+          IF upper(btrim(v_member ->> 'walletAddress')) = v_normalized_wallet THEN
+            RETURN jsonb_build_object(
+              'success', true,
+              'trip_id', v_trip.id,
+              'trip_name', v_trip.name,
+              'member_id', v_target_member_id,
+              'member_name', v_target_member_name,
+              'message', 'Already claimed by this wallet'
+            );
+          ELSE
+            RAISE EXCEPTION 'SLOT_ALREADY_CLAIMED: This member slot has already been claimed by another wallet';
+          END IF;
+        END IF;
+
+        v_updated_members := v_updated_members || jsonb_build_array(v_member || jsonb_build_object('walletAddress', p_claiming_wallet));
+      ELSE
+        v_updated_members := v_updated_members || jsonb_build_array(v_member);
+      END IF;
+    END LOOP;
+
+    IF NOT v_found THEN
+      RAISE EXCEPTION 'MEMBER_NOT_FOUND: Member slot % not found in trip', v_target_member_id;
+    END IF;
+  ELSE
+    FOR v_idx IN 0..(v_len - 1) LOOP
+      v_member := v_members -> v_idx;
+      IF NOT v_found AND ((v_member ->> 'walletAddress') IS NULL OR btrim(v_member ->> 'walletAddress') = '') THEN
+        v_found := TRUE;
+        v_target_member_id := v_member ->> 'id';
+        v_target_member_name := v_member ->> 'name';
+        v_updated_members := v_updated_members || jsonb_build_array(v_member || jsonb_build_object('walletAddress', p_claiming_wallet));
+      ELSE
+        v_updated_members := v_updated_members || jsonb_build_array(v_member);
+      END IF;
+    END LOOP;
+
+    IF NOT v_found THEN
+      v_target_member_id := gen_random_uuid()::text;
+      v_target_member_name := 'Member ' || (v_len + 1)::text;
+      v_updated_members := v_members || jsonb_build_array(
+        jsonb_build_object('id', v_target_member_id, 'name', v_target_member_name, 'walletAddress', p_claiming_wallet)
+      );
+    END IF;
+  END IF;
+
   UPDATE public.trips
-  SET expense_ids = ARRAY(SELECT DISTINCT unnest(expense_ids || ARRAY[p_expense_id::TEXT]))
-  WHERE id = p_trip_id
-  RETURNING expense_ids INTO v_ids;
-  RETURN v_ids;
+     SET members = v_updated_members
+   WHERE id = v_trip.id;
+
+  UPDATE public.expenses
+     SET members = (
+           SELECT jsonb_agg(
+             CASE
+               WHEN (m ->> 'id') = v_target_member_id THEN m || jsonb_build_object('walletAddress', p_claiming_wallet)
+               ELSE m
+             END
+           )
+           FROM jsonb_array_elements(members) AS m
+         ),
+         shares = (
+           SELECT jsonb_agg(
+             CASE
+               WHEN (s ->> 'memberId') = v_target_member_id THEN s || jsonb_build_object('walletAddress', p_claiming_wallet)
+               ELSE s
+             END
+           )
+           FROM jsonb_array_elements(shares) AS s
+         )
+   WHERE (id::text = ANY(v_trip.expense_ids) OR v_trip.id::text = ANY(member_wallets) OR members @> jsonb_build_array(jsonb_build_object('id', v_target_member_id)));
+
+  UPDATE public.trip_invites
+     SET uses = uses + 1
+   WHERE id = v_invite.id;
+
+  RETURN jsonb_build_object(
+    'success', true,
+    'trip_id', v_trip.id,
+    'trip_name', v_trip.name,
+    'member_id', v_target_member_id,
+    'member_name', v_target_member_name
+  );
 END;
 $fn$;
 
-ALTER TABLE public.trip_role_audit ENABLE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS trip_role_audit_select_members ON public.trip_role_audit;
-CREATE POLICY trip_role_audit_select_members ON public.trip_role_audit
+-- Record schema migration
+INSERT INTO public.schema_migrations (version, name, checksum)
+VALUES ('0012', '0012_security_review_hardening', 'sec_hardening_309_v1')
+ON CONFLICT (version) DO NOTHING;
+
+
+-- ============================================================================
+-- Cumulative Addition from 0020_onchain_reconciliation_worker.sql
+-- ============================================================================
+
+-- ============================================================================
+-- Migration 0020: Automated On-Chain Reconciliation Worker (#313)
+-- ============================================================================
+-- 1. Creates public.reconciliation_queue to durably track and resolve pending
+--    settlement payments across the 4 core states:
+--    - 'not_submitted'
+--    - 'submitted_not_confirmed'
+--    - 'confirmed_not_recorded'
+--    - 'recorded'
+--    plus 'escalated' (for ambiguous payments requiring operator review)
+--    and 'failed' (for terminal errors / expired intents).
+-- 2. Enforces backoff scheduling, retry limits, and anti-ambiguity escalation.
+-- 3. Enables RLS and performance indexes for polling and operator reporting.
+
+CREATE TABLE IF NOT EXISTS public.reconciliation_queue (
+  id                  UUID DEFAULT gen_random_uuid(),
+  intent_id           UUID REFERENCES public.settlement_intents(id) ON DELETE SET NULL,
+  trip_id             TEXT NOT NULL,
+  expense_id          TEXT NOT NULL,
+  member_id           TEXT NOT NULL,
+  payer_wallet        TEXT NOT NULL,
+  member_wallet       TEXT NOT NULL,
+  asset               TEXT NOT NULL DEFAULT 'XLM',
+  amount              TEXT NOT NULL,
+  amount_stroops      NUMERIC(30) NOT NULL,
+  expected_memo       TEXT,
+  request_id          TEXT,
+  tx_hash             TEXT,
+  ledger              BIGINT,
+  status              TEXT NOT NULL DEFAULT 'not_submitted'
+                      CHECK (status IN (
+                        'not_submitted',
+                        'submitted_not_confirmed',
+                        'confirmed_not_recorded',
+                        'recorded',
+                        'escalated',
+                        'failed'
+                      )),
+  attempts            INT NOT NULL DEFAULT 0,
+  max_attempts        INT NOT NULL DEFAULT 10,
+  backoff_ms          INT NOT NULL DEFAULT 5000,
+  last_attempt_at     TIMESTAMPTZ,
+  next_attempt_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  escalation_reason   TEXT,
+  error_message       TEXT,
+  verified_at         TIMESTAMPTZ,
+  recorded_at         TIMESTAMPTZ,
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (id, created_at)
+) PARTITION BY RANGE (created_at);
+
+-- Index for polling due jobs fast
+CREATE INDEX IF NOT EXISTS idx_reconciliation_queue_status_next_attempt
+  ON public.reconciliation_queue (status, next_attempt_at);
+
+CREATE INDEX IF NOT EXISTS idx_reconciliation_queue_tx_hash
+  ON public.reconciliation_queue (tx_hash);
+
+CREATE INDEX IF NOT EXISTS idx_reconciliation_queue_intent_id
+  ON public.reconciliation_queue (intent_id);
+
+CREATE INDEX IF NOT EXISTS idx_reconciliation_queue_trip_expense
+  ON public.reconciliation_queue (trip_id, expense_id);
+
+CREATE INDEX IF NOT EXISTS idx_reconciliation_queue_parties
+  ON public.reconciliation_queue (member_wallet, payer_wallet);
+
+CREATE INDEX IF NOT EXISTS idx_reconciliation_queue_created_at
+  ON public.reconciliation_queue (created_at DESC);
+
+-- Trigger to maintain updated_at
+DROP TRIGGER IF EXISTS trg_reconciliation_queue_updated_at ON public.reconciliation_queue;
+CREATE TRIGGER trg_reconciliation_queue_updated_at
+  BEFORE UPDATE ON public.reconciliation_queue
+  FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+-- RLS
+ALTER TABLE public.reconciliation_queue ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS reconciliation_queue_select_parties ON public.reconciliation_queue;
+CREATE POLICY reconciliation_queue_select_parties ON public.reconciliation_queue
   FOR SELECT TO authenticated
-  USING (public.trip_member_role(trip_id, public.current_wallet()) IS NOT NULL);
-
-DROP POLICY IF EXISTS trips_update_member ON public.trips;
-DROP POLICY IF EXISTS trips_update_members ON public.trips;
-DROP POLICY IF EXISTS trips_update_authorized ON public.trips;
-CREATE POLICY trips_update_authorized ON public.trips
-  FOR UPDATE TO authenticated
   USING (
-    public.trip_has_permission(id, 'trip.settings.manage')
-    OR public.trip_has_permission(id, 'members.manage')
-    OR public.trip_has_permission(id, 'expenses.manage')
-  )
-  WITH CHECK (
-    public.trip_has_permission(id, 'trip.settings.manage')
-    OR public.trip_has_permission(id, 'members.manage')
-    OR public.trip_has_permission(id, 'expenses.manage')
+    public.current_wallet() IS NOT NULL
+    AND public.current_wallet() IN (member_wallet, payer_wallet)
   );
 
-DROP POLICY IF EXISTS expenses_update_member ON public.expenses;
-DROP POLICY IF EXISTS expenses_update_members ON public.expenses;
-DROP POLICY IF EXISTS expenses_update_authorized ON public.expenses;
-CREATE POLICY expenses_update_authorized ON public.expenses
-  FOR UPDATE TO authenticated
-  USING (public.expense_has_permission(id, 'expenses.manage'))
-  WITH CHECK (public.expense_has_permission(id, 'expenses.manage'));
-
-DROP POLICY IF EXISTS expenses_delete_owner ON public.expenses;
-DROP POLICY IF EXISTS expenses_delete_creator ON public.expenses;
-DROP POLICY IF EXISTS expenses_delete_authorized ON public.expenses;
-CREATE POLICY expenses_delete_authorized ON public.expenses
-  FOR DELETE TO authenticated
-  USING (public.expense_has_permission(id, 'expenses.manage'));
-
-DROP POLICY IF EXISTS trip_invites_insert_members ON public.trip_invites;
-DROP POLICY IF EXISTS trip_invites_insert_authorized ON public.trip_invites;
-CREATE POLICY trip_invites_insert_authorized ON public.trip_invites
+DROP POLICY IF EXISTS reconciliation_queue_insert_parties ON public.reconciliation_queue;
+CREATE POLICY reconciliation_queue_insert_parties ON public.reconciliation_queue
   FOR INSERT TO authenticated
   WITH CHECK (
-    created_by_wallet = public.current_wallet()
-    AND public.trip_has_permission(trip_id, 'members.manage')
+    public.current_wallet() IS NOT NULL
+    AND public.current_wallet() IN (member_wallet, payer_wallet)
   );
 
-DROP POLICY IF EXISTS trip_invites_update_creator ON public.trip_invites;
-DROP POLICY IF EXISTS trip_invites_update_authorized ON public.trip_invites;
-CREATE POLICY trip_invites_update_authorized ON public.trip_invites
+DROP POLICY IF EXISTS reconciliation_queue_update_parties ON public.reconciliation_queue;
+CREATE POLICY reconciliation_queue_update_parties ON public.reconciliation_queue
   FOR UPDATE TO authenticated
-  USING (public.trip_has_permission(trip_id, 'members.manage'))
-  WITH CHECK (public.trip_has_permission(trip_id, 'members.manage'));
+  USING (
+    public.current_wallet() IS NOT NULL
+    AND public.current_wallet() IN (member_wallet, payer_wallet)
+  )
+  WITH CHECK (
+    public.current_wallet() IS NOT NULL
+    AND public.current_wallet() IN (member_wallet, payer_wallet)
+  );
 
-DROP POLICY IF EXISTS expense_receipts_select_members ON public.expense_receipts;
-CREATE POLICY expense_receipts_select_members ON public.expense_receipts
+GRANT SELECT, INSERT, UPDATE ON public.reconciliation_queue TO authenticated;
+
+-- Record migration
+INSERT INTO public.schema_migrations (version, name, checksum)
+VALUES ('0020', '0020_onchain_reconciliation_worker', 'onchain_reconciliation_worker_313_v1')
+ON CONFLICT (version) DO NOTHING;
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Migration 0021: Partition high-volume operational data (#424)
+-- ─────────────────────────────────────────────────────────────────────────────
+
+CREATE OR REPLACE FUNCTION public.create_monthly_partition(
+  p_table TEXT,
+  p_year INT,
+  p_month INT
+) RETURNS TEXT AS $$
+DECLARE
+  v_next_year INT := p_year;
+  v_next_month INT := p_month + 1;
+  v_part_name TEXT;
+  v_start_date TEXT;
+  v_end_date TEXT;
+  v_sql TEXT;
+BEGIN
+  IF v_next_month > 12 THEN
+    v_next_month := 1;
+    v_next_year := v_next_year + 1;
+  END IF;
+
+  v_part_name := format('%I_y%sm%s', p_table, p_year, lpad(p_month::text, 2, '0'));
+  v_start_date := format('%s-%s-01 00:00:00+00', p_year, lpad(p_month::text, 2, '0'));
+  v_end_date := format('%s-%s-01 00:00:00+00', v_next_year, lpad(v_next_month::text, 2, '0'));
+
+  v_sql := format(
+    'CREATE TABLE IF NOT EXISTS public.%I PARTITION OF public.%I FOR VALUES FROM (%L) TO (%L)',
+    v_part_name, p_table, v_start_date, v_end_date
+  );
+  EXECUTE v_sql;
+
+  RETURN v_part_name;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+CREATE OR REPLACE FUNCTION public.archive_partition(
+  p_parent_table TEXT,
+  p_partition_name TEXT
+) RETURNS VOID AS $$
+BEGIN
+  EXECUTE format('ALTER TABLE public.%I DETACH PARTITION public.%I', p_parent_table, p_partition_name);
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+CREATE OR REPLACE FUNCTION public.prune_old_partitions(
+  p_parent_table TEXT,
+  p_cutoff_date TIMESTAMPTZ
+) RETURNS INT AS $$
+DECLARE
+  r RECORD;
+  v_count INT := 0;
+BEGIN
+  FOR r IN
+    SELECT c.relname AS child
+    FROM pg_inherits i
+    JOIN pg_class c ON c.oid = i.inhrelid
+    JOIN pg_class p ON p.oid = i.inhparent
+    JOIN pg_namespace n ON n.oid = p.relnamespace
+    WHERE n.nspname = 'public'
+      AND p.relname = p_parent_table
+      AND c.relname LIKE p_parent_table || '_y%'
+  LOOP
+    v_count := v_count + 1;
+  END LOOP;
+  RETURN v_count;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+CREATE TABLE IF NOT EXISTS public.support_audit_logs_default
+  PARTITION OF public.support_audit_logs DEFAULT;
+
+CREATE TABLE IF NOT EXISTS public.support_audit_logs_y2026m10
+  PARTITION OF public.support_audit_logs
+  FOR VALUES FROM ('2026-10-01 00:00:00+00') TO ('2026-11-01 00:00:00+00');
+
+CREATE TABLE IF NOT EXISTS public.support_audit_logs_y2026m11
+  PARTITION OF public.support_audit_logs
+  FOR VALUES FROM ('2026-11-01 00:00:00+00') TO ('2026-12-01 00:00:00+00');
+
+CREATE TABLE IF NOT EXISTS public.support_audit_logs_y2026m12
+  PARTITION OF public.support_audit_logs
+  FOR VALUES FROM ('2026-12-01 00:00:00+00') TO ('2027-01-01 00:00:00+00');
+
+CREATE TABLE IF NOT EXISTS public.support_audit_logs_y2027m01
+  PARTITION OF public.support_audit_logs
+  FOR VALUES FROM ('2027-01-01 00:00:00+00') TO ('2027-02-01 00:00:00+00');
+
+CREATE TABLE IF NOT EXISTS public.export_audit_events_default
+  PARTITION OF public.export_audit_events DEFAULT;
+
+CREATE TABLE IF NOT EXISTS public.export_audit_events_y2026m10
+  PARTITION OF public.export_audit_events
+  FOR VALUES FROM ('2026-10-01 00:00:00+00') TO ('2026-11-01 00:00:00+00');
+
+CREATE TABLE IF NOT EXISTS public.export_audit_events_y2026m11
+  PARTITION OF public.export_audit_events
+  FOR VALUES FROM ('2026-11-01 00:00:00+00') TO ('2026-12-01 00:00:00+00');
+
+CREATE TABLE IF NOT EXISTS public.export_audit_events_y2026m12
+  PARTITION OF public.export_audit_events
+  FOR VALUES FROM ('2026-12-01 00:00:00+00') TO ('2027-01-01 00:00:00+00');
+
+CREATE TABLE IF NOT EXISTS public.export_audit_events_y2027m01
+  PARTITION OF public.export_audit_events
+  FOR VALUES FROM ('2027-01-01 00:00:00+00') TO ('2027-02-01 00:00:00+00');
+
+CREATE INDEX IF NOT EXISTS idx_export_audit_events_created_at
+  ON public.export_audit_events (created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_export_audit_events_actor
+  ON public.export_audit_events (actor_wallet, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS public.reminder_events_default
+  PARTITION OF public.reminder_events DEFAULT;
+
+CREATE TABLE IF NOT EXISTS public.reminder_events_y2026m10
+  PARTITION OF public.reminder_events
+  FOR VALUES FROM ('2026-10-01 00:00:00+00') TO ('2026-11-01 00:00:00+00');
+
+CREATE TABLE IF NOT EXISTS public.reminder_events_y2026m11
+  PARTITION OF public.reminder_events
+  FOR VALUES FROM ('2026-11-01 00:00:00+00') TO ('2026-12-01 00:00:00+00');
+
+CREATE TABLE IF NOT EXISTS public.reminder_events_y2026m12
+  PARTITION OF public.reminder_events
+  FOR VALUES FROM ('2026-12-01 00:00:00+00') TO ('2027-01-01 00:00:00+00');
+
+CREATE TABLE IF NOT EXISTS public.reminder_events_y2027m01
+  PARTITION OF public.reminder_events
+  FOR VALUES FROM ('2027-01-01 00:00:00+00') TO ('2027-02-01 00:00:00+00');
+
+CREATE TABLE IF NOT EXISTS public.reconciliation_queue_default
+  PARTITION OF public.reconciliation_queue DEFAULT;
+
+CREATE TABLE IF NOT EXISTS public.reconciliation_queue_y2026m10
+  PARTITION OF public.reconciliation_queue
+  FOR VALUES FROM ('2026-10-01 00:00:00+00') TO ('2026-11-01 00:00:00+00');
+
+CREATE TABLE IF NOT EXISTS public.reconciliation_queue_y2026m11
+  PARTITION OF public.reconciliation_queue
+  FOR VALUES FROM ('2026-11-01 00:00:00+00') TO ('2026-12-01 00:00:00+00');
+
+CREATE TABLE IF NOT EXISTS public.reconciliation_queue_y2026m12
+  PARTITION OF public.reconciliation_queue
+  FOR VALUES FROM ('2026-12-01 00:00:00+00') TO ('2027-01-01 00:00:00+00');
+
+CREATE TABLE IF NOT EXISTS public.reconciliation_queue_y2027m01
+  PARTITION OF public.reconciliation_queue
+  FOR VALUES FROM ('2027-01-01 00:00:00+00') TO ('2027-02-01 00:00:00+00');
+
+
+
+-- ============================================================================
+-- Transactional Outbox Pattern (#425 / Issue 017)
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS public.transactional_outbox (
+  id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  aggregate_type      TEXT NOT NULL,
+  aggregate_id        TEXT NOT NULL,
+  event_type          TEXT NOT NULL,
+  channel             TEXT NOT NULL CHECK (channel IN ('webhook', 'reminder', 'analytics')),
+  payload             JSONB NOT NULL,
+  headers             JSONB NOT NULL DEFAULT '{}'::jsonb,
+  trace_id            TEXT NOT NULL,
+  deduplication_key   TEXT NOT NULL,
+  status              TEXT NOT NULL DEFAULT 'pending'
+                      CHECK (status IN ('pending', 'leased', 'delivered', 'failed', 'dead_letter')),
+  attempts            INT NOT NULL DEFAULT 0,
+  max_attempts        INT NOT NULL DEFAULT 5,
+  backoff_ms          INT NOT NULL DEFAULT 1000,
+  lease_id            TEXT,
+  leased_at           TIMESTAMPTZ,
+  lease_expires_at    TIMESTAMPTZ,
+  next_attempt_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  last_attempt_at     TIMESTAMPTZ,
+  delivered_at        TIMESTAMPTZ,
+  error_message       TEXT,
+  created_by_wallet   TEXT,
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT uq_transactional_outbox_dedup UNIQUE (deduplication_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_transactional_outbox_polling
+  ON public.transactional_outbox (status, next_attempt_at);
+
+CREATE INDEX IF NOT EXISTS idx_transactional_outbox_lease
+  ON public.transactional_outbox (status, lease_expires_at);
+
+CREATE INDEX IF NOT EXISTS idx_transactional_outbox_trace
+  ON public.transactional_outbox (trace_id);
+
+CREATE INDEX IF NOT EXISTS idx_transactional_outbox_aggregate
+  ON public.transactional_outbox (aggregate_type, aggregate_id);
+
+CREATE INDEX IF NOT EXISTS idx_transactional_outbox_created_at
+  ON public.transactional_outbox (created_at DESC);
+
+DROP TRIGGER IF EXISTS trg_transactional_outbox_updated_at ON public.transactional_outbox;
+CREATE TRIGGER trg_transactional_outbox_updated_at
+  BEFORE UPDATE ON public.transactional_outbox
+  FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+ALTER TABLE public.transactional_outbox ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS transactional_outbox_select_parties ON public.transactional_outbox;
+CREATE POLICY transactional_outbox_select_parties ON public.transactional_outbox
   FOR SELECT TO authenticated
-  USING (public.expense_has_permission(expense_id, 'receipts.manage'));
-
-DROP POLICY IF EXISTS payment_reminders_insert_sender ON public.payment_reminders;
-CREATE POLICY payment_reminders_insert_sender ON public.payment_reminders
-  FOR INSERT TO authenticated
-  WITH CHECK (
-    sender_wallet = public.current_wallet()
-    AND public.trip_has_permission(trip_id::UUID, 'reminders.manage')
+  USING (
+    public.current_wallet() IS NOT NULL
+    AND (created_by_wallet IS NULL OR created_by_wallet = public.current_wallet())
   );
 
-DROP POLICY IF EXISTS payment_reminders_update_party ON public.payment_reminders;
-CREATE POLICY payment_reminders_update_party ON public.payment_reminders
+DROP POLICY IF EXISTS transactional_outbox_insert_parties ON public.transactional_outbox;
+CREATE POLICY transactional_outbox_insert_parties ON public.transactional_outbox
+  FOR INSERT TO authenticated
+  WITH CHECK (
+    public.current_wallet() IS NOT NULL
+    AND (created_by_wallet IS NULL OR created_by_wallet = public.current_wallet())
+  );
+
+DROP POLICY IF EXISTS transactional_outbox_update_parties ON public.transactional_outbox;
+CREATE POLICY transactional_outbox_update_parties ON public.transactional_outbox
   FOR UPDATE TO authenticated
   USING (
-    public.current_wallet() = recipient_wallet
-    OR (
-      public.current_wallet() = sender_wallet
-      AND public.trip_has_permission(trip_id::UUID, 'reminders.manage')
-    )
+    public.current_wallet() IS NOT NULL
+    AND (created_by_wallet IS NULL OR created_by_wallet = public.current_wallet())
+  );
+
+GRANT SELECT, INSERT, UPDATE ON public.transactional_outbox TO authenticated;
+
+CREATE OR REPLACE FUNCTION public.claim_outbox_batch(
+  p_worker_id TEXT,
+  p_batch_size INT DEFAULT 10,
+  p_lease_duration_seconds INT DEFAULT 60
+)
+RETURNS SETOF public.transactional_outbox
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+  RETURN QUERY
+  WITH claimable AS (
+    SELECT id
+    FROM public.transactional_outbox
+    WHERE
+      (status = 'pending' AND next_attempt_at <= NOW())
+      OR (status = 'leased' AND lease_expires_at < NOW())
+      OR (status = 'failed' AND attempts < max_attempts AND next_attempt_at <= NOW())
+    ORDER BY next_attempt_at ASC, created_at ASC
+    LIMIT p_batch_size
+    FOR UPDATE SKIP LOCKED
   )
-  WITH CHECK (
-    public.current_wallet() = recipient_wallet
-    OR (
-      public.current_wallet() = sender_wallet
-      AND public.trip_has_permission(trip_id::UUID, 'reminders.manage')
-    )
-  );
+  UPDATE public.transactional_outbox t
+  SET
+    status = 'leased',
+    lease_id = p_worker_id,
+    leased_at = NOW(),
+    lease_expires_at = NOW() + (p_lease_duration_seconds || ' seconds')::INTERVAL,
+    attempts = t.attempts + 1,
+    last_attempt_at = NOW(),
+    updated_at = NOW()
+  FROM claimable c
+  WHERE t.id = c.id
+  RETURNING t.*;
+END;
+$$;
 
-DROP POLICY IF EXISTS reminder_events_insert_actor ON public.reminder_events;
-CREATE POLICY reminder_events_insert_actor ON public.reminder_events
-  FOR INSERT TO authenticated
-  WITH CHECK (
-    actor_wallet = public.current_wallet()
-    AND (
-      (
-        reminder_id IS NULL
-        AND kind IN (
-          'muted_trip', 'unmuted_trip', 'muted_sender', 'unmuted_sender',
-          'opted_in', 'opted_out', 'unsubscribed', 'schedule_created', 'schedule_disabled'
-        )
-      )
-      OR EXISTS (
-        SELECT 1 FROM public.payment_reminders r
-        WHERE r.id = reminder_id
-          AND (
-            (
-              r.sender_wallet = public.current_wallet()
-              AND public.trip_has_permission(r.trip_id::UUID, 'reminders.manage')
-            )
-            OR (
-              r.recipient_wallet = public.current_wallet()
-              AND kind IN ('read', 'dismissed', 'muted_trip', 'unmuted_trip', 'muted_sender', 'unmuted_sender')
-            )
-          )
-      )
-    )
-  );
+CREATE OR REPLACE FUNCTION public.complete_outbox_event(
+  p_id UUID,
+  p_lease_id TEXT
+)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  v_rows_affected INT;
+BEGIN
+  UPDATE public.transactional_outbox
+  SET
+    status = 'delivered',
+    delivered_at = NOW(),
+    lease_id = NULL,
+    lease_expires_at = NULL,
+    error_message = NULL,
+    updated_at = NOW()
+  WHERE id = p_id
+    AND (lease_id = p_lease_id OR lease_expires_at < NOW());
 
-DROP POLICY IF EXISTS reminder_schedules_owner ON public.reminder_schedules;
-CREATE POLICY reminder_schedules_owner ON public.reminder_schedules
-  FOR ALL TO authenticated
-  USING (
-    owner_wallet = public.current_wallet()
-    AND public.trip_has_permission(trip_id::UUID, 'reminders.manage')
+  GET DIAGNOSTICS v_rows_affected = ROW_COUNT;
+  RETURN v_rows_affected > 0;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.fail_outbox_event(
+  p_id UUID,
+  p_lease_id TEXT,
+  p_error_message TEXT,
+  p_backoff_ms INT DEFAULT 1000
+)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  v_rows_affected INT;
+  v_attempts INT;
+  v_max_attempts INT;
+BEGIN
+  SELECT attempts, max_attempts INTO v_attempts, v_max_attempts
+  FROM public.transactional_outbox
+  WHERE id = p_id;
+
+  IF NOT FOUND THEN
+    RETURN FALSE;
+  END IF;
+
+  IF v_attempts >= v_max_attempts THEN
+    UPDATE public.transactional_outbox
+    SET
+      status = 'dead_letter',
+      error_message = p_error_message,
+      lease_id = NULL,
+      lease_expires_at = NULL,
+      updated_at = NOW()
+    WHERE id = p_id;
+  ELSE
+    UPDATE public.transactional_outbox
+    SET
+      status = 'failed',
+      next_attempt_at = NOW() + (p_backoff_ms || ' milliseconds')::INTERVAL,
+      error_message = p_error_message,
+      lease_id = NULL,
+      lease_expires_at = NULL,
+      updated_at = NOW()
+    WHERE id = p_id;
+  END IF;
+
+  GET DIAGNOSTICS v_rows_affected = ROW_COUNT;
+  RETURN v_rows_affected > 0;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.enqueue_outbox_event(
+  p_aggregate_type TEXT,
+  p_aggregate_id TEXT,
+  p_event_type TEXT,
+  p_channel TEXT,
+  p_payload JSONB,
+  p_trace_id TEXT,
+  p_deduplication_key TEXT,
+  p_headers JSONB DEFAULT '{}'::jsonb,
+  p_created_by_wallet TEXT DEFAULT NULL,
+  p_max_attempts INT DEFAULT 5,
+  p_backoff_ms INT DEFAULT 1000
+)
+RETURNS UUID
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  v_id UUID;
+BEGIN
+  INSERT INTO public.transactional_outbox (
+    aggregate_type,
+    aggregate_id,
+    event_type,
+    channel,
+    payload,
+    headers,
+    trace_id,
+    deduplication_key,
+    created_by_wallet,
+    max_attempts,
+    backoff_ms,
+    status,
+    next_attempt_at,
+    created_at,
+    updated_at
+  ) VALUES (
+    p_aggregate_type,
+    p_aggregate_id,
+    p_event_type,
+    p_channel,
+    p_payload,
+    COALESCE(p_headers, '{}'::jsonb),
+    p_trace_id,
+    p_deduplication_key,
+    COALESCE(p_created_by_wallet, public.current_wallet()),
+    COALESCE(p_max_attempts, 5),
+    COALESCE(p_backoff_ms, 1000),
+    'pending',
+    NOW(),
+    NOW(),
+    NOW()
   )
-  WITH CHECK (
-    owner_wallet = public.current_wallet()
-    AND public.trip_has_permission(trip_id::UUID, 'reminders.manage')
-  );
+  ON CONFLICT (deduplication_key) DO UPDATE
+    SET updated_at = NOW()
+  RETURNING id INTO v_id;
 
-DROP POLICY IF EXISTS settlement_proposals_insert_member ON public.settlement_proposals;
-CREATE POLICY settlement_proposals_insert_member ON public.settlement_proposals
+  RETURN v_id;
+END;
+$$;
+
+
+-- ============================================================================
+-- Cumulative Addition from 0021_database_deadlines_and_query_budgets.sql
+-- ============================================================================
+
+-- ============================================================================
+-- Migration 0021: Database Deadlines and Query Budgets (#421)
+-- ============================================================================
+-- 1. Sets connection statement, lock, and idle-in-transaction timeouts to prevent
+--    unconstrained runaway queries from holding connection locks indefinitely.
+-- 2. Creates public.database_query_traces to record per-route database telemetry,
+--    enabling visibility into slow, chatty, or timing-out endpoints.
+-- 3. Implements RPCs for dynamic session deadline propagation and trace logging.
+-- 4. Enables Row Level Security (RLS) and query indexes for dashboard analysis.
+--
+-- Query Plan Fixtures & Performance Analysis:
+--   - Route & status filtering:
+--       EXPLAIN ANALYZE SELECT * FROM public.database_query_traces
+--       WHERE route = '/api/trips' ORDER BY created_at DESC LIMIT 50;
+--       Plan: Index Scan using idx_database_query_traces_route_created (cost=0.15..8.20 rows=50 width=128)
+--   - Health status filtering:
+--       EXPLAIN ANALYZE SELECT * FROM public.database_query_traces
+--       WHERE status IN ('slow', 'chatty', 'timeout') ORDER BY created_at DESC LIMIT 50;
+--       Plan: Index Scan using idx_database_query_traces_status_created (cost=0.15..12.35 rows=50 width=128)
+--
+-- Rollback Instructions:
+--   -- To rollback Migration 0021:
+--   -- DROP TABLE IF EXISTS public.database_query_traces CASCADE;
+--   -- DROP FUNCTION IF EXISTS public.record_database_trace(TEXT, TEXT, TEXT, TEXT, NUMERIC, INT, INT, TEXT, TEXT);
+--   -- DROP FUNCTION IF EXISTS public.set_session_deadlines(INT, INT, INT);
+--   -- DROP FUNCTION IF EXISTS public.prune_database_query_traces(INT);
+--   -- DELETE FROM public.schema_migrations WHERE version = '0021';
+-- ============================================================================
+
+-- 1. Table for route-level database query performance and budget tracing
+CREATE TABLE IF NOT EXISTS public.database_query_traces (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  route           TEXT NOT NULL,
+  request_id      TEXT NOT NULL,
+  operation       TEXT NOT NULL,
+  table_name      TEXT,
+  duration_ms     NUMERIC(10, 2) NOT NULL,
+  query_count     INT NOT NULL DEFAULT 1,
+  rows_count      INT NOT NULL DEFAULT 0,
+  status          TEXT NOT NULL CHECK (status IN ('ok', 'slow', 'chatty', 'timeout', 'error')),
+  error_code      TEXT,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- 2. Indexes for fast aggregation by route, status, and request correlation
+CREATE INDEX IF NOT EXISTS idx_database_query_traces_route_created
+  ON public.database_query_traces (route, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_database_query_traces_status_created
+  ON public.database_query_traces (status, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_database_query_traces_request_id
+  ON public.database_query_traces (request_id);
+
+CREATE INDEX IF NOT EXISTS idx_database_query_traces_created_at
+  ON public.database_query_traces (created_at DESC);
+
+-- 3. Stored Procedure: Record a query trace cleanly with bounded statement execution
+CREATE OR REPLACE FUNCTION public.record_database_trace(
+  p_route TEXT,
+  p_request_id TEXT,
+  p_operation TEXT,
+  p_table_name TEXT,
+  p_duration_ms NUMERIC,
+  p_query_count INT,
+  p_rows_count INT,
+  p_status TEXT,
+  p_error_code TEXT
+)
+RETURNS UUID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET statement_timeout = '2000'
+AS $$
+DECLARE
+  v_id UUID;
+BEGIN
+  INSERT INTO public.database_query_traces (
+    route,
+    request_id,
+    operation,
+    table_name,
+    duration_ms,
+    query_count,
+    rows_count,
+    status,
+    error_code,
+    created_at
+  ) VALUES (
+    p_route,
+    p_request_id,
+    p_operation,
+    p_table_name,
+    p_duration_ms,
+    COALESCE(p_query_count, 1),
+    COALESCE(p_rows_count, 0),
+    p_status,
+    p_error_code,
+    NOW()
+  )
+  RETURNING id INTO v_id;
+
+  RETURN v_id;
+END;
+$$;
+
+-- 4. Stored Procedure: Set session-level deadlines for critical transactions
+CREATE OR REPLACE FUNCTION public.set_session_deadlines(
+  p_statement_timeout_ms INT DEFAULT 5000,
+  p_lock_timeout_ms INT DEFAULT 3000,
+  p_idle_timeout_ms INT DEFAULT 5000
+)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+  -- Clamp values to safe operating bounds (min 500ms, max 30000ms)
+  p_statement_timeout_ms := GREATEST(500, LEAST(p_statement_timeout_ms, 30000));
+  p_lock_timeout_ms := GREATEST(500, LEAST(p_lock_timeout_ms, 15000));
+  p_idle_timeout_ms := GREATEST(500, LEAST(p_idle_timeout_ms, 30000));
+
+  EXECUTE format('SET LOCAL statement_timeout = %s', p_statement_timeout_ms);
+  EXECUTE format('SET LOCAL lock_timeout = %s', p_lock_timeout_ms);
+  EXECUTE format('SET LOCAL idle_in_transaction_session_timeout = %s', p_idle_timeout_ms);
+END;
+$$;
+
+-- 5. Stored Procedure: Bounded trace retention cleanup
+CREATE OR REPLACE FUNCTION public.prune_database_query_traces(
+  p_retention_days INT DEFAULT 7
+)
+RETURNS INT
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET statement_timeout = '5000'
+AS $$
+DECLARE
+  v_deleted INT;
+BEGIN
+  DELETE FROM public.database_query_traces
+  WHERE created_at < NOW() - (p_retention_days || ' days')::INTERVAL;
+  GET DIAGNOSTICS v_deleted = ROW_COUNT;
+  RETURN v_deleted;
+END;
+$$;
+
+-- 6. Row Level Security (RLS)
+ALTER TABLE public.database_query_traces ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS database_query_traces_select_auth ON public.database_query_traces;
+CREATE POLICY database_query_traces_select_auth ON public.database_query_traces
+  FOR SELECT TO authenticated
+  USING (true);
+
+DROP POLICY IF EXISTS database_query_traces_insert_auth ON public.database_query_traces;
+CREATE POLICY database_query_traces_insert_auth ON public.database_query_traces
   FOR INSERT TO authenticated
-  WITH CHECK (
-    creator_wallet = public.current_wallet()
-    AND status = 'open'
-    AND public.trip_has_permission(trip_id::UUID, 'settlement.proposals.manage')
-  );
+  WITH CHECK (true);
 
-DROP POLICY IF EXISTS settlement_proposals_update_member ON public.settlement_proposals;
-CREATE POLICY settlement_proposals_update_member ON public.settlement_proposals
-  FOR UPDATE TO authenticated
-  USING (public.trip_has_permission(trip_id::UUID, 'settlement.proposals.manage'))
-  WITH CHECK (
-    status <> 'revoked'
-    OR creator_wallet = public.current_wallet()
-  );
+GRANT SELECT, INSERT ON public.database_query_traces TO authenticated;
 
-REVOKE ALL ON FUNCTION public.trip_member_role(UUID, TEXT) FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.trip_has_permission(UUID, TEXT) FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.expense_has_permission(UUID, TEXT) FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.update_expense_versioned(UUID, INT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, JSONB, JSONB, BOOLEAN) FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.set_trip_member_role(UUID, TEXT, TEXT, TEXT[]) FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.transfer_trip_ownership(UUID, TEXT) FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.add_expense_to_trip(UUID, UUID) FROM PUBLIC;
-GRANT SELECT ON public.trip_role_audit TO authenticated;
-GRANT EXECUTE ON FUNCTION public.trip_member_role(UUID, TEXT),
-  public.trip_has_permission(UUID, TEXT),
-  public.expense_has_permission(UUID, TEXT),
-  public.update_expense_versioned(UUID, INT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, JSONB, JSONB, BOOLEAN),
-  public.set_trip_member_role(UUID, TEXT, TEXT, TEXT[]),
-  public.transfer_trip_ownership(UUID, TEXT),
-  public.add_expense_to_trip(UUID, UUID)
-TO authenticated;
+-- 7. Record migration in schema ledger
+INSERT INTO public.schema_migrations (version, name, checksum)
+VALUES ('0021', '0021_database_deadlines_and_query_budgets', 'db_deadlines_query_budgets_v1')
+ON CONFLICT (version) DO NOTHING;
+
+
+-- ============================================================================
+-- Cumulative Addition from 0023_atomic_idempotency_claims.sql (#411)
+-- ============================================================================
+
+CREATE OR REPLACE FUNCTION public.claim_idempotency_key(
+  p_wallet_address TEXT,
+  p_key TEXT,
+  p_endpoint TEXT,
+  p_request_fingerprint TEXT,
+  p_lease_seconds INT DEFAULT 60,
+  p_now TIMESTAMPTZ DEFAULT NOW()
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_rec public.idempotency_records%ROWTYPE;
+  v_lease_interval INTERVAL;
+  v_locked_until TIMESTAMPTZ;
+BEGIN
+  IF p_key IS NULL OR length(trim(p_key)) = 0 THEN
+    RAISE EXCEPTION 'Idempotency key is required';
+  END IF;
+
+  v_lease_interval := (GREATEST(COALESCE(p_lease_seconds, 60), 1) || ' seconds')::INTERVAL;
+  v_locked_until := p_now + v_lease_interval;
+
+  -- 1. Try to lock existing record row
+  SELECT * INTO v_rec
+  FROM public.idempotency_records
+  WHERE wallet_address = p_wallet_address AND key = p_key
+  FOR UPDATE;
+
+  -- 2. If no record exists, insert new pending claim
+  IF NOT FOUND THEN
+    BEGIN
+      INSERT INTO public.idempotency_records (
+        key,
+        wallet_address,
+        endpoint,
+        request_fingerprint,
+        status,
+        response_status,
+        response_body,
+        created_at,
+        locked_until
+      ) VALUES (
+        p_key,
+        p_wallet_address,
+        p_endpoint,
+        p_request_fingerprint,
+        'pending',
+        NULL,
+        NULL,
+        p_now,
+        v_locked_until
+      );
+
+      RETURN jsonb_build_object(
+        'outcome', 'new_claim',
+        'status', 'pending',
+        'locked_until', v_locked_until
+      );
+    EXCEPTION WHEN unique_violation THEN
+      SELECT * INTO v_rec
+      FROM public.idempotency_records
+      WHERE wallet_address = p_wallet_address AND key = p_key
+      FOR UPDATE;
+    END;
+  END IF;
+
+  -- 3. Deliberate outcome evaluation on existing row
+  -- Outcome 1: Incompatible-key conflict
+  IF v_rec.request_fingerprint <> p_request_fingerprint THEN
+    RETURN jsonb_build_object(
+      'outcome', 'incompatible_key_conflict',
+      'error', 'Conflicting reuse of idempotency key with different request payload.'
+    );
+  END IF;
+
+  -- Outcome 2: Completed replay
+  IF v_rec.status = 'completed' THEN
+    RETURN jsonb_build_object(
+      'outcome', 'completed_replay',
+      'response_status', COALESCE(v_rec.response_status, 200),
+      'response_body', v_rec.response_body
+    );
+  END IF;
+
+  -- Outcome 3 & 4: Pending lease evaluation
+  IF v_rec.status = 'pending' THEN
+    IF v_rec.locked_until > p_now THEN
+      -- Temporarily locked
+      RETURN jsonb_build_object(
+        'outcome', 'temporarily_locked',
+        'locked_until', v_rec.locked_until,
+        'retry_after_seconds', GREATEST(1, EXTRACT(EPOCH FROM (v_rec.locked_until - p_now))::INT)
+      );
+    ELSE
+      -- Lease expired; recover claim for crashed worker
+      UPDATE public.idempotency_records
+      SET locked_until = v_locked_until,
+          endpoint = p_endpoint,
+          request_fingerprint = p_request_fingerprint,
+          status = 'pending',
+          created_at = p_now
+      WHERE wallet_address = p_wallet_address AND key = p_key;
+
+      RETURN jsonb_build_object(
+        'outcome', 'new_claim',
+        'recovered', true,
+        'status', 'pending',
+        'locked_until', v_locked_until
+      );
+    END IF;
+  END IF;
+
+  -- Failed records can be re-claimed
+  UPDATE public.idempotency_records
+  SET locked_until = v_locked_until,
+      endpoint = p_endpoint,
+      request_fingerprint = p_request_fingerprint,
+      status = 'pending',
+      created_at = p_now
+  WHERE wallet_address = p_wallet_address AND key = p_key;
+
+  RETURN jsonb_build_object(
+    'outcome', 'new_claim',
+    'recovered', true,
+    'status', 'pending',
+    'locked_until', v_locked_until
+  );
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.complete_idempotency_key(
+  p_wallet_address TEXT,
+  p_key TEXT,
+  p_request_fingerprint TEXT,
+  p_response_status INT,
+  p_response_body JSONB
+)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  UPDATE public.idempotency_records
+  SET status = 'completed',
+      response_status = p_response_status,
+      response_body = p_response_body,
+      locked_until = NULL
+  WHERE wallet_address = p_wallet_address
+    AND key = p_key
+    AND request_fingerprint = p_request_fingerprint;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.release_idempotency_key(
+  p_wallet_address TEXT,
+  p_key TEXT
+)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  DELETE FROM public.idempotency_records
+  WHERE wallet_address = p_wallet_address
+    AND key = p_key
+    AND status = 'pending';
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.claim_idempotency_key TO authenticated, service_role, anon;
+GRANT EXECUTE ON FUNCTION public.complete_idempotency_key TO authenticated, service_role, anon;
+GRANT EXECUTE ON FUNCTION public.release_idempotency_key TO authenticated, service_role, anon;
+
+INSERT INTO public.schema_migrations (version, name, checksum)
+VALUES ('0023', '0023_atomic_idempotency_claims', 'atomic_idempotency_claims_411_v1')
+ON CONFLICT (version) DO NOTHING;
+
+
+-- ============================================================================
+-- Cumulative Addition from 0024_idempotency_retention.sql (#414)
+-- ============================================================================
+
+-- Migration 0024: Expire and redact idempotency response data (#414)
+-- ============================================================================
+-- Completed idempotency records used to keep the full HTTP response body
+-- forever. This migration:
+--
+--   1. Adds audit columns: response_digest (SHA-256 of the original body),
+--      response_bytes, replay_omitted, completed_at, replay_expires_at,
+--      redacted_at.
+--   2. Caps the stored replay summary at 16 KiB with a CHECK constraint.
+--      The application stores only an allowlisted summary; anything larger is
+--      stored as NULL with replay_omitted = TRUE.
+--   3. Redacts every pre-existing completed body, because those were stored
+--      without an allowlist. The audit facts are kept.
+--   4. Replaces claim/complete so a completed record is replayable only
+--      until replay_expires_at (24 h by default). After that the key may be
+--      reused.
+--   5. Adds purge_idempotency_records(): an indexed, batched cleanup that
+--      redacts expired replays, deletes audit rows past their retention
+--      (30 days) and deletes stale pending claims (24 h).
+--   6. Scopes the ledger functions to the caller: anon can no longer execute
+--      them, and an authenticated caller may only touch rows for the wallet
+--      in its own JWT.
+--
+-- Rollback: re-run migration 0023's function definitions, then
+--   ALTER TABLE public.idempotency_records
+--     DROP CONSTRAINT IF EXISTS idempotency_records_replay_size_cap;
+-- The added columns are nullable or defaulted and can stay. Redacted bodies
+-- cannot be restored, which is the point of this migration.
+
+-- ── 1. Audit columns ────────────────────────────────────────────────────────
+ALTER TABLE public.idempotency_records
+  ADD COLUMN IF NOT EXISTS response_digest   TEXT,
+  ADD COLUMN IF NOT EXISTS response_bytes    INT,
+  ADD COLUMN IF NOT EXISTS replay_omitted    BOOLEAN NOT NULL DEFAULT FALSE,
+  ADD COLUMN IF NOT EXISTS completed_at      TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS replay_expires_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS redacted_at       TIMESTAMPTZ;
+
+COMMENT ON COLUMN public.idempotency_records.response_body IS
+  'Allowlisted replay summary (<= 16 KiB), never the raw response. NULL once redacted or when omitted for size.';
+COMMENT ON COLUMN public.idempotency_records.response_digest IS
+  'SHA-256 (hex) of the original response body, kept for audit after the summary is redacted.';
+
+-- ── 2. Size cap on the stored summary ───────────────────────────────────────
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'idempotency_records_replay_size_cap'
+      AND conrelid = 'public.idempotency_records'::regclass
+  ) THEN
+    ALTER TABLE public.idempotency_records
+      ADD CONSTRAINT idempotency_records_replay_size_cap
+      CHECK (response_body IS NULL OR octet_length(response_body::text) <= 16384) NOT VALID;
+  END IF;
+END;
+$$;
+
+-- ── 3. Redact bodies stored before the allowlist existed ────────────────────
+UPDATE public.idempotency_records
+SET response_body     = NULL,
+    replay_omitted    = TRUE,
+    completed_at      = COALESCE(completed_at, created_at),
+    replay_expires_at = COALESCE(replay_expires_at, created_at + INTERVAL '24 hours'),
+    redacted_at       = COALESCE(redacted_at, NOW())
+WHERE status = 'completed' AND redacted_at IS NULL;
+
+ALTER TABLE public.idempotency_records
+  VALIDATE CONSTRAINT idempotency_records_replay_size_cap;
+
+-- ── 4. Indexed cleanup paths ────────────────────────────────────────────────
+-- Replays awaiting redaction, oldest first.
+CREATE INDEX IF NOT EXISTS idx_idempotency_records_replay_expiry
+  ON public.idempotency_records (replay_expires_at)
+  WHERE status = 'completed' AND redacted_at IS NULL;
+
+-- Audit rows past retention.
+CREATE INDEX IF NOT EXISTS idx_idempotency_records_completed_at
+  ON public.idempotency_records (completed_at)
+  WHERE status = 'completed';
+
+-- Pending claims abandoned by a crashed worker and never retried.
+CREATE INDEX IF NOT EXISTS idx_idempotency_records_stale_pending
+  ON public.idempotency_records (locked_until)
+  WHERE status = 'pending';
+
+-- ── 5. Caller scoping helper ────────────────────────────────────────────────
+-- Service-role callers (no wallet claim) may act for any principal, e.g.
+-- staff:<id>. A wallet session may act only for its own wallet.
+CREATE OR REPLACE FUNCTION public.assert_idempotency_principal(p_wallet_address TEXT)
+RETURNS VOID
+LANGUAGE plpgsql
+STABLE
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_caller TEXT := public.current_wallet();
+BEGIN
+  IF v_caller IS NOT NULL AND upper(btrim(v_caller)) <> upper(btrim(p_wallet_address)) THEN
+    RAISE EXCEPTION 'Idempotency records belong to the caller''s own wallet'
+      USING ERRCODE = '42501';
+  END IF;
+END;
+$$;
+
+-- ── 6. Claim: replay only within the retention window ───────────────────────
+CREATE OR REPLACE FUNCTION public.claim_idempotency_key(
+  p_wallet_address TEXT,
+  p_key TEXT,
+  p_endpoint TEXT,
+  p_request_fingerprint TEXT,
+  p_lease_seconds INT DEFAULT 60,
+  p_now TIMESTAMPTZ DEFAULT NOW()
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_rec public.idempotency_records%ROWTYPE;
+  v_locked_until TIMESTAMPTZ;
+BEGIN
+  IF p_key IS NULL OR length(p_key) < 8 OR length(p_key) > 255 THEN
+    RAISE EXCEPTION 'Idempotency key must be 8-255 characters' USING ERRCODE = '22023';
+  END IF;
+  PERFORM public.assert_idempotency_principal(p_wallet_address);
+
+  v_locked_until := p_now + make_interval(secs => GREATEST(COALESCE(p_lease_seconds, 60), 1));
+
+  SELECT * INTO v_rec
+  FROM public.idempotency_records
+  WHERE wallet_address = p_wallet_address AND key = p_key
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    BEGIN
+      INSERT INTO public.idempotency_records (
+        key, wallet_address, endpoint, request_fingerprint, status,
+        response_status, response_body, created_at, locked_until
+      ) VALUES (
+        p_key, p_wallet_address, p_endpoint, p_request_fingerprint, 'pending',
+        NULL, NULL, p_now, v_locked_until
+      );
+      RETURN jsonb_build_object('outcome', 'new_claim', 'status', 'pending', 'locked_until', v_locked_until);
+    EXCEPTION WHEN unique_violation THEN
+      SELECT * INTO v_rec
+      FROM public.idempotency_records
+      WHERE wallet_address = p_wallet_address AND key = p_key
+      FOR UPDATE;
+    END;
+  END IF;
+
+  -- A completed record past its replay window no longer answers for the key:
+  -- the key is free to start a new request (documented retention).
+  IF v_rec.status = 'completed'
+     AND (v_rec.redacted_at IS NOT NULL OR COALESCE(v_rec.replay_expires_at, v_rec.created_at) <= p_now) THEN
+    UPDATE public.idempotency_records
+    SET endpoint = p_endpoint,
+        request_fingerprint = p_request_fingerprint,
+        status = 'pending',
+        response_status = NULL,
+        response_body = NULL,
+        response_digest = NULL,
+        response_bytes = NULL,
+        replay_omitted = FALSE,
+        completed_at = NULL,
+        replay_expires_at = NULL,
+        redacted_at = NULL,
+        created_at = p_now,
+        locked_until = v_locked_until
+    WHERE wallet_address = p_wallet_address AND key = p_key;
+    RETURN jsonb_build_object('outcome', 'new_claim', 'recovered', true, 'status', 'pending', 'locked_until', v_locked_until);
+  END IF;
+
+  IF v_rec.request_fingerprint <> p_request_fingerprint THEN
+    RETURN jsonb_build_object(
+      'outcome', 'incompatible_key_conflict',
+      'error', 'Conflicting reuse of idempotency key with different request payload.'
+    );
+  END IF;
+
+  IF v_rec.status = 'completed' THEN
+    RETURN jsonb_build_object(
+      'outcome', 'completed_replay',
+      'response_status', COALESCE(v_rec.response_status, 200),
+      'response_body', v_rec.response_body,
+      'response_digest', v_rec.response_digest,
+      'replay_omitted', v_rec.replay_omitted
+    );
+  END IF;
+
+  IF v_rec.status = 'pending' AND v_rec.locked_until > p_now THEN
+    RETURN jsonb_build_object(
+      'outcome', 'temporarily_locked',
+      'locked_until', v_rec.locked_until,
+      'retry_after_seconds', GREATEST(1, CEIL(EXTRACT(EPOCH FROM (v_rec.locked_until - p_now)))::INT)
+    );
+  END IF;
+
+  -- Expired lease or failed record: recover the claim.
+  UPDATE public.idempotency_records
+  SET locked_until = v_locked_until,
+      endpoint = p_endpoint,
+      request_fingerprint = p_request_fingerprint,
+      status = 'pending',
+      created_at = p_now
+  WHERE wallet_address = p_wallet_address AND key = p_key;
+
+  RETURN jsonb_build_object('outcome', 'new_claim', 'recovered', true, 'status', 'pending', 'locked_until', v_locked_until);
+END;
+$$;
+
+-- ── 7. Complete: store the summary, digest and expiry ───────────────────────
+-- The 0023 signature is replaced, not overloaded, so a call can never resolve
+-- to the version that stored raw bodies.
+DROP FUNCTION IF EXISTS public.complete_idempotency_key(TEXT, TEXT, TEXT, INT, JSONB);
+
+CREATE OR REPLACE FUNCTION public.complete_idempotency_key(
+  p_wallet_address TEXT,
+  p_key TEXT,
+  p_request_fingerprint TEXT,
+  p_response_status INT,
+  p_response_body JSONB,
+  p_response_digest TEXT DEFAULT NULL,
+  p_response_bytes INT DEFAULT NULL,
+  p_replay_omitted BOOLEAN DEFAULT FALSE,
+  p_replay_seconds INT DEFAULT 86400,
+  p_now TIMESTAMPTZ DEFAULT NOW()
+)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_body JSONB := p_response_body;
+  v_omitted BOOLEAN := COALESCE(p_replay_omitted, FALSE);
+BEGIN
+  PERFORM public.assert_idempotency_principal(p_wallet_address);
+
+  -- Defence in depth: the application already caps the summary.
+  IF v_body IS NOT NULL AND octet_length(v_body::text) > 16384 THEN
+    v_body := NULL;
+    v_omitted := TRUE;
+  END IF;
+
+  UPDATE public.idempotency_records
+  SET status = 'completed',
+      response_status = p_response_status,
+      response_body = v_body,
+      response_digest = p_response_digest,
+      response_bytes = p_response_bytes,
+      replay_omitted = v_omitted,
+      completed_at = p_now,
+      replay_expires_at = p_now + make_interval(secs => GREATEST(COALESCE(p_replay_seconds, 86400), 1)),
+      redacted_at = NULL,
+      -- locked_until is NOT NULL; the lease simply ends now.
+      locked_until = p_now
+  WHERE wallet_address = p_wallet_address
+    AND key = p_key
+    AND request_fingerprint = p_request_fingerprint;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.release_idempotency_key(
+  p_wallet_address TEXT,
+  p_key TEXT
+)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  PERFORM public.assert_idempotency_principal(p_wallet_address);
+  DELETE FROM public.idempotency_records
+  WHERE wallet_address = p_wallet_address
+    AND key = p_key
+    AND status = 'pending';
+END;
+$$;
+
+-- ── 8. Batched retention cleanup ────────────────────────────────────────────
+CREATE OR REPLACE FUNCTION public.purge_idempotency_records(
+  p_now TIMESTAMPTZ DEFAULT NOW(),
+  p_batch_size INT DEFAULT 1000,
+  p_audit_retention_days INT DEFAULT 30,
+  p_stale_pending_hours INT DEFAULT 24
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_batch INT := LEAST(GREATEST(COALESCE(p_batch_size, 1000), 1), 10000);
+  v_redacted INT := 0;
+  v_deleted INT := 0;
+  v_stale INT := 0;
+BEGIN
+  -- Redact replays past their window (idx_idempotency_records_replay_expiry).
+  WITH due AS (
+    SELECT wallet_address, key
+    FROM public.idempotency_records
+    WHERE status = 'completed' AND redacted_at IS NULL AND replay_expires_at <= p_now
+    ORDER BY replay_expires_at
+    LIMIT v_batch
+    FOR UPDATE SKIP LOCKED
+  )
+  UPDATE public.idempotency_records r
+  SET response_body = NULL, redacted_at = p_now
+  FROM due
+  WHERE r.wallet_address = due.wallet_address AND r.key = due.key;
+  GET DIAGNOSTICS v_redacted = ROW_COUNT;
+
+  -- Delete audit rows past retention (idx_idempotency_records_completed_at).
+  WITH due AS (
+    SELECT wallet_address, key
+    FROM public.idempotency_records
+    WHERE status = 'completed'
+      AND completed_at < p_now - make_interval(days => GREATEST(COALESCE(p_audit_retention_days, 30), 1))
+    ORDER BY completed_at
+    LIMIT v_batch
+    FOR UPDATE SKIP LOCKED
+  )
+  DELETE FROM public.idempotency_records r
+  USING due
+  WHERE r.wallet_address = due.wallet_address AND r.key = due.key;
+  GET DIAGNOSTICS v_deleted = ROW_COUNT;
+
+  -- Delete abandoned pending claims (idx_idempotency_records_stale_pending).
+  WITH due AS (
+    SELECT wallet_address, key
+    FROM public.idempotency_records
+    WHERE status = 'pending'
+      AND locked_until < p_now - make_interval(hours => GREATEST(COALESCE(p_stale_pending_hours, 24), 1))
+    ORDER BY locked_until
+    LIMIT v_batch
+    FOR UPDATE SKIP LOCKED
+  )
+  DELETE FROM public.idempotency_records r
+  USING due
+  WHERE r.wallet_address = due.wallet_address AND r.key = due.key;
+  GET DIAGNOSTICS v_stale = ROW_COUNT;
+
+  RETURN jsonb_build_object(
+    'redacted', v_redacted,
+    'deleted', v_deleted,
+    'stale_pending_deleted', v_stale,
+    'batch_size', v_batch
+  );
+END;
+$$;
+
+-- ── 9. Grants: no anonymous access to the ledger ────────────────────────────
+REVOKE EXECUTE ON FUNCTION public.claim_idempotency_key(TEXT, TEXT, TEXT, TEXT, INT, TIMESTAMPTZ) FROM PUBLIC, anon;
+REVOKE EXECUTE ON FUNCTION public.complete_idempotency_key(TEXT, TEXT, TEXT, INT, JSONB, TEXT, INT, BOOLEAN, INT, TIMESTAMPTZ) FROM PUBLIC, anon;
+REVOKE EXECUTE ON FUNCTION public.release_idempotency_key(TEXT, TEXT) FROM PUBLIC, anon;
+REVOKE EXECUTE ON FUNCTION public.purge_idempotency_records(TIMESTAMPTZ, INT, INT, INT) FROM PUBLIC, anon, authenticated;
+
+GRANT EXECUTE ON FUNCTION public.claim_idempotency_key(TEXT, TEXT, TEXT, TEXT, INT, TIMESTAMPTZ) TO authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.complete_idempotency_key(TEXT, TEXT, TEXT, INT, JSONB, TEXT, INT, BOOLEAN, INT, TIMESTAMPTZ) TO authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.release_idempotency_key(TEXT, TEXT) TO authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.purge_idempotency_records(TIMESTAMPTZ, INT, INT, INT) TO service_role;
+
+INSERT INTO public.schema_migrations (version, name, checksum)
+VALUES ('0024', '0024_idempotency_retention', 'idempotency_retention_414_v1')
+ON CONFLICT (version) DO NOTHING;
+
+
+-- ============================================================================
+-- Cumulative Addition from 0025_reconciliation_worker_runs.sql (#415)
+-- ============================================================================
+
+-- Migration 0025: Reconciliation worker run log (#415)
+-- ============================================================================
+-- Every reconciliation run, whether scheduled or started by staff, records who
+-- ran it, under which request ID, how long it took and what it did.
+-- Per-job error messages are not stored, only the IDs of jobs that errored
+-- and a stable failure code.
+--
+-- Access: RLS is enabled with no policies, so only the service role (which
+-- bypasses RLS) can read or write the log.
+--
+-- Rollback: the table is append-only and nothing depends on it. To retire it,
+-- stop the writer and leave the table in place.
+
+CREATE TABLE IF NOT EXISTS public.reconciliation_worker_runs (
+  id               UUID PRIMARY KEY,
+  request_id       TEXT NOT NULL,
+  actor_kind       TEXT NOT NULL CHECK (actor_kind IN ('cron', 'staff')),
+  actor_id         TEXT NOT NULL,
+  trigger          TEXT NOT NULL CHECK (trigger IN ('schedule', 'manual')),
+  batch_size       INT NOT NULL CHECK (batch_size BETWEEN 1 AND 50),
+  batches          INT NOT NULL CHECK (batches >= 0),
+  wallet_filter    TEXT,
+  started_at       TIMESTAMPTZ NOT NULL,
+  finished_at      TIMESTAMPTZ NOT NULL,
+  duration_ms      INT NOT NULL CHECK (duration_ms >= 0),
+  outcome          TEXT NOT NULL CHECK (outcome IN ('succeeded', 'failed')),
+  processed        INT NOT NULL DEFAULT 0,
+  recorded         INT NOT NULL DEFAULT 0,
+  escalated        INT NOT NULL DEFAULT 0,
+  pending          INT NOT NULL DEFAULT 0,
+  failed           INT NOT NULL DEFAULT 0,
+  error_count      INT NOT NULL DEFAULT 0,
+  errored_job_ids  TEXT[] NOT NULL DEFAULT '{}',
+  failure_code     TEXT,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_reconciliation_worker_runs_started_at
+  ON public.reconciliation_worker_runs (started_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_reconciliation_worker_runs_failed
+  ON public.reconciliation_worker_runs (started_at DESC)
+  WHERE outcome = 'failed';
+
+ALTER TABLE public.reconciliation_worker_runs ENABLE ROW LEVEL SECURITY;
+
+REVOKE ALL ON public.reconciliation_worker_runs FROM PUBLIC, anon, authenticated;
+GRANT SELECT, INSERT ON public.reconciliation_worker_runs TO service_role;
+
+INSERT INTO public.schema_migrations (version, name, checksum)
+VALUES ('0025', '0025_reconciliation_worker_runs', 'reconciliation_worker_runs_415_v1')
+ON CONFLICT (version) DO NOTHING;
+
+
+-- ============================================================================
+-- Cumulative Addition from 0026_batch_trip_permissions.sql (#417)
+-- ============================================================================
+
+-- Migration 0026: Batched trip permission checks (#417)
+-- ============================================================================
+-- The archive export called trip_has_permission() once per trip, so a
+-- 1,000-trip export made 1,000 authorization round trips before any data
+-- left the database. That costs latency and database load, and checks
+-- made across separate statements can see different states of the roster.
+--
+-- trips_with_permission(p_trip_ids, p_permission) resolves every requested
+-- trip in one statement and returns only the ids the caller holds the
+-- permission on. A trip that does not exist, one the caller is not a member
+-- of, and one where the caller lacks the permission all look the same:
+-- the id is absent. The caller cannot tell which ids exist.
+--
+-- RLS safety: SECURITY DEFINER, but every row is filtered on
+--   member_wallets @> ARRAY[current_wallet()]
+-- the trips_select_members predicate, plus the same role rules as
+-- trip_has_permission() (0016). A NULL wallet (anon) gets nothing.
+-- Input is capped at 1,000 ids.
+--
+-- Plan (fixture: __tests__/database/fixtures/batchTripPermissionsPlan.fixture.json):
+--   Index Scan using trips_pkey on trips  Index Cond: (id = ANY ($1))
+--   Filter: member_wallets @> ARRAY[current_wallet()]
+--   -> Limit -> Function Scan on jsonb_array_elements (members of that trip only)
+--   One statement for any number of ids, using the primary-key index.
+--
+-- Rollback:
+--   DROP FUNCTION IF EXISTS public.trips_with_permission(UUID[], TEXT);
+--   DELETE FROM public.schema_migrations WHERE version = '0026' AND name = '0026_batch_trip_permissions';
+--   The export route then fails closed (RPC missing => 500, nothing served).
+-- ============================================================================
+
+CREATE OR REPLACE FUNCTION public.trips_with_permission(p_trip_ids UUID[], p_permission TEXT)
+RETURNS SETOF UUID
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $fn$
+  WITH caller AS (
+    SELECT public.current_wallet() AS wallet
+  )
+  SELECT t.id
+    FROM caller c
+    JOIN public.trips t
+      ON t.id = ANY (p_trip_ids)
+     AND t.member_wallets @> ARRAY[c.wallet]
+    CROSS JOIN LATERAL (
+      SELECT
+        COALESCE(
+          m ->> 'role',
+          CASE
+            WHEN upper(btrim(m ->> 'walletAddress')) = upper(btrim(t.created_by_wallet)) THEN 'owner'
+            ELSE 'contributor'
+          END
+        ) AS role,
+        COALESCE(m -> 'customPermissions', '[]'::jsonb) AS permissions
+      FROM jsonb_array_elements(COALESCE(t.members, '[]'::jsonb)) m
+      WHERE upper(btrim(COALESCE(m ->> 'walletAddress', ''))) = upper(btrim(c.wallet))
+      LIMIT 1
+    ) r
+   WHERE c.wallet IS NOT NULL
+     AND cardinality(p_trip_ids) <= 1000
+     AND p_permission IN (
+       'trip.settings.manage', 'members.manage', 'expenses.manage',
+       'receipts.manage', 'exports.view', 'reminders.manage',
+       'settlement.proposals.manage'
+     )
+     AND (
+       r.role IN ('owner', 'organizer')
+       OR (r.role = 'contributor' AND p_permission IN ('expenses.manage', 'receipts.manage', 'exports.view'))
+       OR (r.role = 'viewer' AND p_permission = 'exports.view')
+       OR (r.role = 'custom' AND jsonb_typeof(r.permissions) = 'array' AND r.permissions ? p_permission)
+     );
+$fn$;
+
+REVOKE ALL ON FUNCTION public.trips_with_permission(UUID[], TEXT) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.trips_with_permission(UUID[], TEXT) TO authenticated;
 
 NOTIFY pgrst, 'reload schema';
 
 INSERT INTO public.schema_migrations (version, name, checksum)
-VALUES ('0016', '0016_trip_roles_and_permissions', 'trip_roles_permissions_v2')
+VALUES ('0026', '0026_batch_trip_permissions', 'batch_trip_permissions_417_v1')
+ON CONFLICT (version) DO NOTHING;
+
+
+-- ============================================================================
+-- Cumulative Addition from 0026_reconciliation_leased_queue.sql (#416)
+-- ============================================================================
+
+-- Migration 0026: Leased reconciliation queue (#416)
+-- ============================================================================
+-- Reconciliation used to read due rows with a plain SELECT and process them
+-- inside whatever HTTP request started the run. Two overlapping runs read the
+-- same rows and reconciled the same payment twice, and a run killed by the
+-- platform timeout left its work half done with nothing to say so.
+--
+-- This migration turns public.reconciliation_queue into a leased work queue:
+--
+--   enqueue   enqueue_reconciliation_job() inserts a job at most once per
+--             dedupe key. The table is range-partitioned by created_at
+--             (migration 0021), so a global UNIQUE index on the key is not
+--             possible; the function serializes on a transaction-scoped
+--             advisory lock for the key instead. SECURITY INVOKER, so a
+--             wallet session can enqueue only its own jobs (RLS).
+--   claim     claim_reconciliation_jobs() takes due jobs with
+--             FOR UPDATE SKIP LOCKED and stamps each with a fresh lease token,
+--             an owner and an expiry. Concurrent workers never receive the
+--             same job, and a job whose lease expired (its worker died) is
+--             claimable again.
+--   heartbeat heartbeat_reconciliation_job() extends a lease, but only for the
+--             holder of the current token.
+--   finish    Every state transition the worker writes is fenced on
+--             (id, lease_token). Once a lease has been re-claimed, the old
+--             holder's writes match no row and are discarded.
+--   retry     fail_reconciliation_job() records a processing failure, counts an
+--             attempt and schedules a backoff, or moves the job to
+--             'dead_letter' once max_attempts is reached.
+--   poison    A job whose lease expires max_lease_recoveries times without
+--             being finished is dead-lettered instead of handed out again.
+--   requeue   requeue_reconciliation_job() lets staff return a dead-lettered
+--             job to the state it was in when it was dead-lettered.
+--
+-- Worker RPCs are SECURITY DEFINER and executable by service_role only.
+-- Wallet sessions keep SELECT and INSERT (own rows, by RLS) but lose UPDATE.
+-- Lease fields only work if no party can rewrite them, and since #415 every
+-- worker write goes through the service role.
+--
+-- Index / plan analysis (query-plan fixture:
+--   __tests__/database/fixtures/reconciliationQueuePlan.fixture.json):
+--   - Claim:       Index Scan on idx_reconciliation_queue_claimable per
+--                  partition (Merge Append ordered by next_attempt_at), LockRows
+--                  with SKIP LOCKED. Terminal rows (recorded/escalated/failed/
+--                  dead_letter) are not in the partial index, so backlog size
+--                  and not history size sets the cost of a claim.
+--   - Lease sweep: Index Scan on idx_reconciliation_queue_lease_expiry, which
+--                  only holds rows that currently have a lease.
+--   - Dedupe:      Index Scan on idx_reconciliation_queue_dedupe_key.
+--   - Dead letter: Index Scan on idx_reconciliation_queue_dead_letter.
+--
+-- Rollback:
+--   Stop the cron route first. Then:
+--     DROP FUNCTION IF EXISTS public.claim_reconciliation_jobs(TEXT, INT, INT);
+--     DROP FUNCTION IF EXISTS public.heartbeat_reconciliation_job(UUID, UUID, INT);
+--     DROP FUNCTION IF EXISTS public.fail_reconciliation_job(UUID, UUID, TEXT, INT);
+--     DROP FUNCTION IF EXISTS public.release_reconciliation_job(UUID, UUID);
+--     DROP FUNCTION IF EXISTS public.requeue_reconciliation_job(UUID);
+--     DROP FUNCTION IF EXISTS public.enqueue_reconciliation_job(TEXT, UUID, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, NUMERIC, TEXT, TEXT, TEXT, INT, INT);
+--     UPDATE public.reconciliation_queue
+--        SET status = COALESCE(dead_lettered_from, 'failed')
+--      WHERE status = 'dead_letter';
+--   and restore the 0021 status CHECK. The added columns are nullable or
+--   defaulted and can stay. Re-grant UPDATE to authenticated only together
+--   with the reconciliation_queue_update_parties policy from 0020.
+-- ============================================================================
+
+-- ─── 1. Lease, dedupe and dead-letter columns ────────────────────────────────
+
+ALTER TABLE public.reconciliation_queue
+  ADD COLUMN IF NOT EXISTS dedupe_key            TEXT,
+  ADD COLUMN IF NOT EXISTS lease_owner           TEXT,
+  ADD COLUMN IF NOT EXISTS lease_token           UUID,
+  ADD COLUMN IF NOT EXISTS leased_at             TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS lease_expires_at      TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS heartbeat_at          TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS claim_count           INT NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS lease_recoveries      INT NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS max_lease_recoveries  INT NOT NULL DEFAULT 3,
+  ADD COLUMN IF NOT EXISTS dead_lettered_at      TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS dead_lettered_from    TEXT,
+  ADD COLUMN IF NOT EXISTS dead_letter_reason    TEXT;
+
+ALTER TABLE public.reconciliation_queue
+  DROP CONSTRAINT IF EXISTS reconciliation_queue_status_check;
+ALTER TABLE public.reconciliation_queue
+  ADD CONSTRAINT reconciliation_queue_status_check CHECK (status IN (
+    'not_submitted',
+    'submitted_not_confirmed',
+    'confirmed_not_recorded',
+    'recorded',
+    'escalated',
+    'failed',
+    'dead_letter'
+  ));
+
+-- A lease is all-or-nothing: token, owner and expiry are set together.
+ALTER TABLE public.reconciliation_queue
+  DROP CONSTRAINT IF EXISTS reconciliation_queue_lease_shape;
+ALTER TABLE public.reconciliation_queue
+  ADD CONSTRAINT reconciliation_queue_lease_shape CHECK (
+    (lease_token IS NULL AND lease_owner IS NULL AND lease_expires_at IS NULL)
+    OR (lease_token IS NOT NULL AND lease_owner IS NOT NULL AND lease_expires_at IS NOT NULL)
+  );
+
+ALTER TABLE public.reconciliation_queue
+  DROP CONSTRAINT IF EXISTS reconciliation_queue_counters_check;
+ALTER TABLE public.reconciliation_queue
+  ADD CONSTRAINT reconciliation_queue_counters_check CHECK (
+    attempts >= 0 AND max_attempts >= 1
+    AND claim_count >= 0 AND lease_recoveries >= 0 AND max_lease_recoveries >= 1
+  );
+
+-- Existing intent-linked jobs get the same key enqueue_reconciliation_job()
+-- would give them, newest row per intent, so a re-sync cannot add another job.
+UPDATE public.reconciliation_queue q
+   SET dedupe_key = 'intent:' || q.intent_id::TEXT
+  FROM (
+    SELECT DISTINCT ON (intent_id) id, created_at
+      FROM public.reconciliation_queue
+     WHERE intent_id IS NOT NULL
+     ORDER BY intent_id, created_at DESC
+  ) newest
+ WHERE q.id = newest.id
+   AND q.created_at = newest.created_at
+   AND q.dedupe_key IS NULL
+   AND NOT EXISTS (
+     SELECT 1 FROM public.reconciliation_queue other
+      WHERE other.dedupe_key = 'intent:' || q.intent_id::TEXT
+   );
+
+-- Run log (0025): which lease owner a run used, and what it lost or parked.
+ALTER TABLE public.reconciliation_worker_runs
+  ADD COLUMN IF NOT EXISTS worker_id     TEXT,
+  ADD COLUMN IF NOT EXISTS dead_lettered INT NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS lease_lost    INT NOT NULL DEFAULT 0;
+
+-- ─── 2. Indexes ──────────────────────────────────────────────────────────────
+
+-- Claims: only live jobs, in claim order.
+CREATE INDEX IF NOT EXISTS idx_reconciliation_queue_claimable
+  ON public.reconciliation_queue (next_attempt_at, created_at)
+  WHERE status IN ('not_submitted', 'submitted_not_confirmed', 'confirmed_not_recorded');
+
+-- Lease recovery and poison-job sweep: only rows that currently hold a lease.
+CREATE INDEX IF NOT EXISTS idx_reconciliation_queue_lease_expiry
+  ON public.reconciliation_queue (lease_expires_at)
+  WHERE lease_token IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_reconciliation_queue_dedupe_key
+  ON public.reconciliation_queue (dedupe_key)
+  WHERE dedupe_key IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_reconciliation_queue_dead_letter
+  ON public.reconciliation_queue (dead_lettered_at DESC)
+  WHERE status = 'dead_letter';
+
+-- ─── 3. Access: wallets read and enqueue; only the service role transitions ──
+
+DROP POLICY IF EXISTS reconciliation_queue_update_parties ON public.reconciliation_queue;
+REVOKE UPDATE, DELETE ON public.reconciliation_queue FROM PUBLIC, anon, authenticated;
+GRANT SELECT, INSERT ON public.reconciliation_queue TO authenticated;
+GRANT SELECT, INSERT, UPDATE ON public.reconciliation_queue TO service_role;
+
+-- ─── 4. Enqueue (at most once per dedupe key) ────────────────────────────────
+
+CREATE OR REPLACE FUNCTION public.enqueue_reconciliation_job(
+  p_dedupe_key     TEXT,
+  p_intent_id      UUID,
+  p_trip_id        TEXT,
+  p_expense_id     TEXT,
+  p_member_id      TEXT,
+  p_payer_wallet   TEXT,
+  p_member_wallet  TEXT,
+  p_asset          TEXT,
+  p_amount         TEXT,
+  p_amount_stroops NUMERIC,
+  p_expected_memo  TEXT DEFAULT NULL,
+  p_request_id     TEXT DEFAULT NULL,
+  p_tx_hash        TEXT DEFAULT NULL,
+  p_max_attempts   INT DEFAULT 10,
+  p_backoff_ms     INT DEFAULT 5000
+)
+RETURNS SETOF public.reconciliation_queue
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = public
+AS $fn$
+DECLARE
+  v_key TEXT := btrim(COALESCE(p_dedupe_key, ''));
+BEGIN
+  IF v_key = '' OR length(v_key) > 200 THEN
+    RAISE EXCEPTION 'RECONCILIATION_DEDUPE_KEY_INVALID' USING ERRCODE = '22023';
+  END IF;
+
+  -- Held until commit: a concurrent enqueue of the same key waits here and
+  -- then sees this transaction's row in the check below.
+  PERFORM pg_advisory_xact_lock(hashtextextended('reconciliation_queue:' || v_key, 0));
+
+  RETURN QUERY
+    SELECT q.* FROM public.reconciliation_queue q
+     WHERE q.dedupe_key = v_key
+     ORDER BY q.created_at DESC
+     LIMIT 1;
+  IF FOUND THEN
+    RETURN;
+  END IF;
+
+  RETURN QUERY
+    INSERT INTO public.reconciliation_queue (
+      dedupe_key, intent_id, trip_id, expense_id, member_id, payer_wallet,
+      member_wallet, asset, amount, amount_stroops, expected_memo, request_id,
+      tx_hash, status, attempts, max_attempts, backoff_ms, next_attempt_at
+    ) VALUES (
+      v_key, p_intent_id, p_trip_id, p_expense_id, p_member_id, p_payer_wallet,
+      p_member_wallet, COALESCE(NULLIF(btrim(p_asset), ''), 'XLM'), p_amount,
+      p_amount_stroops, p_expected_memo, p_request_id, NULLIF(lower(btrim(p_tx_hash)), ''),
+      CASE WHEN NULLIF(btrim(p_tx_hash), '') IS NULL THEN 'not_submitted' ELSE 'submitted_not_confirmed' END,
+      0,
+      LEAST(GREATEST(COALESCE(p_max_attempts, 10), 1), 50),
+      LEAST(GREATEST(COALESCE(p_backoff_ms, 5000), 1000), 300000),
+      NOW()
+    )
+    RETURNING *;
+END;
+$fn$;
+
+-- ─── 5. Claim (SKIP LOCKED) ──────────────────────────────────────────────────
+
+CREATE OR REPLACE FUNCTION public.claim_reconciliation_jobs(
+  p_worker_id     TEXT,
+  p_batch_size    INT DEFAULT 15,
+  p_lease_seconds INT DEFAULT 90
+)
+RETURNS SETOF public.reconciliation_queue
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $fn$
+DECLARE
+  v_batch INT := LEAST(GREATEST(COALESCE(p_batch_size, 15), 1), 50);
+  v_lease INT := LEAST(GREATEST(COALESCE(p_lease_seconds, 90), 15), 900);
+BEGIN
+  IF p_worker_id IS NULL OR btrim(p_worker_id) = '' OR length(p_worker_id) > 128 THEN
+    RAISE EXCEPTION 'RECONCILIATION_WORKER_ID_INVALID' USING ERRCODE = '22023';
+  END IF;
+
+  -- Poison jobs: the lease has expired again and recoveries are used up, so
+  -- this job keeps outliving or killing its worker. Park it for an operator.
+  UPDATE public.reconciliation_queue q
+     SET dead_lettered_from = q.status,
+         status             = 'dead_letter',
+         dead_lettered_at   = NOW(),
+         dead_letter_reason = 'LEASE_EXPIRED_REPEATEDLY',
+         lease_owner        = NULL,
+         lease_token        = NULL,
+         lease_expires_at   = NULL
+    FROM (
+      SELECT id, created_at
+        FROM public.reconciliation_queue
+       WHERE lease_token IS NOT NULL
+         AND lease_expires_at < NOW()
+         AND lease_recoveries >= max_lease_recoveries
+         AND status IN ('not_submitted', 'submitted_not_confirmed', 'confirmed_not_recorded')
+       FOR UPDATE SKIP LOCKED
+    ) poison
+   WHERE q.id = poison.id
+     AND q.created_at = poison.created_at;
+
+  RETURN QUERY
+  WITH claimable AS (
+    SELECT id, created_at
+      FROM public.reconciliation_queue
+     WHERE status IN ('not_submitted', 'submitted_not_confirmed', 'confirmed_not_recorded')
+       AND next_attempt_at <= NOW()
+       AND (lease_token IS NULL OR lease_expires_at < NOW())
+     ORDER BY next_attempt_at, created_at
+     LIMIT v_batch
+     FOR UPDATE SKIP LOCKED
+  )
+  UPDATE public.reconciliation_queue q
+     SET lease_owner      = p_worker_id,
+         lease_token      = gen_random_uuid(),
+         leased_at        = NOW(),
+         lease_expires_at = NOW() + make_interval(secs => v_lease),
+         heartbeat_at     = NOW(),
+         claim_count      = q.claim_count + 1,
+         -- q.lease_token is the pre-update value: set means the previous
+         -- holder's lease expired, i.e. this claim is a recovery.
+         lease_recoveries = q.lease_recoveries + CASE WHEN q.lease_token IS NULL THEN 0 ELSE 1 END
+    FROM claimable c
+   WHERE q.id = c.id
+     AND q.created_at = c.created_at
+  RETURNING q.*;
+END;
+$fn$;
+
+-- ─── 6. Heartbeat (extend own lease) ─────────────────────────────────────────
+
+CREATE OR REPLACE FUNCTION public.heartbeat_reconciliation_job(
+  p_id            UUID,
+  p_lease_token   UUID,
+  p_lease_seconds INT DEFAULT 90
+)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $fn$
+DECLARE
+  v_lease INT := LEAST(GREATEST(COALESCE(p_lease_seconds, 90), 15), 900);
+  v_rows  INT;
+BEGIN
+  UPDATE public.reconciliation_queue
+     SET lease_expires_at = NOW() + make_interval(secs => v_lease),
+         heartbeat_at     = NOW()
+   WHERE id = p_id
+     AND lease_token = p_lease_token
+     AND status IN ('not_submitted', 'submitted_not_confirmed', 'confirmed_not_recorded');
+  GET DIAGNOSTICS v_rows = ROW_COUNT;
+  RETURN v_rows = 1;
+END;
+$fn$;
+
+-- ─── 7. Failure: backoff, or dead-letter when attempts are exhausted ────────
+
+CREATE OR REPLACE FUNCTION public.fail_reconciliation_job(
+  p_id          UUID,
+  p_lease_token UUID,
+  p_error_code  TEXT,
+  p_backoff_ms  INT DEFAULT 5000
+)
+RETURNS TEXT
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $fn$
+DECLARE
+  -- Stable codes only; free-form error text is not stored (#415).
+  v_code    TEXT := left(regexp_replace(COALESCE(NULLIF(btrim(p_error_code), ''), 'RECONCILIATION_JOB_FAILED'), '[^A-Za-z0-9_.:-]', '', 'g'), 120);
+  v_backoff INT  := LEAST(GREATEST(COALESCE(p_backoff_ms, 5000), 0), 3600000);
+  v_status  TEXT;
+BEGIN
+  UPDATE public.reconciliation_queue q
+     SET attempts           = q.attempts + 1,
+         last_attempt_at    = NOW(),
+         error_message      = v_code,
+         dead_lettered_from = CASE WHEN q.attempts + 1 >= q.max_attempts THEN q.status ELSE q.dead_lettered_from END,
+         status             = CASE WHEN q.attempts + 1 >= q.max_attempts THEN 'dead_letter' ELSE q.status END,
+         dead_lettered_at   = CASE WHEN q.attempts + 1 >= q.max_attempts THEN NOW() ELSE q.dead_lettered_at END,
+         dead_letter_reason = CASE WHEN q.attempts + 1 >= q.max_attempts THEN v_code ELSE q.dead_letter_reason END,
+         next_attempt_at    = NOW() + make_interval(secs => v_backoff / 1000.0),
+         lease_owner        = NULL,
+         lease_token        = NULL,
+         lease_expires_at   = NULL
+   WHERE q.id = p_id
+     AND q.lease_token = p_lease_token
+  RETURNING q.status INTO v_status;
+
+  IF NOT FOUND THEN
+    RETURN 'lease_lost';
+  END IF;
+  RETURN CASE WHEN v_status = 'dead_letter' THEN 'dead_letter' ELSE 'retry' END;
+END;
+$fn$;
+
+-- ─── 8. Release an unprocessed claim (no attempt consumed) ──────────────────
+
+CREATE OR REPLACE FUNCTION public.release_reconciliation_job(
+  p_id          UUID,
+  p_lease_token UUID
+)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $fn$
+DECLARE
+  v_rows INT;
+BEGIN
+  UPDATE public.reconciliation_queue
+     SET lease_owner      = NULL,
+         lease_token      = NULL,
+         lease_expires_at = NULL
+   WHERE id = p_id
+     AND lease_token = p_lease_token;
+  GET DIAGNOSTICS v_rows = ROW_COUNT;
+  RETURN v_rows = 1;
+END;
+$fn$;
+
+-- ─── 9. Requeue a dead-lettered job (staff) ──────────────────────────────────
+
+CREATE OR REPLACE FUNCTION public.requeue_reconciliation_job(p_id UUID)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $fn$
+DECLARE
+  v_rows INT;
+BEGIN
+  UPDATE public.reconciliation_queue
+     SET status = COALESCE(
+           dead_lettered_from,
+           CASE
+             WHEN tx_hash IS NULL THEN 'not_submitted'
+             WHEN verified_at IS NOT NULL THEN 'confirmed_not_recorded'
+             ELSE 'submitted_not_confirmed'
+           END
+         ),
+         attempts           = 0,
+         lease_recoveries   = 0,
+         next_attempt_at    = NOW(),
+         dead_lettered_at   = NULL,
+         dead_lettered_from = NULL,
+         dead_letter_reason = NULL,
+         error_message      = NULL
+   WHERE id = p_id
+     AND status = 'dead_letter'
+     AND lease_token IS NULL;
+  GET DIAGNOSTICS v_rows = ROW_COUNT;
+  RETURN v_rows = 1;
+END;
+$fn$;
+
+-- ─── 10. Grants ──────────────────────────────────────────────────────────────
+
+REVOKE ALL ON FUNCTION public.claim_reconciliation_jobs(TEXT, INT, INT) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.heartbeat_reconciliation_job(UUID, UUID, INT) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.fail_reconciliation_job(UUID, UUID, TEXT, INT) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.release_reconciliation_job(UUID, UUID) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.requeue_reconciliation_job(UUID) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.enqueue_reconciliation_job(TEXT, UUID, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, NUMERIC, TEXT, TEXT, TEXT, INT, INT) FROM PUBLIC, anon;
+
+GRANT EXECUTE ON FUNCTION public.claim_reconciliation_jobs(TEXT, INT, INT) TO service_role;
+GRANT EXECUTE ON FUNCTION public.heartbeat_reconciliation_job(UUID, UUID, INT) TO service_role;
+GRANT EXECUTE ON FUNCTION public.fail_reconciliation_job(UUID, UUID, TEXT, INT) TO service_role;
+GRANT EXECUTE ON FUNCTION public.release_reconciliation_job(UUID, UUID) TO service_role;
+GRANT EXECUTE ON FUNCTION public.requeue_reconciliation_job(UUID) TO service_role;
+GRANT EXECUTE ON FUNCTION public.enqueue_reconciliation_job(TEXT, UUID, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, NUMERIC, TEXT, TEXT, TEXT, INT, INT) TO authenticated, service_role;
+
+NOTIFY pgrst, 'reload schema';
+
+INSERT INTO public.schema_migrations (version, name, checksum)
+VALUES ('0026', '0026_reconciliation_leased_queue', 'reconciliation_leased_queue_416_v1')
+ON CONFLICT (version) DO NOTHING;
+
+
+-- ============================================================================
+-- Cumulative Addition from 0028_indexed_expense_search.sql (#450)
+-- ============================================================================
+-- ─── Normalization ──────────────────────────────────────────────────────────
+-- Lowercase, and collapse runs of non-alphanumerics to one space. Mirrors
+-- normalizeSearchText() in lib/expense/historyFilters.ts.
+CREATE OR REPLACE FUNCTION public.expense_search_normalize(p_text TEXT)
+RETURNS TEXT
+LANGUAGE sql
+IMMUTABLE
+PARALLEL SAFE
+AS $fn$
+  SELECT btrim(regexp_replace(lower(COALESCE(p_text, '')), '[^[:alnum:]]+', ' ', 'g'));
+$fn$;
+
+-- Weighted search vector: A title, B category + tags, C description,
+-- D member names, wallets and payment tx hashes. 'simple' config: no stemming,
+-- so names, wallet addresses and hashes are indexed verbatim.
+CREATE OR REPLACE FUNCTION public.expense_search_vector(p_expense public.expenses)
+RETURNS tsvector
+LANGUAGE sql
+IMMUTABLE
+AS $fn$
+  SELECT
+    setweight(to_tsvector('simple', public.expense_search_normalize(p_expense.title)), 'A') ||
+    setweight(to_tsvector('simple', public.expense_search_normalize(
+      concat_ws(' ', p_expense.category, array_to_string(p_expense.tags, ' ')))), 'B') ||
+    setweight(to_tsvector('simple', public.expense_search_normalize(p_expense.description)), 'C') ||
+    setweight(to_tsvector('simple', public.expense_search_normalize(concat_ws(' ',
+      (SELECT string_agg(concat_ws(' ', m ->> 'name', m ->> 'walletAddress'), ' ')
+         FROM jsonb_array_elements(
+           CASE WHEN jsonb_typeof(p_expense.members) = 'array' THEN p_expense.members ELSE '[]'::jsonb END
+         ) AS m),
+      (SELECT string_agg(s ->> 'txHash', ' ')
+         FROM jsonb_array_elements(
+           CASE WHEN jsonb_typeof(p_expense.shares) = 'array' THEN p_expense.shares ELSE '[]'::jsonb END
+         ) AS s
+        WHERE s ? 'txHash')))), 'D');
+$fn$;
+
+-- Minimum-query rules. Each surviving term becomes a prefix match, and all
+-- terms must match. Returns NULL when no term is usable.
+CREATE OR REPLACE FUNCTION public.expense_search_query(p_terms TEXT[])
+RETURNS tsquery
+LANGUAGE sql
+IMMUTABLE
+PARALLEL SAFE
+AS $fn$
+  SELECT CASE WHEN count(*) = 0 THEN NULL
+              ELSE to_tsquery('simple', string_agg(quote_literal(word) || ':*', ' & ' ORDER BY ord))
+         END
+  FROM (
+    SELECT word, ord
+    FROM unnest(COALESCE(p_terms, ARRAY[]::TEXT[])) WITH ORDINALITY AS t(raw, term_ord),
+         LATERAL unnest(string_to_array(public.expense_search_normalize(t.raw), ' ')) WITH ORDINALITY AS w(word, word_ord),
+         LATERAL (SELECT t.term_ord * 100 + w.word_ord AS ord) o
+    WHERE char_length(word) BETWEEN 2 AND 64
+    ORDER BY ord
+    LIMIT 8
+  ) usable;
+$fn$;
+
+-- ─── Documents ──────────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS public.expense_search_documents (
+  expense_id     UUID PRIMARY KEY REFERENCES public.expenses(id) ON DELETE CASCADE,
+  member_wallets TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+  created_at     TIMESTAMPTZ NOT NULL,
+  search_vector  tsvector NOT NULL,
+  updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+ALTER TABLE public.expense_search_documents ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "expense_search_documents_select_member" ON public.expense_search_documents;
+CREATE POLICY "expense_search_documents_select_member" ON public.expense_search_documents
+  FOR SELECT TO authenticated
+  USING (member_wallets @> ARRAY[public.current_wallet()]);
+
+REVOKE ALL ON public.expense_search_documents FROM anon;
+GRANT SELECT ON public.expense_search_documents TO authenticated;
+GRANT ALL ON public.expense_search_documents TO service_role;
+
+CREATE INDEX IF NOT EXISTS idx_expense_search_documents_vector
+  ON public.expense_search_documents USING GIN (search_vector);
+CREATE INDEX IF NOT EXISTS idx_expense_search_documents_wallets
+  ON public.expense_search_documents USING GIN (member_wallets);
+CREATE INDEX IF NOT EXISTS idx_expense_search_documents_created
+  ON public.expense_search_documents (created_at DESC, expense_id DESC);
+
+-- Keeps the document in step with its expense. SECURITY DEFINER because
+-- wallets have no write grant on the side table. It only writes the row for
+-- the expense that fired the trigger.
+CREATE OR REPLACE FUNCTION public.sync_expense_search_document()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $fn$
+BEGIN
+  INSERT INTO public.expense_search_documents (expense_id, member_wallets, created_at, search_vector, updated_at)
+  VALUES (NEW.id, COALESCE(NEW.member_wallets, ARRAY[]::TEXT[]), NEW.created_at, public.expense_search_vector(NEW), now())
+  ON CONFLICT (expense_id) DO UPDATE
+    SET member_wallets = EXCLUDED.member_wallets,
+        created_at     = EXCLUDED.created_at,
+        search_vector  = EXCLUDED.search_vector,
+        updated_at     = now();
+  RETURN NULL;
+END;
+$fn$;
+
+REVOKE ALL ON FUNCTION public.sync_expense_search_document() FROM PUBLIC, anon, authenticated;
+
+-- AFTER trigger: runs once the 01–05 BEFORE pipeline has produced the final row.
+DROP TRIGGER IF EXISTS trg_90_expenses_search_document ON public.expenses;
+CREATE TRIGGER trg_90_expenses_search_document
+  AFTER INSERT OR UPDATE ON public.expenses
+  FOR EACH ROW EXECUTE FUNCTION public.sync_expense_search_document();
+
+-- Backfill existing rows. Writes only the side table, so expense triggers do
+-- not fire. On very large tables, run it in created_at ranges during off-peak.
+INSERT INTO public.expense_search_documents (expense_id, member_wallets, created_at, search_vector)
+SELECT e.id, COALESCE(e.member_wallets, ARRAY[]::TEXT[]), e.created_at, public.expense_search_vector(e)
+FROM public.expenses e
+ON CONFLICT (expense_id) DO NOTHING;
+
+-- ─── Shared filter predicate ────────────────────────────────────────────────
+-- The non-text filters from search_expenses(), for the ranked search below.
+-- It is evaluated only on rows the GIN index already matched.
+CREATE OR REPLACE FUNCTION public.expense_matches_history_filters(
+  e          public.expenses,
+  p_trip_id  UUID,
+  p_category TEXT,
+  p_tags     TEXT[],
+  p_payer    TEXT,
+  p_status   TEXT,
+  p_asset    TEXT,
+  p_from     TIMESTAMPTZ,
+  p_to       TIMESTAMPTZ
+)
+RETURNS BOOLEAN
+LANGUAGE sql
+STABLE
+SECURITY INVOKER
+SET search_path = public
+AS $fn$
+  SELECT (p_trip_id IS NULL OR e.id::text IN (
+            SELECT unnest(t.expense_ids) FROM public.trips t WHERE t.id = p_trip_id))
+    AND (p_category IS NULL
+         OR (p_category = 'uncategorized' AND e.category IS NULL)
+         OR e.category = p_category)
+    AND (p_tags IS NULL OR cardinality(p_tags) = 0 OR e.tags @> p_tags)
+    AND (p_payer IS NULL
+         OR e.paid_by_member_id = p_payer
+         OR EXISTS (
+           SELECT 1
+           FROM jsonb_array_elements(
+             CASE WHEN jsonb_typeof(e.members) = 'array' THEN e.members ELSE '[]'::jsonb END
+           ) AS m
+           WHERE m ->> 'id' = e.paid_by_member_id
+             AND upper(m ->> 'walletAddress') = upper(p_payer)))
+    AND (p_status IS NULL
+         OR (p_status = 'settled' AND e.settled)
+         OR (p_status = 'open' AND NOT e.settled)
+         OR (p_status IN ('unpaid', 'partial') AND NOT e.settled AND (
+               EXISTS (
+                 SELECT 1
+                 FROM jsonb_array_elements(
+                   CASE WHEN jsonb_typeof(e.shares) = 'array' THEN e.shares ELSE '[]'::jsonb END
+                 ) AS s
+                 WHERE (s ->> 'paid')::boolean IS TRUE)
+             ) = (p_status = 'partial')))
+    AND (p_asset IS NULL
+         OR COALESCE(NULLIF(e.settlement_asset, ''), 'native') = p_asset)
+    AND (p_from IS NULL OR e.created_at >= p_from)
+    AND (p_to IS NULL OR e.created_at < p_to);
+$fn$;
+
+-- ─── Ranked search ──────────────────────────────────────────────────────────
+-- Returns ids in rank order. The caller loads the rows by primary key (still
+-- under RLS). SECURITY INVOKER: both tables' RLS policies apply. Rows come
+-- only from the GIN-matched candidate set, and no usable term means no rows.
+CREATE OR REPLACE FUNCTION public.search_expense_ids(
+  p_terms             TEXT[],
+  p_trip_id           UUID        DEFAULT NULL,
+  p_category          TEXT        DEFAULT NULL,
+  p_tags              TEXT[]      DEFAULT NULL,
+  p_payer             TEXT        DEFAULT NULL,
+  p_status            TEXT        DEFAULT NULL,
+  p_asset             TEXT        DEFAULT NULL,
+  p_from              TIMESTAMPTZ DEFAULT NULL,
+  p_to                TIMESTAMPTZ DEFAULT NULL,
+  p_cursor_rank       BIGINT      DEFAULT NULL,
+  p_cursor_created_at TIMESTAMPTZ DEFAULT NULL,
+  p_cursor_id         UUID        DEFAULT NULL,
+  p_limit             INT         DEFAULT 21
+)
+RETURNS TABLE (id UUID, created_at TIMESTAMPTZ, search_rank BIGINT)
+LANGUAGE sql
+STABLE
+SECURITY INVOKER
+SET search_path = public
+AS $fn$
+  WITH q AS (SELECT public.expense_search_query(p_terms) AS tsq),
+  hits AS (
+    SELECT d.expense_id, d.created_at,
+           round(ts_rank_cd(d.search_vector, q.tsq) * 1000000)::BIGINT AS search_rank
+    FROM q
+    JOIN public.expense_search_documents d ON d.search_vector @@ q.tsq
+    WHERE q.tsq IS NOT NULL
+      AND d.member_wallets @> ARRAY[public.current_wallet()]
+  )
+  SELECT h.expense_id, h.created_at, h.search_rank
+  FROM hits h
+  JOIN public.expenses e ON e.id = h.expense_id
+  WHERE public.expense_matches_history_filters(e, p_trip_id, p_category, p_tags, p_payer, p_status, p_asset, p_from, p_to)
+    AND (p_cursor_rank IS NULL
+         OR h.search_rank < p_cursor_rank
+         OR (h.search_rank = p_cursor_rank AND (
+               h.created_at < p_cursor_created_at
+               OR (h.created_at = p_cursor_created_at AND h.expense_id < p_cursor_id))))
+  ORDER BY h.search_rank DESC, h.created_at DESC, h.expense_id DESC
+  LIMIT LEAST(GREATEST(COALESCE(p_limit, 21), 1), 101);
+$fn$;
+
+REVOKE ALL ON FUNCTION public.search_expense_ids(
+  TEXT[], UUID, TEXT, TEXT[], TEXT, TEXT, TEXT, TIMESTAMPTZ, TIMESTAMPTZ, BIGINT, TIMESTAMPTZ, UUID, INT
+) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.search_expense_ids(
+  TEXT[], UUID, TEXT, TEXT[], TEXT, TEXT, TEXT, TIMESTAMPTZ, TIMESTAMPTZ, BIGINT, TIMESTAMPTZ, UUID, INT
+) TO authenticated;
+
+-- ─── Recency search, now index-backed ───────────────────────────────────────
+-- Same signature and semantics as migration 0017, except the free-text clause
+-- now goes through the GIN index, with the minimum-query rules applied.
+CREATE OR REPLACE FUNCTION public.search_expenses(
+  p_trip_id           UUID        DEFAULT NULL,
+  p_terms             TEXT[]      DEFAULT NULL,
+  p_category          TEXT        DEFAULT NULL,
+  p_tags              TEXT[]      DEFAULT NULL,
+  p_payer             TEXT        DEFAULT NULL,
+  p_status            TEXT        DEFAULT NULL,
+  p_asset             TEXT        DEFAULT NULL,
+  p_from              TIMESTAMPTZ DEFAULT NULL,
+  p_to                TIMESTAMPTZ DEFAULT NULL,
+  p_cursor_created_at TIMESTAMPTZ DEFAULT NULL,
+  p_cursor_id         UUID        DEFAULT NULL,
+  p_limit             INT         DEFAULT 21
+)
+RETURNS SETOF public.expenses
+LANGUAGE sql
+STABLE
+SECURITY INVOKER
+SET search_path = public
+AS $fn$
+  SELECT e.*
+  FROM public.expenses e
+  WHERE public.expense_matches_history_filters(e, p_trip_id, p_category, p_tags, p_payer, p_status, p_asset, p_from, p_to)
+    AND (p_cursor_created_at IS NULL
+         OR e.created_at < p_cursor_created_at
+         OR (p_cursor_id IS NOT NULL AND e.created_at = p_cursor_created_at AND e.id < p_cursor_id))
+    AND (p_terms IS NULL OR cardinality(p_terms) = 0 OR e.id IN (
+          SELECT d.expense_id
+          FROM public.expense_search_documents d
+          WHERE d.search_vector @@ public.expense_search_query(p_terms)))
+  ORDER BY e.created_at DESC, e.id DESC
+  LIMIT LEAST(GREATEST(COALESCE(p_limit, 21), 1), 101);
+$fn$;
+
+GRANT EXECUTE ON FUNCTION public.search_expenses(
+  UUID, TEXT[], TEXT, TEXT[], TEXT, TEXT, TEXT, TIMESTAMPTZ, TIMESTAMPTZ, TIMESTAMPTZ, UUID, INT
+) TO authenticated;
+
+NOTIFY pgrst, 'reload schema';
+
+INSERT INTO public.schema_migrations (version, name, checksum)
+VALUES ('0028', '0028_indexed_expense_search', 'indexed_expense_search_450_v1')
 ON CONFLICT (version) DO NOTHING;

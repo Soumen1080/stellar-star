@@ -457,7 +457,7 @@ export function useNetPayment({ tripId }: UseNetPaymentOpts) {
 
         setPaymentState({ status: "signing" });
         toastInfo("Waiting for wallet signature...", "Review and confirm the net settlement.");
-        const signedXDR = await signXDR(xdr, NETWORK_PASSPHRASE);
+        const signedXDR = await signXDR(xdr, NETWORK_PASSPHRASE, publicKey);
 
         setPaymentState({ status: "submitting" });
         const result = await submitSignedTransaction(signedXDR, requestId);
@@ -704,7 +704,7 @@ export function useNetPayment({ tripId }: UseNetPaymentOpts) {
             payerWallet: payerWalletAddress,
             memberWallet: publicKey,
             amount: debt.amount.toString(),
-            quoteMetadata: {
+            quoteMetadata: ({
               type: "stellar-path-payment-estimate",
               quotedAt: path.quotedAt,
               sourceAsset: path.sourceAsset,
@@ -715,7 +715,7 @@ export function useNetPayment({ tripId }: UseNetPaymentOpts) {
               slippageBps: path.slippageBps,
               sendMax: path.sendMax,
               routePriceImpactBps: path.priceImpactBps,
-            },
+            } as any),
           });
           if (res.ok) {
             acquiredIntents.push(res.intent);
@@ -747,7 +747,7 @@ export function useNetPayment({ tripId }: UseNetPaymentOpts) {
 
         setPaymentState({ status: "signing" });
         toastInfo("Waiting for wallet signature...", "Confirm path payment in Freighter.");
-        const signedXDR = await signXDR(xdr, NETWORK_PASSPHRASE);
+        const signedXDR = await signXDR(xdr, NETWORK_PASSPHRASE, publicKey);
 
         setPaymentState({ status: "submitting" });
         const result = await submitSignedTransaction(signedXDR, requestId);

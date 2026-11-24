@@ -1,0 +1,438 @@
+{
+  "$schema": "./manifest.schema.json",
+  "formatVersion": "1.0.0",
+  "description": "Canonical append-only migration manifest guaranteeing deterministic execution ordering and immutable identities",
+  "totalMigrations": 43,
+  "migrations": [
+    {
+      "sequence": 1,
+      "id": "0001_baseline",
+      "version": "0001",
+      "filename": "0001_baseline.sql",
+      "name": "0001_baseline",
+      "checksum": "a48fe8d52970b021",
+      "sha256": "a48fe8d52970b021d120c4eba79a0744c36c862fb8dbe71add016ea1f0de597d",
+      "description": "Initial baseline schema, extensions, current_wallet, and users table"
+    },
+    {
+      "sequence": 2,
+      "id": "0002_explicit_trigger_pipeline",
+      "version": "0002",
+      "filename": "0002_explicit_trigger_pipeline.sql",
+      "name": "0002_explicit_trigger_pipeline",
+      "checksum": "30a718d1b36fa5c1",
+      "sha256": "30a718d1b36fa5c19c05260c7b1a19194e67e3252913ed15c2d13fa83bc13869",
+      "description": "Deterministic trigger execution pipeline for expenses and trips"
+    },
+    {
+      "sequence": 3,
+      "id": "0003_reconcile_drifted_schema",
+      "version": "0003",
+      "filename": "0003_reconcile_drifted_schema.sql",
+      "name": "0003_reconcile_drifted_schema",
+      "checksum": "b19e67d6c9ac7fe0",
+      "sha256": "b19e67d6c9ac7fe019c0b73d274a5a0b89edf3f67cb97cc90da73c4b656b7c83",
+      "description": "Reconciled auth rate limits and optimistic concurrency RPCs"
+    },
+    {
+      "sequence": 4,
+      "id": "0004_settlement_intents",
+      "version": "0004",
+      "filename": "0004_settlement_intents.sql",
+      "name": "0004_settlement_intents",
+      "checksum": "5fbc4a065249b8f4",
+      "sha256": "5fbc4a065249b8f41184d14ff055441ccf47015fee17259fcd23a08e9b0596de",
+      "description": "Settlement intents state machine and dispute records"
+    },
+    {
+      "sequence": 5,
+      "id": "0005_freeze_expense_exchange_rate",
+      "version": "0005",
+      "filename": "0005_freeze_expense_exchange_rate.sql",
+      "name": "0005_freeze_expense_exchange_rate",
+      "checksum": "10e380708e791d6e",
+      "sha256": "10e380708e791d6edbd9e007c7fa24e3b075fb85e4af93f47d7efd8461423c23",
+      "description": "Historical FX rate freezing and rate tampering prevention"
+    },
+    {
+      "sequence": 6,
+      "id": "0005_verify_trip_invite_rpc",
+      "version": "0005",
+      "filename": "0005_verify_trip_invite_rpc.sql",
+      "name": "0005_verify_trip_invite_rpc",
+      "checksum": "1554e39fffc1a2ab",
+      "sha256": "1554e39fffc1a2abaaf28e79be8f8a7b0ef7c13d3bf6620203ea21226e4c2bba",
+      "description": "Trip invite verification and atomicity RPC"
+    },
+    {
+      "sequence": 7,
+      "id": "0006_settlement_request_ids",
+      "version": "0006",
+      "filename": "0006_settlement_request_ids.sql",
+      "name": "0006_settlement_request_ids",
+      "checksum": "976d172887cdab45",
+      "sha256": "976d172887cdab45687ecde8ed388bb7962272f01afc096a9686b9989e24a494",
+      "description": "Settlement intent request IDs and idempotency mapping"
+    },
+    {
+      "sequence": 8,
+      "id": "0007_composite_query_indexes",
+      "version": "0007",
+      "filename": "0007_composite_query_indexes.sql",
+      "name": "0007_composite_query_indexes",
+      "checksum": "3553939b991d1bb3",
+      "sha256": "3553939b991d1bb3243850385af73e1df7fbd307cf27d4b619fd30c78f86d2fa",
+      "description": "Composite query indexes for trips, expenses, and intents"
+    },
+    {
+      "sequence": 9,
+      "id": "0007_settlement_intent_idempotency",
+      "version": "0007",
+      "filename": "0007_settlement_intent_idempotency.sql",
+      "name": "0007_settlement_intent_idempotency",
+      "checksum": "6321f3e8f6fdf9c6",
+      "sha256": "6321f3e8f6fdf9c6fa909144c5696616235f95a8b9b04ebc0824952f268030cb",
+      "description": "Settlement intent idempotency constraints and deduplication"
+    },
+    {
+      "sequence": 10,
+      "id": "0008_expense_categories_tags_search",
+      "version": "0008",
+      "filename": "0008_expense_categories_tags_search.sql",
+      "name": "0008_expense_categories_tags_search",
+      "checksum": "4ecfe70cbc8cd9b0",
+      "sha256": "4ecfe70cbc8cd9b01208cde2a38322cb9b25f5aaa88b65a2b583bb570b55257b",
+      "description": "Expense categories, search tags, and Gin text search indexes"
+    },
+    {
+      "sequence": 11,
+      "id": "0008_trip_templates",
+      "version": "0008",
+      "filename": "0008_trip_templates.sql",
+      "name": "0008_trip_templates",
+      "checksum": "3b47b6954d1ed96e",
+      "sha256": "3b47b6954d1ed96ef9d5a4524532fd1e9f3c200257b0dca132503d8b71717ccd",
+      "description": "Trip template cloning, defaults, and recurring expense rules"
+    },
+    {
+      "sequence": 12,
+      "id": "0009_contacts_member_profiles",
+      "version": "0009",
+      "filename": "0009_contacts_member_profiles.sql",
+      "name": "0009_contacts_member_profiles",
+      "checksum": "0dcf54b4ac44ba60",
+      "sha256": "0dcf54b4ac44ba607d3cdfa4e049d781aabd65b0e85b04d262c56f53e9028b11",
+      "description": "Contact profiles, address book, and wallet change requests"
+    },
+    {
+      "sequence": 13,
+      "id": "0009_expense_receipts",
+      "version": "0009",
+      "filename": "0009_expense_receipts.sql",
+      "name": "0009_expense_receipts",
+      "checksum": "14f5354373c5d484",
+      "sha256": "14f5354373c5d4849c321a0ab5553e5370aaca9417effc5075f063a3dc14420d",
+      "description": "Expense receipt metadata and file upload links"
+    },
+    {
+      "sequence": 14,
+      "id": "0010_fx_quote_provenance",
+      "version": "0010",
+      "filename": "0010_fx_quote_provenance.sql",
+      "name": "0010_fx_quote_provenance",
+      "checksum": "b6a6bf53d051552c",
+      "sha256": "b6a6bf53d051552c87608891d165231713aa13ffa41d7a8c5483e41eab42481b",
+      "description": "FX quote source provenance and timestamp verification"
+    },
+    {
+      "sequence": 15,
+      "id": "0010_recurring_expenses",
+      "version": "0010",
+      "filename": "0010_recurring_expenses.sql",
+      "name": "0010_recurring_expenses",
+      "checksum": "2368e4a3d1142440",
+      "sha256": "2368e4a3d1142440864b10a5745b231156ec0f67571814850f47681a6573e88e",
+      "description": "Recurring expense schedules, cadence, and automated generation"
+    },
+    {
+      "sequence": 16,
+      "id": "0011_export_audit_events",
+      "version": "0011",
+      "filename": "0011_export_audit_events.sql",
+      "name": "0011_export_audit_events",
+      "checksum": "cbd2b99a5add5570",
+      "sha256": "cbd2b99a5add557061f6c4d0226faef1a7c06f4d534dd508330eaab70a9335ad",
+      "description": "Export audit logging and data boundary retention"
+    },
+    {
+      "sequence": 17,
+      "id": "0011_trip_budgets",
+      "version": "0011",
+      "filename": "0011_trip_budgets.sql",
+      "name": "0011_trip_budgets",
+      "checksum": "cffcf7517433b020",
+      "sha256": "cffcf7517433b0202ef7d6df8ad4165cf399be7e7b01d073ebdc7eeaa2b4fadd",
+      "description": "Trip budget tracking, category caps, and spending threshold alerts"
+    },
+    {
+      "sequence": 18,
+      "id": "0012_security_review_hardening",
+      "version": "0012",
+      "filename": "0012_security_review_hardening.sql",
+      "name": "0012_security_review_hardening",
+      "checksum": "24fad74f02b3f972",
+      "sha256": "24fad74f02b3f9726e52678e58ab9ee1010d35451636b7dd039ade0219e580d0",
+      "description": "Security hardening, RLS enforcement, and role audits"
+    },
+    {
+      "sequence": 19,
+      "id": "0012_share_installments",
+      "version": "0012",
+      "filename": "0012_share_installments.sql",
+      "name": "0012_share_installments",
+      "checksum": "eedf39ed2c854305",
+      "sha256": "eedf39ed2c8543059cc8ddd3f044414baf8f7a2ae76221f840bc37270335ab0e",
+      "description": "Expense split installments and deferred settlements"
+    },
+    {
+      "sequence": 20,
+      "id": "0013_payment_reminders",
+      "version": "0013",
+      "filename": "0013_payment_reminders.sql",
+      "name": "0013_payment_reminders",
+      "checksum": "3a3f311dde422328",
+      "sha256": "3a3f311dde4223287207473aa4c5ab4b3dd302340a3dad8de3afa85fce698d62",
+      "description": "Payment reminders and notification cooldown scheduling"
+    },
+    {
+      "sequence": 21,
+      "id": "0013_privacy_retention_deletion",
+      "version": "0013",
+      "filename": "0013_privacy_retention_deletion.sql",
+      "name": "0013_privacy_retention_deletion",
+      "checksum": "9cd6fdcb09331af2",
+      "sha256": "9cd6fdcb09331af21987c8b46790882753d7ec6bc04eb17e8cae701939545f1c",
+      "description": "Account deletion ledger and GDPR privacy retention triggers"
+    },
+    {
+      "sequence": 22,
+      "id": "0014_idempotency_records",
+      "version": "0014",
+      "filename": "0014_idempotency_records.sql",
+      "name": "0014_idempotency_records",
+      "checksum": "d4a9e6252f3dcdb7",
+      "sha256": "d4a9e6252f3dcdb7c248a141ec049bcc1f579100919b427b5cdac6d7ce503914",
+      "description": "Idempotency store records and replay caching"
+    },
+    {
+      "sequence": 23,
+      "id": "0014_settlement_proposals",
+      "version": "0014",
+      "filename": "0014_settlement_proposals.sql",
+      "name": "0014_settlement_proposals",
+      "checksum": "433de44a0b83e3e8",
+      "sha256": "433de44a0b83e3e8537187929fbd668d0923031ed60393278da3ee22b8fbed9a",
+      "description": "Settlement payment proposals and multi-party signoff"
+    },
+    {
+      "sequence": 24,
+      "id": "0015_travel_workspace",
+      "version": "0015",
+      "filename": "0015_travel_workspace.sql",
+      "name": "0015_travel_workspace",
+      "checksum": "a69f483648f9d81a",
+      "sha256": "a69f483648f9d81a33fa3637313f5622be46ec1a269e13b4b433317510605788",
+      "description": "Travel itinerary workspace and destination coordination"
+    },
+    {
+      "sequence": 25,
+      "id": "0016_trip_roles_and_permissions",
+      "version": "0016",
+      "filename": "0016_trip_roles_and_permissions.sql",
+      "name": "0016_trip_roles_and_permissions",
+      "checksum": "edd4d58c8b2fb77c",
+      "sha256": "edd4d58c8b2fb77c463437a201c39d7c18d773449b9f2b6bfb425bcc71bdc1b8",
+      "description": "Trip role-based access control (owner, admin, member, viewer)"
+    },
+    {
+      "sequence": 26,
+      "id": "0017_receipt_capture_prerequisites",
+      "version": "0017",
+      "filename": "0017_receipt_capture_prerequisites.sql",
+      "name": "0017_receipt_capture_prerequisites",
+      "checksum": "10a6ed0248bbd993",
+      "sha256": "10a6ed0248bbd993f2d44fe6d600685cb6b53a40604bb53fd46ba58baf9df8ea",
+      "description": "Receipt OCR capture prerequisites and hash indexing"
+    },
+    {
+      "sequence": 27,
+      "id": "0018_expense_disputes",
+      "version": "0018",
+      "filename": "0018_expense_disputes.sql",
+      "name": "0018_expense_disputes",
+      "checksum": "ff7733c62b107e33",
+      "sha256": "ff7733c62b107e33ca80a9876b7dff80e19038740e09075e4ac8b36834aeb5a3",
+      "description": "Expense dispute resolution workflows and status audits"
+    },
+    {
+      "sequence": 28,
+      "id": "0018_path_quote_metadata",
+      "version": "0018",
+      "filename": "0018_path_quote_metadata.sql",
+      "name": "0018_path_quote_metadata",
+      "checksum": "eebc4a413bae01f5",
+      "sha256": "eebc4a413bae01f5f3f2588e1e3568a90ac65c75195f9364ce2a4f27a4ef4c9c",
+      "description": "Cross-asset path payment quote metadata and slippage limits"
+    },
+    {
+      "sequence": 29,
+      "id": "0018_support_console_and_audit",
+      "version": "0018",
+      "filename": "0018_support_console_and_audit.sql",
+      "name": "0018_support_console_and_audit",
+      "checksum": "b9d293a176be4d69",
+      "sha256": "b9d293a176be4d690f7a4d9a6b270d04345ebc360b15be280e43c1d1c5cc2d8f",
+      "description": "Support console diagnostic logs and dual-control approvals"
+    },
+    {
+      "sequence": 30,
+      "id": "0019_expense_corrections_and_voids",
+      "version": "0019",
+      "filename": "0019_expense_corrections_and_voids.sql",
+      "name": "0019_expense_corrections_and_voids",
+      "checksum": "74706571b292e1cf",
+      "sha256": "74706571b292e1cfb56a123654299fc63bae103cd924c81ea998bbc463b8121e",
+      "description": "Append-only expense corrections, revisions, and void audit"
+    },
+    {
+      "sequence": 31,
+      "id": "0019_shared_household_coordination",
+      "version": "0019",
+      "filename": "0019_shared_household_coordination.sql",
+      "name": "0019_shared_household_coordination",
+      "checksum": "a4b4eeb9594d7898",
+      "sha256": "a4b4eeb9594d789843d3467f00e0ac45c7ba8d704bda5966d91515033884385a",
+      "description": "Shared household chores, completion ledger, and opt-outs"
+    },
+    {
+      "sequence": 32,
+      "id": "0020_onchain_reconciliation_worker",
+      "version": "0020",
+      "filename": "0020_onchain_reconciliation_worker.sql",
+      "name": "0020_onchain_reconciliation_worker",
+      "checksum": "e6ce800d2b9e349c",
+      "sha256": "e6ce800d2b9e349cfdafbdf757d912ff89931c557ef58e96e91d555335e68f18",
+      "description": "Automated on-chain settlement reconciliation queue and worker"
+    },
+    {
+      "sequence": 33,
+      "id": "0021_immutable_migration_identity",
+      "version": "0021",
+      "filename": "0021_immutable_migration_identity.sql",
+      "name": "0021_immutable_migration_identity",
+      "checksum": "206025f196f949ef",
+      "sha256": "206025f196f949effdfe715bcaaee5c0331661f4c307904a4dd233033aeeb36b",
+      "description": "Immutable migration identities, explicit manifest sequence, and ledger hardening"
+    },
+    {
+      "sequence": 34,
+      "id": "0021_database_deadlines_and_query_budgets",
+      "version": "0021",
+      "filename": "0021_database_deadlines_and_query_budgets.sql",
+      "name": "0021_database_deadlines_and_query_budgets",
+      "checksum": "bddbc868d191293e",
+      "sha256": "bddbc868d191293e7d5ae92415fbe0b89a8449ebca70afe468ae034731cf9c93",
+      "description": "Database query deadlines, connection timeouts, and telemetry traces"
+    },
+    {
+      "sequence": 35,
+      "id": "0021_partition_high_volume_operational_data",
+      "version": "0021",
+      "filename": "0021_partition_high_volume_operational_data.sql",
+      "name": "0021_partition_high_volume_operational_data",
+      "checksum": "dc4be59361d16700",
+      "sha256": "dc4be59361d16700715ac11441ce690f968c69d4218a43aa6ea971ada3dbf905",
+      "description": "Range partitioning for high-volume operational tables and retention cleanup"
+    },
+    {
+      "sequence": 36,
+      "id": "0022_transactional_outbox",
+      "version": "0022",
+      "filename": "0022_transactional_outbox.sql",
+      "name": "0022_transactional_outbox",
+      "checksum": "c7c779d75c77d6bc",
+      "sha256": "c7c779d75c77d6bc0bf30311372e1f06df782591aa87be50adbab9cb1105fd26",
+      "description": "Transactional outbox for reliable event publishing and background delivery"
+    },
+    {
+      "sequence": 37,
+      "id": "0023_atomic_idempotency_claims",
+      "version": "0023",
+      "filename": "0023_atomic_idempotency_claims.sql",
+      "name": "0023_atomic_idempotency_claims",
+      "checksum": "0a283c68ac09bfcf",
+      "sha256": "0a283c68ac09bfcf633dc1408ccc2dacf2865986fb49457fedb2fadbf54815df",
+      "description": "Atomic claim, deliberate outcome evaluation, and lease recovery for idempotency records"
+    },
+    {
+      "sequence": 38,
+      "id": "0024_idempotency_retention",
+      "version": "0024",
+      "filename": "0024_idempotency_retention.sql",
+      "name": "0024_idempotency_retention",
+      "checksum": "f256658f5621879a",
+      "sha256": "f256658f5621879ad77bc178cb961bbd77902d0c097fde9778f4b42a2c2ae2f7",
+      "description": "Allowlisted replay summaries, response digests, size cap, replay/audit retention with indexed cleanup, and caller-scoped idempotency RPCs"
+    },
+    {
+      "sequence": 39,
+      "id": "0025_reconciliation_worker_runs",
+      "version": "0025",
+      "filename": "0025_reconciliation_worker_runs.sql",
+      "name": "0025_reconciliation_worker_runs",
+      "checksum": "73042ae658b07f0f",
+      "sha256": "73042ae658b07f0fc6cfdc4d7780382df7d6bc1f3178b65e6b4e49ee47d69c3d",
+      "description": "Append-only log of reconciliation worker runs: actor, request ID, trigger, duration and result"
+    },
+    {
+      "sequence": 40,
+      "id": "0026_batch_trip_permissions",
+      "version": "0026",
+      "filename": "0026_batch_trip_permissions.sql",
+      "name": "0026_batch_trip_permissions",
+      "checksum": "ad43df4ccc7f5b95",
+      "sha256": "ad43df4ccc7f5b95ccb900668401d7080269ff816982fccb895208f73fcc4db0",
+      "description": "Batched, non-disclosing trip permission resolution (trips_with_permission) for archive exports"
+    },
+    {
+      "sequence": 41,
+      "id": "0026_reconciliation_leased_queue",
+      "version": "0026",
+      "filename": "0026_reconciliation_leased_queue.sql",
+      "name": "0026_reconciliation_leased_queue",
+      "checksum": "b0fa1f8f3712141e",
+      "sha256": "b0fa1f8f3712141e6ed3ac133e8f80201df4714efc780e29f51e63b16e0143d8",
+      "description": "Leased reconciliation queue: SKIP LOCKED claims, fenced lease tokens, heartbeats, backoff and dead-letter handling"
+    },
+    {
+      "sequence": 42,
+      "id": "0028_indexed_expense_search",
+      "version": "0028",
+      "filename": "0028_indexed_expense_search.sql",
+      "name": "0028_indexed_expense_search",
+      "checksum": "9feb416fd866e845",
+      "sha256": "9feb416fd866e845414e822ddf38e84e8f371c040c8e949e9f0e1b5973325b26",
+      "description": "RLS-scoped tsvector search documents, GIN indexes, minimum-query rules, ranked keyset search (search_expense_ids), index-backed search_expenses"
+    },
+    {
+      "sequence": 43,
+      "id": "0029_ocr_queue_and_quotas",
+      "version": "0029",
+      "filename": "0029_ocr_queue_and_quotas.sql",
+      "name": "0029_ocr_queue_and_quotas",
+      "checksum": "ocr_queue_quotas_v1",
+      "sha256": "ocr_queue_quotas_v1",
+      "description": "OCR background worker queue with per-user/trip quotas, results persistence, and review gate (#452)"
+    }
+  ]
+}

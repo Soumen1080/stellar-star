@@ -50,6 +50,9 @@ jobs:
       - name: Proof link validation
         run: npm run proof:links
 
+      - name: Check help and status content (owners, review dates, links)
+        run: npm run help:check
+
       - name: Validate network configuration (CI check)
         run: npm run config:validate
 
@@ -154,6 +157,11 @@ jobs:
       # configured the script reports local migrations and exits cleanly.
       - name: Migration manifest is readable
         run: npm run db:status
+
+      # Release gate: builds disposable schema from migrations, checks type
+      # agreement, and fails if committed types/supabase.ts drifts from SQL/RPCs (#423).
+      - name: Database types match disposable schema (Release Gate)
+        run: npm run db:types:verify
 
   playwright:
     name: Playwright E2E — ${{ matrix.project }}

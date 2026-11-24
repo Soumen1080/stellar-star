@@ -16,7 +16,7 @@
  * control (invariant 4).
  */
 
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { getAccountState, type AccountState, type OnboardingNeed } from "@/lib/stellar/accountState";
 import { describeOnboardingNeed, isBlockingNeed } from "@/lib/stellar/accountState";
 import { assetKey, NATIVE_ASSET, type AssetRef } from "@/lib/stellar/assets";
@@ -24,6 +24,11 @@ import { signXDR } from "@/lib/freighter";
 import { submitSignedTransaction } from "@/lib/stellar/submitTransaction";
 import { getAccessToken } from "@/lib/supabase/session";
 import { NETWORK_PASSPHRASE } from "@/lib/utils/constants";
+import {
+  createIdempotencyKeyHolder,
+  idempotencyHeaders,
+  isIdempotencyConflict,
+} from "@/lib/idempotency/client";
 
 export type OnboardingPhase =
   | "idle"
@@ -66,6 +71,8 @@ const INITIAL: OnboardingState = {
 
 export function useAccountOnboarding(asset: AssetRef = NATIVE_ASSET) {
   const [state, setState] = useState<OnboardingState>(INITIAL);
+  // One key per sponsorship request, reused if it is retried (#412).
+  const sponsorKey = useRef(createIdempotencyKeyHolder());
 
   const reset = useCallback(() => setState(INITIAL), []);
 
@@ -121,6 +128,7 @@ export function useAccountOnboarding(asset: AssetRef = NATIVE_ASSET) {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
+            ...idempotencyHeaders(sponsorKey.current.current()),
             ...(getAccessToken() ? { Authorization: `Bearer ${getAccessToken()}` } : {}),
           },
           body: JSON.stringify({
@@ -146,6 +154,10 @@ export function useAccountOnboarding(asset: AssetRef = NATIVE_ASSET) {
         reclaimableSponsorships?: number;
       };
 
+      if (response.ok || isIdempotencyConflict(response.status, body)) {
+        sponsorKey.current.reset();
+      }
+
       if (body.alreadyFunded) {
         setState((s) => ({
           ...s,
@@ -169,7 +181,7 @@ export function useAccountOnboarding(asset: AssetRef = NATIVE_ASSET) {
       setState((s) => ({ ...s, phase: "awaiting_signature" }));
 
       try {
-        const signed = await signXDR(body.xdr, NETWORK_PASSPHRASE);
+        const signed = await signXDR(body.xdr, NETWORK_PASSPHRASE, invitee);
 
         setState((s) => ({ ...s, phase: "submitting" }));
         const result = await submitSignedTransaction(signed);

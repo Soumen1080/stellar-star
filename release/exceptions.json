@@ -1,0 +1,4 @@
+{
+  "$comment": "Accountable exceptions to release readiness requirements (#447). An exception applies only if it names a requester and a different approver listed for the requirement's domain in release/readiness-policy.json, links a ticket, describes a compensating control, is unexpired, lasts at most maxExceptionDays, and targets an overridable requirement. Every applied or rejected exception is recorded in the promotion audit log.",
+  "exceptions": []
+}

@@ -2,6 +2,8 @@ import type { ExpenseCategory } from "@/lib/expense/categories";
 
 export type SplitMode = "equal" | "custom";
 
+export type CorrectionType = "reversal" | "adjustment" | "offset";
+
 export type TripRole = "owner" | "organizer" | "contributor" | "viewer" | "custom";
 
 export type TripPermission =
@@ -113,6 +115,15 @@ export interface Expense {
   settled: boolean;
   version?: number;
   updatedAt?: string;
+  /** True when the unsettled expense was voided with an audit reason (#316). */
+  voided?: boolean;
+  voidedAt?: string | null;
+  voidedByWallet?: string | null;
+  voidReason?: string | null;
+  /** ID of the parent expense if this record is a linked adjustment/offset (#316). */
+  correctionOfExpenseId?: string | null;
+  correctionType?: CorrectionType | null;
+  correctionReason?: string | null;
 }
 
 export type ExpenseFormData = {

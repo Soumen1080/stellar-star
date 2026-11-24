@@ -7,6 +7,8 @@ import {
   buildProposalSnapshot,
   canonicalJson,
   detectMaterialChanges,
+  disputeKey,
+  expensesInScope,
   evaluateProposal,
   proposalContentHash,
   proposalMemo,
@@ -99,6 +101,20 @@ const evaluate = (p: SettlementProposal, responses: ProposalResponse[], expenses
 const approvedBy = (p: SettlementProposal) => [respond(p, ALICE, "approve"), respond(p, BOB, "approve"), respond(p, CAROL, "approve")];
 
 describe("the frozen snapshot", () => {
+  it("excludes disputed unpaid shares from a fresh snapshot without changing paid shares", () => {
+    const rows = baseExpenses();
+    const disputedShares = new Set([disputeKey("exp-1", "bob")]);
+    const snapshot = buildProposalSnapshot({ trip, expenses: rows, disputedShares, creatorWallet: ALICE, nowMs: NOW, ttlMs: 24 * HOUR });
+    const exp1 = snapshot.expenses.find((item) => item.id === "exp-1")!;
+    expect(exp1.shares.find((share) => share.memberId === "bob")?.paid).toBe(false);
+    expect(snapshot.transfers.some((transfer) => transfer.expenseIds.includes("exp-1") && transfer.fromId === "bob")).toBe(false);
+    expect(snapshot.transfers.some((transfer) => transfer.expenseIds.includes("exp-1") && transfer.fromId === "carol")).toBe(true);
+    expect(expensesInScope(trip, rows, new Set([disputeKey("exp-1", "bob"), disputeKey("exp-1", "carol")]))
+      .some((item) => item.id === "exp-1")).toBe(false);
+    // The original financial record and confirmed paid state are unchanged.
+    expect(rows[0].shares[0].paid).toBe(true);
+  });
+
   it("captures included expense versions, balances, assets, creator, expiry and transfers", () => {
     const { snapshot } = proposalFrom(baseExpenses());
     expect(snapshot).toMatchObject({
