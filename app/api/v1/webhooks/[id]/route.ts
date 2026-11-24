@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { authenticateApiRequest, recordAuditLog } from "@/lib/api/middleware";
-import { deleteWebhookEndpoint } from "@/lib/api/webhooks";
+import { deleteDurableWebhookEndpoint } from "@/lib/api/webhooks";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -21,7 +21,7 @@ export async function DELETE(
   const { tokenPayload, ip, userAgent } = auth.context;
   const { id } = await params;
 
-  const deleted = deleteWebhookEndpoint(id, tokenPayload.walletAddress);
+  const deleted = await deleteDurableWebhookEndpoint(id, tokenPayload.walletAddress);
 
   recordAuditLog({
     timestamp: new Date().toISOString(),

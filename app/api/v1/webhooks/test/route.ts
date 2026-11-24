@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { authenticateApiRequest, recordAuditLog } from "@/lib/api/middleware";
-import { sendTestWebhookPing } from "@/lib/api/webhooks";
+import { enqueueDurableWebhookPing } from "@/lib/api/webhooks";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -42,7 +42,7 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const delivery = await sendTestWebhookPing(webhookId, tokenPayload.walletAddress);
+    const delivery = await enqueueDurableWebhookPing(webhookId, tokenPayload.walletAddress);
 
     recordAuditLog({
       timestamp: new Date().toISOString(),

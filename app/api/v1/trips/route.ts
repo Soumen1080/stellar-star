@@ -6,7 +6,7 @@ import {
   recordAuditLog,
 } from "@/lib/api/middleware";
 import { fetchPermittedTrips, insertTrip } from "@/lib/api/data";
-import { dispatchWebhookEvent } from "@/lib/api/webhooks";
+import { enqueueWebhookEvent } from "@/lib/api/webhooks";
 import type { Trip } from "@/types/trip";
 
 export const runtime = "nodejs";
@@ -137,7 +137,8 @@ export async function POST(request: NextRequest) {
   const created = await insertTrip(newTrip);
 
   // Dispatch webhook event
-  dispatchWebhookEvent({
+  enqueueWebhookEvent({
+    id: created.id,
     event: "trip.created",
     data: {
       trip_id: created.id,

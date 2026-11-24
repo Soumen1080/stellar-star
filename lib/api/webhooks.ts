@@ -4,10 +4,80 @@ import {
   type WebhookEventName,
   type WebhookDeliveryLog,
 } from "./types";
+import { createServiceRoleClient } from "@/lib/supabase/server";
 
 const WEBHOOK_SECRET_PREFIX = "whsec_";
 const MAX_DELIVERY_LOGS = 200;
 const SIGNATURE_TOLERANCE_SECONDS = 300; // 5 minutes
+const MAX_ATTEMPTS = 8;
+
+/** Enqueue matching deliveries durably; event ids deduplicate producer retries. */
+export async function enqueueWebhookEvent(args: {
+  id: string; event: WebhookEventName; data: Record<string, unknown>; walletAddress?: string;
+}): Promise<number> {
+  const client = createServiceRoleClient();
+  if (!client) throw new Error("Webhook delivery requires SUPABASE_SERVICE_ROLE_KEY.");
+  const db = client as any;
+  let query = db.from("webhook_endpoints").select("id,events").eq("active", true);
+  if (args.walletAddress) query = query.eq("wallet_address", args.walletAddress.trim().toUpperCase());
+  const { data: endpoints, error } = await query;
+  if (error) throw new Error("Unable to load webhook subscriptions.");
+  const matching = (endpoints ?? []).filter((ep: any) => ep.events.includes(args.event) || ep.events.includes("ping"));
+  if (!matching.length) return 0;
+  const payload = { id: args.id, event: args.event, timestamp: new Date().toISOString(), data: args.data };
+  const rows = matching.map((ep: any) => ({ id: args.id, endpoint_id: ep.id, event: args.event, payload }));
+  const { error: insertError } = await db.from("webhook_outbox").upsert(rows, { onConflict: "endpoint_id,id", ignoreDuplicates: true });
+  if (insertError) throw new Error("Unable to enqueue webhook deliveries.");
+  return matching.length;
+}
+
+/** Process one bounded batch claimed with SKIP LOCKED by PostgreSQL. */
+export async function processWebhookOutbox(limit = 10): Promise<number> {
+  const client = createServiceRoleClient();
+  if (!client) throw new Error("Webhook delivery requires SUPABASE_SERVICE_ROLE_KEY.");
+  const db = client as any;
+  const { data: jobs, error } = await db.rpc("claim_webhook_deliveries", { p_limit: Math.min(10, Math.max(1, limit)) });
+  if (error) throw new Error("Unable to claim webhook deliveries.");
+  let processed = 0;
+  for (const job of jobs ?? []) {
+    const { data: endpoint } = await db.from("webhook_endpoints").select("url,secret,active").eq("id", job.endpoint_id).maybeSingle();
+    let statusCode: number | null = null;
+    let failure = "Endpoint unavailable.";
+    if (endpoint?.active) {
+      try {
+        const payloadString = JSON.stringify(job.payload);
+        const timestamp = Math.floor(Date.now() / 1000);
+        const signature = signWebhookPayload(payloadString, endpoint.secret, timestamp);
+        const response = await fetch(endpoint.url, { method: "POST", headers: { "Content-Type": "application/json", "Stellar-Signature": signature, "Stellar-Event": job.event, "Stellar-Delivery": job.id, "User-Agent": "StellarStar-Webhooks/1.0" }, body: payloadString, signal: AbortSignal.timeout(5000), redirect: "error" });
+        statusCode = response.status;
+        if (response.ok) {
+          await db.from("webhook_outbox").update({ status: "delivered", delivered_at: new Date().toISOString(), locked_until: null, status_code: statusCode, last_error: null }).eq("id", job.id).eq("endpoint_id", job.endpoint_id);
+          await db.from("webhook_endpoints").update({ consecutive_failures: 0 }).eq("id", job.endpoint_id);
+          processed++; continue;
+        }
+        failure = `HTTP ${statusCode}`;
+      } catch (error) { failure = error instanceof Error ? error.name : "NetworkError"; }
+    }
+    const terminal = job.attempts >= MAX_ATTEMPTS;
+    const backoff = Math.min(3600, 2 ** Math.max(0, job.attempts - 1) * 30);
+    const jitteredSeconds = Math.round(backoff * (0.5 + Math.random()));
+    await db.from("webhook_outbox").update({ status: terminal ? "dead" : "pending", next_attempt_at: new Date(Date.now() + jitteredSeconds * 1000).toISOString(), locked_until: null, status_code: statusCode, last_error: failure }).eq("id", job.id).eq("endpoint_id", job.endpoint_id);
+    await db.rpc("record_webhook_failure", { p_endpoint_id: job.endpoint_id });
+    processed++;
+  }
+  return processed;
+}
+
+export async function listDurableWebhookDeliveries(walletAddress: string, limit = 50) {
+  const client = createServiceRoleClient();
+  if (!client) throw new Error("Webhook diagnostics require SUPABASE_SERVICE_ROLE_KEY.");
+  const { data, error } = await (client as any).from("webhook_outbox")
+    .select("id,endpoint_id,event,status,attempts,status_code,last_error,created_at,delivered_at,webhook_endpoints!inner(wallet_address)")
+    .eq("webhook_endpoints.wallet_address", walletAddress.trim().toUpperCase())
+    .order("created_at", { ascending: false }).limit(Math.min(100, Math.max(1, limit)));
+  if (error) throw new Error("Unable to load webhook diagnostics.");
+  return (data ?? []).map((row: any) => ({ id: row.id, webhookId: row.endpoint_id, event: row.event, status: row.status, attempt: row.attempts, statusCode: row.status_code, error: row.last_error, timestamp: row.created_at, deliveredAt: row.delivered_at }));
+}
 
 declare global {
   var stellarStarWebhookEndpoints: Map<string, WebhookEndpoint> | undefined;
@@ -24,6 +94,65 @@ globalThis.stellarStarDeliveryLogs = deliveryLogs;
 
 export function generateWebhookSecret(): string {
   return `${WEBHOOK_SECRET_PREFIX}${crypto.randomBytes(24).toString("hex")}`;
+}
+
+export async function createDurableWebhookEndpoint(input: { walletAddress: string; url: string; events: WebhookEventName[]; description?: string }) {
+  if (!isValidWebhookUrl(input.url) || !isPublicWebhookHost(input.url)) throw new Error("Invalid webhook URL. Must use a public HTTPS host.");
+  if (!input.events?.length || input.events.length > 8) throw new Error("Webhook must subscribe to 1-8 events.");
+  if (input.url.length > 2048 || (input.description?.length ?? 0) > 256) throw new Error("Webhook URL or description exceeds its size limit.");
+  const client = createServiceRoleClient();
+  if (!client) throw new Error("Webhook management requires SUPABASE_SERVICE_ROLE_KEY.");
+  const db = client as any;
+  const { count, error: countError } = await db.from("webhook_endpoints").select("id", { count: "exact", head: true }).eq("wallet_address", input.walletAddress.trim().toUpperCase());
+  if (countError) throw new Error("Unable to validate webhook endpoint limit.");
+  if ((count ?? 0) >= 20) throw new Error("A wallet may register at most 20 webhook endpoints.");
+  const allowed = new Set(["trip.created", "trip.updated", "expense.created", "expense.updated", "settlement.started", "settlement.completed", "settlement.failed", "ping"]);
+  if (input.events.some((event) => !allowed.has(event))) throw new Error("Webhook contains an unsupported event.");
+  const secret = generateWebhookSecret();
+  const { data, error } = await db.from("webhook_endpoints").insert({ wallet_address: input.walletAddress.trim().toUpperCase(), url: input.url.trim(), events: input.events, description: input.description?.trim() || null, secret }).select("id,wallet_address,url,events,description,active,created_at").single();
+  if (error || !data) throw new Error("Unable to create webhook endpoint.");
+  return { id: data.id, walletAddress: data.wallet_address, url: data.url, events: data.events, description: data.description ?? undefined, active: data.active, createdAt: data.created_at, secret };
+}
+
+function isPublicWebhookHost(rawUrl: string): boolean {
+  try {
+    const url = new URL(rawUrl);
+    if (url.protocol !== "https:" || !url.hostname.includes(".") || url.hostname.endsWith(".local") || url.hostname.endsWith(".internal")) return false;
+    if (url.hostname.startsWith("[")) return false;
+    const host = url.hostname.replace(/^\[|\]$/g, "");
+    const octets = host.split(".").map(Number);
+    if (octets.length !== 4 || octets.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return true;
+    const [a, b] = octets;
+    return !(a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127) || a >= 224);
+  } catch { return false; }
+}
+
+export async function listDurableWebhookEndpoints(walletAddress: string) {
+  const client = createServiceRoleClient();
+  if (!client) throw new Error("Webhook management requires SUPABASE_SERVICE_ROLE_KEY.");
+  const { data, error } = await (client as any).from("webhook_endpoints").select("id,wallet_address,url,events,description,active,created_at").eq("wallet_address", walletAddress.trim().toUpperCase()).order("created_at", { ascending: false });
+  if (error) throw new Error("Unable to list webhook endpoints.");
+  return (data ?? []).map((row: any) => ({ id: row.id, walletAddress: row.wallet_address, url: row.url, events: row.events, description: row.description ?? undefined, active: row.active, createdAt: row.created_at }));
+}
+
+export async function enqueueDurableWebhookPing(webhookId: string, walletAddress: string) {
+  const client = createServiceRoleClient();
+  if (!client) throw new Error("Webhook management requires SUPABASE_SERVICE_ROLE_KEY.");
+  const { data, error } = await (client as any).from("webhook_endpoints").select("id").eq("id", webhookId).eq("wallet_address", walletAddress.trim().toUpperCase()).eq("active", true).maybeSingle();
+  if (error || !data) throw new Error("Webhook endpoint not found or unauthorized.");
+  const id = crypto.randomUUID();
+  const payload = { id, event: "ping", timestamp: new Date().toISOString(), data: { message: "Test webhook delivery from StellarStar Developer Platform", webhookId } };
+  const { error: enqueueError } = await (client as any).from("webhook_outbox").insert({ id, endpoint_id: webhookId, event: "ping", payload });
+  if (enqueueError) throw new Error("Unable to enqueue webhook test delivery.");
+  return { id, webhookId, event: "ping", status: "pending", attempt: 0, timestamp: new Date().toISOString() };
+}
+
+export async function deleteDurableWebhookEndpoint(id: string, walletAddress: string) {
+  const client = createServiceRoleClient();
+  if (!client) throw new Error("Webhook management requires SUPABASE_SERVICE_ROLE_KEY.");
+  const { data, error } = await (client as any).from("webhook_endpoints").delete().eq("id", id).eq("wallet_address", walletAddress.trim().toUpperCase()).select("id").maybeSingle();
+  if (error) throw new Error("Unable to delete webhook endpoint.");
+  return Boolean(data);
 }
 
 export function isValidWebhookUrl(rawUrl: string): boolean {

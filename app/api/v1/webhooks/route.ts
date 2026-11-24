@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { authenticateApiRequest, recordAuditLog } from "@/lib/api/middleware";
-import { registerWebhookEndpoint, listWebhooksForWallet } from "@/lib/api/webhooks";
+import { createDurableWebhookEndpoint, listDurableWebhookEndpoints } from "@/lib/api/webhooks";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -16,7 +16,7 @@ export async function GET(request: NextRequest) {
   }
 
   const { tokenPayload, ip, userAgent } = auth.context;
-  const webhooks = listWebhooksForWallet(tokenPayload.walletAddress);
+  const webhooks = await listDurableWebhookEndpoints(tokenPayload.walletAddress);
 
   recordAuditLog({
     timestamp: new Date().toISOString(),
@@ -59,7 +59,7 @@ export async function POST(request: NextRequest) {
   const { url, events, description } = body;
 
   try {
-    const endpoint = registerWebhookEndpoint({
+    const endpoint = await createDurableWebhookEndpoint({
       walletAddress: tokenPayload.walletAddress,
       url: String(url || ""),
       events: Array.isArray(events) ? events : ["trip.created", "expense.created", "settlement.completed"],

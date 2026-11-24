@@ -7,7 +7,7 @@ import {
 } from "@/lib/api/middleware";
 import { fetchTripById, fetchExpensesForTrip, insertExpense } from "@/lib/api/data";
 import { memberHasPermission } from "@/lib/trip/roles";
-import { dispatchWebhookEvent } from "@/lib/api/webhooks";
+import { enqueueWebhookEvent } from "@/lib/api/webhooks";
 import type { Expense } from "@/types/expense";
 
 export const runtime = "nodejs";
@@ -176,7 +176,8 @@ export async function POST(request: NextRequest) {
   const created = await insertExpense(expense, trip_id);
 
   // Trigger webhook event
-  dispatchWebhookEvent({
+  enqueueWebhookEvent({
+    id: created.id,
     event: "expense.created",
     data: {
       expense_id: created.id,
