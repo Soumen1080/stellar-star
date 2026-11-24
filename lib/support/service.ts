@@ -38,6 +38,7 @@ import { type StellarStarClient } from "@/lib/supabase/client";
 import { type SettlementIntentRow } from "@/types/supabase";
 import { type Expense } from "@/types/expense";
 import { verifyWalletSession } from "@/lib/supabase/serverAuth";
+import { appendPrivilegedAudit } from "@/lib/audit/privilegedAudit";
 
 // Global in-memory audit log ring-buffer (persists across hot reloads in dev / serverless process)
 declare global {
@@ -201,6 +202,29 @@ export async function recordSupportLookupAudit(
     } catch {
       // Non-fatal if table doesn't exist yet; memory buffer is retained
     }
+  }
+
+  // 3. Tamper-evident privileged audit ledger (#455)
+  try {
+    await appendPrivilegedAudit(
+      {
+        actorWallet: fullEntry.staffIdentifier,
+        actorRole: "support",
+        action: "support.lookup",
+        decision: "allow",
+        targetType: "support_lookup",
+        targetId: fullEntry.queryValueMasked,
+        ipAddress: fullEntry.ipAddress,
+        metadata: {
+          queryType: fullEntry.queryType,
+          resultsCount: fullEntry.resultsCount,
+          userAgent: fullEntry.userAgent,
+        },
+      },
+      client
+    );
+  } catch (err) {
+    console.error("[SupportService] Privileged audit append error:", err);
   }
 
   return fullEntry;

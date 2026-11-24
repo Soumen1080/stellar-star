@@ -6,6 +6,7 @@ import { TRIP_REPLAY_FIELDS } from "@/lib/idempotency/replay";
 import { authenticateWalletRequest } from "@/lib/api/routeGuard";
 import { parseJsonBody } from "@/lib/api/bodyLimits";
 import { toPublicErrorResponse, classifyApiError } from "@/lib/api/errors";
+import { appendPrivilegedAudit } from "@/lib/audit/privilegedAudit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -47,6 +48,19 @@ export async function PATCH(
     execute: async () => {
       try {
         const trip = await setTripMemberRole(id, memberId, role, customPermissions, client);
+        await appendPrivilegedAudit(
+          {
+            actorWallet: session.wallet_address,
+            actorRole: "owner",
+            action: "trip.member.role_change",
+            decision: "allow",
+            targetType: "role",
+            targetId: `${id}:${memberId}`,
+            requestId: request.headers.get("x-request-id"),
+            metadata: { tripId: id, memberId, newRole: role, customPermissions },
+          },
+          client
+        );
         return NextResponse.json(trip, { headers: { "Cache-Control": "no-store" } });
       } catch (error) {
         if (classifyApiError(error).isInternal) {

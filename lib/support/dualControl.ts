@@ -23,6 +23,7 @@ import { type StellarStarClient } from "@/lib/supabase/client";
 import { markIntentFailed } from "@/lib/settlement/intent";
 import { reconcileSettlementIntent } from "@/lib/settlement/reconcile";
 import { fetchSettlementIntentByTxHash } from "@/lib/supabase/queries";
+import { appendPrivilegedAudit } from "@/lib/audit/privilegedAudit";
 
 declare global {
   var stellarStarCorrectiveProposals: CorrectiveActionProposal[] | undefined;
@@ -125,6 +126,29 @@ export async function proposeCorrectiveAction(
     } catch {
       // Non-fatal if table doesn't exist yet
     }
+  }
+
+  // Tamper-evident privileged audit entry (#455)
+  try {
+    await appendPrivilegedAudit(
+      {
+        actorWallet: proposal.proposedBy,
+        actorRole: "support",
+        action: `support.action.propose.${proposal.actionType.toLowerCase()}`,
+        decision: "propose",
+        targetType: proposal.targetType,
+        targetId: proposal.targetId,
+        metadata: {
+          proposalId: proposal.id,
+          ticketRef: proposal.ticketRef,
+          reason: proposal.reason,
+          details: proposal.details,
+        },
+      },
+      client
+    );
+  } catch (err) {
+    console.error("[DualControl] Privileged audit append error:", err);
   }
 
   return proposal;
@@ -259,6 +283,30 @@ export async function approveCorrectiveAction(
   proposal.approvedBy = cleanApprover;
   proposal.approvedAt = new Date().toISOString();
   proposal.executionResult = executionResult;
+
+  // Tamper-evident privileged audit entry (#455)
+  try {
+    await appendPrivilegedAudit(
+      {
+        actorWallet: cleanApprover,
+        actorRole: "support",
+        action: `support.action.execute.${proposal.actionType.toLowerCase()}`,
+        decision: "execute",
+        targetType: proposal.targetType,
+        targetId: proposal.targetId,
+        metadata: {
+          proposalId: proposal.id,
+          ticketRef: proposal.ticketRef,
+          proposer: proposal.proposedBy,
+          approver: cleanApprover,
+          executionResult,
+        },
+      },
+      client
+    );
+  } catch (err) {
+    console.error("[DualControl] Privileged audit append error:", err);
+  }
 
   if (client) {
     try {

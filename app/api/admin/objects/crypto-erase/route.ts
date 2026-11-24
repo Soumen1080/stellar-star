@@ -9,6 +9,7 @@ import { checkStaffAuthorization } from "@/lib/support/service";
 import { authenticateWalletRequest } from "@/lib/api/routeGuard";
 import { createServiceRoleClient, isServerSupabaseConfigured } from "@/lib/supabase/server";
 import { cryptoEraseObject, cryptoEraseKey } from "@/lib/security/objectEncryption";
+import { appendPrivilegedAudit } from "@/lib/audit/privilegedAudit";
 import { parseJsonBody } from "@/lib/api/bodyLimits";
 import { getOrCreateRequestId, REQUEST_ID_HEADER } from "@/lib/observability/requestId";
 
@@ -56,6 +57,19 @@ export async function POST(request: NextRequest) {
     if (keyId) {
       // Erase master key material
       await cryptoEraseKey(serviceClient, { keyId, actorWallet, requestId });
+      await appendPrivilegedAudit(
+        {
+          actorWallet,
+          actorRole: staffAuth.authorized ? "support" : "admin",
+          action: "object.crypto_erase_key",
+          decision: "execute",
+          targetType: "key",
+          targetId: keyId,
+          requestId,
+          metadata: { keyId },
+        },
+        serviceClient
+      );
       return NextResponse.json(
         { data: { erasedKeyId: keyId, status: "erased" }, requestId },
         { status: 200, headers: { [REQUEST_ID_HEADER]: requestId } },
@@ -65,6 +79,19 @@ export async function POST(request: NextRequest) {
     if (bucket && storagePath) {
       // Erase individual object
       await cryptoEraseObject(serviceClient, { bucket, storagePath, actorWallet, requestId });
+      await appendPrivilegedAudit(
+        {
+          actorWallet,
+          actorRole: staffAuth.authorized ? "support" : "admin",
+          action: "object.crypto_erase_object",
+          decision: "execute",
+          targetType: "storage_object",
+          targetId: `${bucket}/${storagePath}`,
+          requestId,
+          metadata: { bucket, storagePath },
+        },
+        serviceClient
+      );
       return NextResponse.json(
         { data: { storagePath, status: "erased" }, requestId },
         { status: 200, headers: { [REQUEST_ID_HEADER]: requestId } },
