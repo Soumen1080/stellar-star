@@ -25,6 +25,7 @@ import { Button } from "@/components/ui/Button";
 import { Spinner } from "@/components/ui/Spinner";
 import { formatAssetLabel } from "@/lib/stellar/assets";
 import { Money } from "@/components/ui/Money";
+import { publicEnv } from "@/lib/config/publicEnv";
 import { getSuggestedBaseFee } from "@/lib/stellar/fees";
 import type { PathReferenceRate } from "@/hooks/usePathPayment";
 import {
@@ -95,7 +96,7 @@ export function PathPaymentConfirm({
   onRefreshQuote,
   onConfirm,
   referenceRate = null,
-  impactThresholdBps = Number(process.env.NEXT_PUBLIC_PATH_PRICE_IMPACT_THRESHOLD_BPS) || 500,
+  impactThresholdBps = Number(publicEnv.pathPriceImpactThresholdBps) || 500,
 }: PathPaymentConfirmProps) {
   const [secondsLeft, setSecondsLeft] = useState(0);
   const [riskAcknowledged, setRiskAcknowledged] = useState(false);

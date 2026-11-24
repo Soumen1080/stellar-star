@@ -56,6 +56,9 @@ describe("Production Configuration Validation (CI & Startup)", () => {
           NEXT_PUBLIC_POOL_CONTRACT_ID: VALID_MAINNET_POOL_CONTRACT,
           NEXT_PUBLIC_USDC_ISSUER: CIRCLE_USDC.PUBLIC,
           NEXT_PUBLIC_SITE_URL: VALID_PUBLIC_URL,
+          JWT_ACTIVE_KEY_ID: "current-key",
+          JWT_SIGNING_KEYS: JSON.stringify({ "current-key": "production-test-signing-key-0123456789" }),
+          SUPABASE_SERVICE_ROLE_KEY: "production-test-service-role-key",
         },
         { isProduction: true }
       );

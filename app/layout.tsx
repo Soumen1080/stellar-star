@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from "next";
+import { publicEnv } from "@/lib/config/publicEnv";
 import { Poppins } from "next/font/google";
 import "./globals.css";
 import { WalletProvider } from "@/context/WalletContext";
@@ -16,7 +17,7 @@ const poppins = Poppins({
   display: "swap",
 });
 
-const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? "https://stellar-star-five.vercel.app";
+const siteUrl = publicEnv.siteUrl ?? "https://stellar-star-five.vercel.app";
 
 const metadataBase = (() => {
   try {

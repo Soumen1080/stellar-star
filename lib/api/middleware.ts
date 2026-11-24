@@ -1,13 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { type ApiScope, type AuditLogEntry, type ScopedTokenPayload } from "./types";
 import { verifyScopedToken } from "./tokens";
-import { checkRateLimit, getClientIp, rateLimiterUnavailableResponse } from "@/lib/auth/rateLimiter";
-import {
-  createDatabaseRequestContext,
-  type DatabaseRequestContext,
-} from "@/lib/supabase/queryBudget";
-import { requireIdempotencyKey } from "@/lib/idempotency/route";
-import { createServiceRoleClient, isServerSupabaseConfigured, type ServerClient } from "@/lib/supabase/server";
+import { checkRateLimit, getClientIp } from "@/lib/auth/rateLimiter";
+import { consumeTenantQuota } from "@/lib/quotas/server";
 
 export interface AuthenticatedContext {
   tokenPayload: ScopedTokenPayload;
@@ -128,6 +123,26 @@ export async function authenticateApiRequest(
   }
 
   const payload = verification.payload;
+
+  const tenantQuota = await consumeTenantQuota(payload.walletAddress, { requests: 1 });
+  if (!tenantQuota.available) {
+    return {
+      success: false,
+      response: NextResponse.json(
+        { error: { code: "QUOTA_UNAVAILABLE", message: "Request capacity is temporarily unavailable.", status: 503 } },
+        { status: 503, headers: { "Cache-Control": "no-store" } }
+      ),
+    };
+  }
+  if (!tenantQuota.allowed) {
+    return {
+      success: false,
+      response: NextResponse.json(
+        { error: { code: "TENANT_QUOTA_EXCEEDED", message: "Tenant request limit reached. Please retry shortly.", status: 429 } },
+        { status: 429, headers: { "Retry-After": String(Math.max(1, Math.ceil(tenantQuota.resetMs / 1000))), "Cache-Control": "no-store" } }
+      ),
+    };
+  }
 
   // 2. Enforce scope authorization
   if (options.requiredScopes && options.requiredScopes.length > 0) {

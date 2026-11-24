@@ -13,8 +13,7 @@
  */
 
 import { Asset, StrKey, xdr } from "@stellar/stellar-sdk";
-import { HORIZON_URL, NETWORK_PASSPHRASE } from "@/lib/utils/constants";
-import { chainMetadataCache } from "@/lib/stellar/cache";
+import { publicEnv } from "@/lib/config/publicEnv";
 
 export type AssetType = "native" | "credit_alphanum4" | "credit_alphanum12";
 
@@ -177,11 +176,11 @@ export function isAuthRequired(asset: AssetDef | AssetRef | Partial<AssetFlags>)
 // ── Registry & Network Resolution ─────────────────────────────────────────────
 
 function defaultNetwork(): StellarNetwork {
-  return process.env.NEXT_PUBLIC_STELLAR_NETWORK === "PUBLIC" ? "PUBLIC" : "TESTNET";
+  return publicEnv.stellarNetwork === "PUBLIC" ? "PUBLIC" : "TESTNET";
 }
 
 function parseCustomAssetsEnv(): AssetDef[] {
-  const envVal = process.env.NEXT_PUBLIC_STELLAR_ASSETS ?? process.env.STELLAR_CUSTOM_ASSETS;
+  const envVal = publicEnv.stellarAssets;
   if (!envVal || envVal.trim() === "") return [];
 
   try {
@@ -235,7 +234,7 @@ function parseCustomAssetsEnv(): AssetDef[] {
 }
 
 function registry(network: StellarNetwork): AssetDef[] {
-  const envUsdc = process.env.NEXT_PUBLIC_USDC_ISSUER?.trim();
+  const envUsdc = publicEnv.usdcIssuer?.trim();
   const defaultUsdcIssuer =
     network === "PUBLIC" ? CIRCLE_USDC_ISSUER_PUBLIC : CIRCLE_USDC_ISSUER_TESTNET;
   const usdcIssuer = envUsdc && isValidIssuer(envUsdc) ? envUsdc : defaultUsdcIssuer;

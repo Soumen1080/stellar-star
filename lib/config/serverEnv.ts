@@ -3,6 +3,7 @@ if (typeof window !== "undefined") throw new Error("serverEnv cannot run in a br
 
 export const serverEnv = {
   nodeEnv: process.env.NODE_ENV,
+  validateProduction: process.env.VALIDATE_PRODUCTION,
   jwtActiveKeyId: process.env.JWT_ACTIVE_KEY_ID,
   jwtSigningKeys: process.env.JWT_SIGNING_KEYS,
   jwtPreviousKeysUntil: process.env.JWT_PREVIOUS_KEYS_UNTIL,
@@ -17,6 +18,7 @@ export const serverEnv = {
   exchangeRateApiKey: process.env.EXCHANGERATE_API_KEY,
   coingeckoApiKey: process.env.COINGECKO_API_KEY,
   settlementOracleSecret: process.env.SETTLEMENT_ORACLE_SECRET,
+  settlementOracleSecrets: process.env.SETTLEMENT_ORACLE_SECRETS,
   settlementOracleSigners: process.env.SETTLEMENT_ORACLE_SIGNERS,
   settlementOracleThreshold: process.env.SETTLEMENT_ORACLE_THRESHOLD,
   sponsorOperatorSecret: process.env.SPONSOR_OPERATOR_SECRET,

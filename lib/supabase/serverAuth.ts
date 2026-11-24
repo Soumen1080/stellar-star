@@ -39,6 +39,9 @@ function getJwtKeys(): { active: JwtKey; verify: JwtKey[] } {
   }
   let map: Record<string, string>;
   try { map = JSON.parse(configured); } catch { throw new Error("JWT_SIGNING_KEYS must be a JSON object of key IDs to secrets."); }
+  if (!map || typeof map !== "object" || Array.isArray(map) || Object.values(map).some((secret) => typeof secret !== "string" || secret.length < 32)) {
+    throw new Error("JWT_SIGNING_KEYS must contain signing secrets with at least 32 characters.");
+  }
   const keys = Object.entries(map).map(([id, secret]) => ({ id, secret }));
   const active = keys.find((key) => key.id === activeId);
   if (!active || !active.secret || active.id.length > 128) throw new Error("The active JWT key ID must identify a configured signing key.");

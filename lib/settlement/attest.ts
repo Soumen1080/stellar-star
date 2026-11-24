@@ -13,6 +13,7 @@
  */
 
 import { Keypair } from "@stellar/stellar-sdk";
+import { publicEnv } from "@/lib/config/publicEnv";
 import { buildClaimMessage, type SettlementClaim } from "@/lib/settlement/attestationMessage";
 import { CONTRACT_ID, ORACLE_PUBLIC_KEY, SETTLEMENT_ASSET_ID } from "@/lib/utils/constants";
 import { REQUEST_ID_HEADER } from "@/lib/observability/requestId";
@@ -77,9 +78,9 @@ export function isAttestationConfigured(): boolean {
 }
 
 function getExpectedSigners(): string[] {
-  return (process.env.NEXT_PUBLIC_SETTLEMENT_ORACLE_PUBLIC_KEYS || process.env.NEXT_PUBLIC_SETTLEMENT_ORACLE_PUBLIC_KEY || ORACLE_PUBLIC_KEY).split(",").map((key) => key.trim()).filter(Boolean);
+  return (publicEnv.settlementOraclePublicKeys || publicEnv.settlementOraclePublicKey || ORACLE_PUBLIC_KEY).split(",").map((key) => key.trim()).filter(Boolean);
 }
-function getThreshold(): number { return Math.max(1, Number(process.env.NEXT_PUBLIC_SETTLEMENT_ORACLE_THRESHOLD) || 2); }
+function getThreshold(): number { return Math.max(1, Number(publicEnv.settlementOracleThreshold) || 2); }
 
 interface AttestationResponseBody {
   attestation?: Attestation;
@@ -161,7 +162,7 @@ export async function requestAttestation(claim: AttestationRequest): Promise<Att
  */
 export function verifyAttestation(attestation: Attestation): boolean {
   try {
-    const expectedOracle = process.env.NEXT_PUBLIC_SETTLEMENT_ORACLE_PUBLIC_KEY || ORACLE_PUBLIC_KEY;
+    const expectedOracle = publicEnv.settlementOraclePublicKey || ORACLE_PUBLIC_KEY;
     const expected = new Set(getExpectedSigners());
     const seen = new Set<string>();
     const message = buildClaimMessage(attestation.claim);
