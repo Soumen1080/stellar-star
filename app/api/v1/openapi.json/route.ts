@@ -1,11 +1,11 @@
 import { NextResponse } from "next/server";
-import { OPENAPI_SPEC } from "@/lib/api/openapi";
+import { getOpenApiDocument } from "@/lib/api/openapi";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  return NextResponse.json(OPENAPI_SPEC, {
+  return NextResponse.json(getOpenApiDocument(), {
     headers: {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET, OPTIONS",

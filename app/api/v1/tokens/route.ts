@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { generateScopedToken, listTokensForWallet } from "@/lib/api/tokens";
 import { decodeClaims } from "@/lib/supabase/session";
 import type { ApiScope } from "@/lib/api/types";
+import { enforceTokenManagementLimit } from "@/lib/api/tokenRoute";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -32,6 +33,9 @@ export async function GET(request: NextRequest) {
     );
   }
 
+  const limited = await enforceTokenManagementLimit(request, wallet);
+  if (limited) return limited;
+
   const tokens = listTokensForWallet(wallet);
   return NextResponse.json({ data: tokens });
 }
@@ -54,6 +58,9 @@ export async function POST(request: NextRequest) {
       { status: 401 }
     );
   }
+
+  const limited = await enforceTokenManagementLimit(request, wallet);
+  if (limited) return limited;
 
   const name = body.name || "Developer Integration Token";
   const scopes: ApiScope[] = Array.isArray(body.scopes) && body.scopes.length > 0

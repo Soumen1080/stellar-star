@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { revokeToken } from "@/lib/api/tokens";
 import { decodeClaims } from "@/lib/supabase/session";
+import { enforceTokenManagementLimit } from "@/lib/api/tokenRoute";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -32,6 +33,9 @@ export async function DELETE(
       { status: 401 }
     );
   }
+
+  const limited = await enforceTokenManagementLimit(request, wallet);
+  if (limited) return limited;
 
   const { id } = await params;
   const revoked = revokeToken(id, wallet);

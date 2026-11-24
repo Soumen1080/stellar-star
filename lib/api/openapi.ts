@@ -327,6 +327,38 @@ export const OPENAPI_SPEC = {
         },
       },
     },
+    "/tokens": {
+      get: {
+        summary: "List scoped API tokens",
+        operationId: "listTokens",
+        security: [],
+        responses: { "200": { description: "Token list" }, "401": { $ref: "#/components/responses/UnauthorizedError" } },
+      },
+      post: {
+        summary: "Create a scoped API token",
+        operationId: "createToken",
+        security: [],
+        requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["wallet_address"], properties: { wallet_address: { type: "string" }, name: { type: "string", maxLength: 120 }, scopes: { type: "array", maxItems: 6, items: { type: "string" } }, expires_in_days: { type: "integer", minimum: 1, maximum: 365 } } } } } },
+        responses: { "201": { description: "Token created; full token shown once" }, "400": { $ref: "#/components/responses/BadRequestError" }, "401": { $ref: "#/components/responses/UnauthorizedError" } },
+      },
+    },
+    "/tokens/{id}": {
+      delete: {
+        summary: "Revoke an API token",
+        operationId: "revokeToken",
+        security: [],
+        parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+        responses: { "200": { description: "Token revoked" }, "401": { $ref: "#/components/responses/UnauthorizedError" }, "404": { $ref: "#/components/responses/NotFoundError" } },
+      },
+    },
+    "/audit-logs": {
+      get: {
+        summary: "List API audit logs",
+        operationId: "listAuditLogs",
+        parameters: [{ name: "limit", in: "query", schema: { type: "integer", default: 50, minimum: 1, maximum: 100 } }],
+        responses: { "200": { description: "Audit log entries" }, "401": { $ref: "#/components/responses/UnauthorizedError" }, "429": { $ref: "#/components/responses/RateLimitError" } },
+      },
+    },
   },
   components: {
     securitySchemes: {
@@ -430,9 +462,10 @@ export const OPENAPI_SPEC = {
         type: "object",
         required: ["url", "events"],
         properties: {
-          url: { type: "string", format: "uri", example: "https://accounting.example.com/webhooks" },
+          url: { type: "string", format: "uri", maxLength: 2048, example: "https://accounting.example.com/webhooks" },
           events: {
             type: "array",
+            maxItems: 8,
             items: {
               type: "string",
               enum: [
@@ -445,7 +478,7 @@ export const OPENAPI_SPEC = {
               ],
             },
           },
-          description: { type: "string", example: "QuickBooks Live Sync" },
+          description: { type: "string", maxLength: 256, example: "QuickBooks Live Sync" },
         },
       },
       WebhookEndpointResponse: {
@@ -522,6 +555,42 @@ export const OPENAPI_SPEC = {
     },
   },
 } as const;
+
+/** Adds a consistent, machine-readable contract declaration to every operation. */
+export function getOpenApiDocument() {
+  const document: any = JSON.parse(JSON.stringify(OPENAPI_SPEC));
+  for (const [, pathItem] of Object.entries(document.paths) as [string, any][]) {
+    for (const method of ["get", "post", "put", "patch", "delete", "options", "head"]) {
+      const operation = pathItem[method];
+      if (!operation) continue;
+      operation.responses ??= {};
+      operation.responses["400"] ??= { $ref: "#/components/responses/BadRequestError" };
+      operation.responses["401"] ??= { $ref: "#/components/responses/UnauthorizedError" };
+      operation.responses["403"] ??= { $ref: "#/components/responses/ForbiddenError" };
+      operation.responses["429"] ??= { $ref: "#/components/responses/RateLimitError" };
+      const parameters = operation.parameters ?? [];
+      const pageLimit = parameters.find((parameter: any) => parameter.name === "limit" && parameter.in === "query");
+      const idempotency = parameters.find((parameter: any) => parameter.name.toLowerCase() === "idempotency-key" && parameter.in === "header");
+      const tokenManagement = route.startsWith("/tokens");
+      const scopes: Record<string, string[]> = {
+        "GET /trips": ["trips:read"], "POST /trips": ["trips:write"], "GET /trips/{id}": ["trips:read"],
+        "GET /expenses": ["expenses:read"], "POST /expenses": ["expenses:write"], "GET /settlements": ["settlement:read"],
+        "GET /webhooks": ["webhooks:manage"], "POST /webhooks": ["webhooks:manage"], "DELETE /webhooks/{id}": ["webhooks:manage"],
+        "POST /webhooks/test": ["webhooks:manage"], "GET /webhooks/deliveries": ["webhooks:manage"],
+      };
+      operation["x-api-contract"] = {
+        authentication: tokenManagement
+          ? { mode: "wallet session or X-Wallet-Address; POST /tokens also accepts wallet_address in the body" }
+          : { scheme: "BearerAuth", requiredScopes: scopes[`${method.toUpperCase()} ${route}`] ?? [] },
+        pagination: { supported: Boolean(pageLimit), limitParameter: pageLimit?.name ?? null, cursorParameter: parameters.find((parameter: any) => parameter.name === "cursor")?.name ?? null },
+        errors: Object.keys(operation.responses ?? {}).filter((status) => Number(status) >= 400),
+        idempotency: idempotency ? { supported: true, header: idempotency.name } : { supported: false, header: null },
+        limits: { rateLimit: tokenManagement ? "20 requests per minute per wallet and IP" : "60 requests per minute per token and IP", pageSize: pageLimit?.schema?.maximum ?? null },
+      };
+    }
+  }
+  return document;
+}
 
 /**
  * Sandbox accounting mappings for developers building ERP/accounting integrations.

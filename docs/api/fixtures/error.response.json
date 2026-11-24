@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "VALIDATION_FAILED",
+    "message": "The request did not satisfy the endpoint requirements.",
+    "status": 400
+  }
+}
