@@ -18,6 +18,12 @@ export const ROUTE_AUTHORIZATION_CATALOG: RouteAuthorizationMetadata[] = [
     description: "System health check and operational status",
   },
   {
+    path: "/api/csp/report",
+    methods: ["GET", "POST"],
+    authCategory: "public",
+    description: "Content Security Policy (CSP) violation ingestion and diagnostics",
+  },
+  {
     path: "/api/auth/challenge",
     methods: ["GET"],
     authCategory: "public",

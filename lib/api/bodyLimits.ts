@@ -46,6 +46,7 @@ export const ROUTE_BODY_LIMITS: Readonly<Record<string, number>> = Object.freeze
   "/api/auth/refresh": 4 * KiB,
   "/api/analytics/events": 16 * KiB,
   "/api/analytics/database-performance": 4 * KiB,
+  "/api/csp/report": 32 * KiB,
   "/api/error-report": 32 * KiB,
   "/api/expenses": 64 * KiB,
   "/api/expenses/[id]": 64 * KiB,

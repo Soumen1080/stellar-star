@@ -513,6 +513,26 @@
       "checksum": "ebb235e650964418",
       "sha256": "ebb235e65096441802b5dcd8a438dc176196f93ca941159280e01e5ffae8a117",
       "description": "Tamper-evident privileged audit logs with hash chaining and integrity anchors (#455)"
+    },
+    {
+      "sequence": 52,
+      "id": "0020_account_deletion_state_machine",
+      "version": "0020",
+      "filename": "0020_account_deletion_state_machine.sql",
+      "name": "0020_account_deletion_state_machine",
+      "checksum": "4a9e5120e1457f4f",
+      "sha256": "4a9e5120e1457f4f4812c8f4ad82b9320b98924ccaba0f5714c77ae7c40a824c",
+      "description": "Resumable account erasure state machine and legal holds (#478)"
+    },
+    {
+      "sequence": 53,
+      "id": "0021_immutable_financial_transitions",
+      "version": "0021",
+      "filename": "0021_immutable_financial_transitions.sql",
+      "name": "0021_immutable_financial_transitions",
+      "checksum": "aeded949d191d6d1",
+      "sha256": "aeded949d191d6d1738d64ea0c3f9ef0ac3aa658ef574685de7f397e49a99573",
+      "description": "Immutable financial transitions, balance checks, and transition log (#479)"
     }
   ]
 }

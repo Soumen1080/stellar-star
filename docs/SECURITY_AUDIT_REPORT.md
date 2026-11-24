@@ -88,7 +88,8 @@ The review evaluates threats defined in [`docs/THREAT_MODEL.md`](THREAT_MODEL.md
 ### SEC-F06 (P1): Missing Content-Security-Policy (Tracked K1)
 - **Root Cause**: Production HTTP response headers omitted `Content-Security-Policy`, leaving the application exposed to script execution risks from compromised third-party dependencies.
 - **Remediation**:
-  1. Added strict `Content-Security-Policy` header in `next.config.mjs` covering scripts, connect endpoints, frames, and styles.
+  1. Added strict `Content-Security-Policy` header in `next.config.mjs` and dynamic nonce policy in `middleware.ts` covering scripts, connect endpoints, frames, and styles.
+  2. Removed `'unsafe-eval'` and `'unsafe-inline'` from production script directives; added nonce verification and CSP violation reporting via `/api/csp/report` (#457).
 
 ---
 
