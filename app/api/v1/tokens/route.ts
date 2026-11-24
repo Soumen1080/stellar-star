@@ -2,9 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { generateScopedToken, listTokensForWallet } from "@/lib/api/tokens";
 import { decodeClaims } from "@/lib/supabase/session";
 import type { ApiScope } from "@/lib/api/types";
-import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
-import { parseJsonBody } from "@/lib/api/bodyLimits";
-import { toPublicErrorResponse } from "@/lib/api/errors";
+import { enforceTokenManagementLimit } from "@/lib/api/tokenRoute";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -35,6 +33,9 @@ export async function GET(request: NextRequest) {
     );
   }
 
+  const limited = await enforceTokenManagementLimit(request, wallet);
+  if (limited) return limited;
+
   const tokens = listTokensForWallet(wallet);
   return NextResponse.json({ data: tokens });
 }
@@ -53,9 +54,8 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // Issue #412: a valid key is required before a token is minted.
-  const idempotency = requireIdempotencyKey(request, { format: "v1" });
-  if (!idempotency.ok) return idempotency.response;
+  const limited = await enforceTokenManagementLimit(request, wallet);
+  if (limited) return limited;
 
   const name = body.name || "Developer Integration Token";
   const scopes: ApiScope[] = Array.isArray(body.scopes) && body.scopes.length > 0

@@ -82,8 +82,8 @@ jobs:
       - name: Proof link validation
         run: npm run proof:links
 
-      - name: Check help and status content (owners, review dates, links)
-        run: npm run help:check
+      - name: Check OpenAPI compatibility
+        run: npm run openapi:check
 
       - name: Validate network configuration (CI check)
         run: npm run config:validate
