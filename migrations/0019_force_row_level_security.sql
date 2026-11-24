@@ -1,5 +1,7 @@
 -- Force RLS for every application table already provisioned in public. New
 -- tables are checked by scripts/postgres-rls-check.sql in the PostgreSQL CI job.
+--
+-- Rollback: forward-only and non-destructive. RLS is mandatory for security. To disable, run ALTER TABLE <table> NO FORCE ROW LEVEL SECURITY.
 DO $rls$
 DECLARE
   relation RECORD;
