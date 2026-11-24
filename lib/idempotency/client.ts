@@ -1,7 +1,7 @@
 /**
  * lib/idempotency/client.ts
  *
- * Browser helpers for the Idempotency-Key contract (Issue #412).
+ * Browser helpers for the Idempotency-Key contract (Issue #413 / #412).
  *
  * The rule for callers: one key per user intent. Create it when the action
  * starts, send the same key on every retry of that action (double-click,
