@@ -1,7 +1,7 @@
 /**
  * lib/idempotency/route.ts
  *
- * Route-level enforcement of required idempotency keys (Issue #412).
+ * Route-level enforcement of required idempotency keys (Issue #413 / #412).
  *
  * Every public mutation listed in lib/idempotency/policy.ts follows the same
  * two steps:

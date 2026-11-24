@@ -25,6 +25,7 @@ yarn-error.log*
 
 # OS
 .DS_Store
+._*
 Thumbs.db
 
 # Editor

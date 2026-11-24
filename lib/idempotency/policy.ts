@@ -1,7 +1,7 @@
 /**
  * lib/idempotency/policy.ts
  *
- * Which mutating API routes require an Idempotency-Key (Issue #412).
+ * Which mutating API routes require an Idempotency-Key (Issue #413 / #412).
  *
  * Every exported POST/PUT/PATCH/DELETE handler under app/api must appear in
  * exactly one of the two tables below. __tests__/security/requiredIdempotencyKeys.test.ts

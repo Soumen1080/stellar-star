@@ -76,7 +76,7 @@ export async function authenticateApiRequest(
     rateLimitMax?: number;
     rateLimitWindowMs?: number;
     /**
-     * Writes set this (Issue #412): a missing or malformed Idempotency-Key is
+     * Writes set this (Issue #413 / #412): a missing or malformed Idempotency-Key is
      * answered with 400 after authentication, and `context.idempotencyKey`
      * is then the validated key.
      */

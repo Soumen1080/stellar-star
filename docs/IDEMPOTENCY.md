@@ -1,6 +1,6 @@
 # Idempotency keys for public mutations
 
-Issue #412. Builds on the atomic claims from #411 (`lib/idempotency/store.ts`,
+Issue #413 (also tracking #412). Builds on the atomic claims from #411 (`lib/idempotency/store.ts`,
 `migrations/0023_atomic_idempotency_claims.sql`).
 
 A browser retry, a mobile reconnect or a double click can send the same

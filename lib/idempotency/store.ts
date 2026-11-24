@@ -29,7 +29,7 @@ import { digestResponseBody, type StoredReplay } from "./replay";
 
 /**
  * Raised when a mutation is attempted without a valid idempotency key
- * (Issue #412). Public mutations must not run without one.
+ * (Issue #413 / #412). Public mutations must not run without one.
  */
 export class IdempotencyKeyError extends Error {
   code: IdempotencyKeyErrorCode;
@@ -546,7 +546,7 @@ function defaultStoredReplay(data: unknown): StoredReplay {
 /**
  * Wraps a mutating action with atomic idempotency enforcement.
  *
- * A valid key is mandatory (Issue #412): a missing or malformed key throws
+ * A valid key is mandatory (Issue #413 / #412): a missing or malformed key throws
  * IdempotencyKeyError (400) before `execute` runs, so the wrapper can never
  * silently fall back to an unprotected mutation.
  *

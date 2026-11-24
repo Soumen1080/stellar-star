@@ -1,7 +1,7 @@
 /**
  * __tests__/security/requiredIdempotencyKeys.test.ts
  *
- * Issue #412: Require idempotency keys for public mutations.
+ * Issue #413 / #412: Require idempotency keys for public mutations.
  *
  * Verifies:
  *  1. The key contract: absent → 400 IDEMPOTENCY_KEY_REQUIRED; too short, too

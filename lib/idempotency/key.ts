@@ -1,7 +1,7 @@
 /**
  * lib/idempotency/key.ts
  *
- * Idempotency-Key contract for public mutations (Issue #412).
+ * Idempotency-Key contract for public mutations (Issue #413 / #412).
  *
  * Pure and isomorphic: no Node or Next.js imports, so the browser helpers and
  * the server wrapper share one definition of a "valid key".
