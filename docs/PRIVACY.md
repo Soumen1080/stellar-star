@@ -42,6 +42,7 @@ When you interact with the Stellar network (including making direct transfers, s
 To provide friendly group accounting, Stellar Star stores operational data in Postgres (Supabase) and private object storage:
 - **User Profiles**: Display name, wallet address mapping, last login timestamp.
 - **Trip & Expense Data**: Group names, trip notes, expense titles, split apportionments, exchange-rate conversion provenance.
+- **Household Coordination (optional pilot)**: Chore titles/details, due dates, member rotation, completion timestamps, opt-out preferences, and optional references to existing trip expenses. This is off-chain trip data and is hidden when the trip owner disables the module.
 - **Private Address Book**: Custom contact names and invite tags.
 - **Receipt Attachments**: Scanned receipt images and invoices stored in private buckets.
 - **Capability Tokens**: Unguessable invitation tokens and authentication challenge nonces.

@@ -21,6 +21,12 @@ import {
 import { reportError } from "@/lib/observability/reportError";
 import type { WalletContextType } from "@/types/wallet";
 import { useToast } from "@/components/ui/Toast";
+function toAnalyticsWalletType(id?: string | null): "freighter" | "albedo" | "other" | "unknown" {
+  if (!id) return "unknown";
+  if (id === "freighter" || id === "albedo") return id;
+  return "other";
+}
+
 import { resetSupabaseClient } from "@/lib/supabase/client";
 import { trackAnalyticsEvent } from "@/lib/analytics/sink";
 
@@ -177,7 +183,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
   const connect = useCallback(async () => {
     setIsConnecting(true);
     setError(null);
-    trackAnalyticsEvent("wallet_connect_started", { wallet_type: selectedWalletId || "stellar_wallets_kit" });
+    trackAnalyticsEvent("wallet_connect_started", { wallet_type: toAnalyticsWalletType(selectedWalletId) });
 
     try {
       // ── E2E test seam ──────────────────────────────────────────────────────
@@ -215,7 +221,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
         onWalletSelected: async (wallet) => {
           kit.setWallet(wallet.id);
           selectedId = wallet.id;
-          trackAnalyticsEvent("wallet_connect_started", { wallet_type: wallet.id });
+          trackAnalyticsEvent("wallet_connect_started", { wallet_type: toAnalyticsWalletType(wallet.id) });
           const { address } = await kit.getAddress();
           resolvedAddress = address;
         },
@@ -236,7 +242,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       localStorage.setItem("StellarStar:walletId", selectedId);
       trackAnalyticsEvent("wallet_connected", {
         wallet_type: selectedId,
-        network: net,
+        network: net ?? "unknown",
         has_funds: false,
       });
       toastSuccess(

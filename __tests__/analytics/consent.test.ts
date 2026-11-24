@@ -65,7 +65,7 @@ describe("Analytics Consent Governance & Regional Compliance", () => {
     const events = getStoredEvents();
     expect(events.length).toBe(1);
     expect(events[0].name).toBe("app_loaded");
-    expect(events[0].properties.locale).toBe("en-US");
+    expect((events[0].properties as any).locale).toBe("en-US");
   });
 
   it("persists consent preference in localStorage", () => {

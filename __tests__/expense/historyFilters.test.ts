@@ -186,7 +186,20 @@ describe("date bounds, terms, cursors", () => {
 
   it("lowercases and caps search terms", () => {
     expect(searchTerms("  Beach   BOB ")).toEqual(["beach", "bob"]);
-    expect(searchTerms("a b c d e f g h i j")).toHaveLength(8);
+    expect(searchTerms("aa bb cc dd ee ff gg hh ii jj")).toHaveLength(8);
+  });
+
+  it("applies minimum-query rules (#450)", () => {
+    expect(searchTerms("a b c")).toEqual([]);
+    expect(searchTerms("%%% ** __")).toEqual([]);
+    expect(searchTerms("Bob's café-bar x")).toEqual(["bob", "café", "bar"]);
+    expect(searchTerms("z".repeat(65) + " ok")).toEqual(["ok"]);
+    const ranked = encodeHistoryCursor("2026-10-05T10:00:00.123456+00:00", "11111111-1111-4111-8111-111111111111", 4200);
+    expect(decodeHistoryCursor(ranked)).toEqual({
+      createdAt: "2026-10-05T10:00:00.123456+00:00",
+      id: "11111111-1111-4111-8111-111111111111",
+      rank: 4200,
+    });
   });
 
   it("keeps the database timestamp verbatim in the cursor", () => {

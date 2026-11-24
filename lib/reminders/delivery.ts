@@ -1,11 +1,13 @@
 /**
- * lib/reminders/delivery.ts — external transports for reminders (#326).
+ * lib/reminders/delivery.ts — external transports for reminders (#326, #428).
  *
  * Email and push are handed to an operator-configured relay (an email API or
- * a push service) as a small JSON webhook, so no provider SDK is bundled:
+ * a push service) as a small JSON webhook, with ordered compatible fallback
+ * routing to a secondary relay when the primary is degraded or down.
  *
  *   REMINDER_EMAIL_WEBHOOK_URL   POST { channel, to, subject, text, link, unsubscribeLink }
  *   REMINDER_PUSH_WEBHOOK_URL    same body; `to` is the push endpoint
+ *   REMINDER_BACKUP_WEBHOOK_URL  backup relay endpoint during primary outage
  *   REMINDER_WEBHOOK_SECRET      sent as `Authorization: Bearer <secret>`
  *
  * A channel without a URL is "unconfigured": the reminder is still delivered
@@ -14,6 +16,7 @@
 
 import type { ExternalReminderChannel } from "@/types/reminder";
 import type { ExternalMessage } from "./policy";
+import { executeWithFailover } from "@/lib/routing";
 
 export interface ReminderTransport {
   isConfigured(channel: ExternalReminderChannel): boolean;
@@ -34,18 +37,35 @@ export const webhookTransport: ReminderTransport = {
     return Boolean(webhookUrl(channel));
   },
   async send(channel, to, message) {
-    const url = webhookUrl(channel);
-    if (!url) throw new Error(`${channel} delivery is not configured.`);
+    const primaryUrl = webhookUrl(channel);
+    if (!primaryUrl) throw new Error(`${channel} delivery is not configured.`);
+    const backupUrl = process.env.REMINDER_BACKUP_WEBHOOK_URL?.trim();
     const secret = process.env.REMINDER_WEBHOOK_SECRET?.trim();
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(secret ? { Authorization: `Bearer ${secret}` } : {}),
+    const capability = channel === "email" ? "notification:email" : "notification:push";
+
+    await executeWithFailover(
+      {
+        domain: "notification",
+        capability,
       },
-      body: JSON.stringify({ channel, to, ...message }),
-      signal: AbortSignal.timeout(DELIVERY_TIMEOUT_MS),
-    });
-    if (!response.ok) throw new Error(`${channel} relay responded ${response.status}.`);
+      async (provider) => {
+        const targetUrl =
+          provider.id === "notification-relay-backup" && backupUrl ? backupUrl : primaryUrl;
+
+        const response = await fetch(targetUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(secret ? { Authorization: `Bearer ${secret}` } : {}),
+          },
+          body: JSON.stringify({ channel, to, ...message }),
+          signal: AbortSignal.timeout(DELIVERY_TIMEOUT_MS),
+        });
+
+        if (!response.ok) {
+          throw new Error(`${channel} relay (${provider.name}) responded ${response.status}.`);
+        }
+      },
+    );
   },
 };

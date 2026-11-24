@@ -1,15 +1,21 @@
+import { createHash } from "crypto";
 import type { NextRequest } from "next/server";
 import { hasExpensePermission } from "@/lib/supabase/queries";
 import { inspectReceiptUpload } from "@/lib/receipts/inspect";
 import { receiptMaxBytes } from "@/lib/receipts/policy";
+import { RequestBodyError, readLimitedFormData } from "@/lib/api/bodyLimits";
 import { listReceipts, loadExpenseAccess, storeReceipt } from "@/lib/receipts/store";
 import {
   errorResponse,
   isUuid,
+  RECEIPT_RESPONSE_HEADERS,
   receiptClients,
   receiptError,
   receiptJson,
 } from "@/lib/receipts/http";
+import { enforceAbuseProtection } from "@/lib/security/abuseProtection";
+import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
+import { RECEIPT_REPLAY_FIELDS, replayFieldsUnder } from "@/lib/idempotency/replay";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -26,6 +32,9 @@ export async function GET(request: NextRequest, context: Context) {
 
   const clients = receiptClients(request);
   if ("response" in clients) return clients.response;
+
+  const abuse = await enforceAbuseProtection(request, "receipt.upload", clients.wallet);
+  if (!abuse.ok) return abuse.response;
 
   try {
     const access = await loadExpenseAccess(clients.userClient, id);
@@ -47,6 +56,10 @@ export async function POST(request: NextRequest, context: Context) {
   const clients = receiptClients(request);
   if ("response" in clients) return clients.response;
 
+  // Issue #412: a valid key is required before the upload is read.
+  const idempotency = requireIdempotencyKey(request);
+  if (!idempotency.ok) return idempotency.response;
+
   const maxBytes = receiptMaxBytes();
   // Refuse an oversized body before buffering it.
   const declaredLength = Number(request.headers.get("content-length") ?? "0");
@@ -62,31 +75,64 @@ export async function POST(request: NextRequest, context: Context) {
       return receiptError("You do not have permission to attach a receipt to this expense.", 403);
     }
 
+    // Counted as it streams, so a lying or absent Content-Length cannot make
+    // formData() buffer an unbounded body (#418).
     let form: FormData;
     try {
-      form = await request.formData();
-    } catch {
+      form = await readLimitedFormData(request, maxBytes + MULTIPART_OVERHEAD_BYTES);
+    } catch (err) {
+      if (err instanceof RequestBodyError && err.status === 413) {
+        return receiptError("Receipts must be smaller than the upload limit.", 413);
+      }
+      if (err instanceof RequestBodyError && err.status === 415) {
+        return receiptError("Send the receipt as multipart/form-data.", 415);
+      }
       return receiptError("Send the receipt as multipart/form-data.", 400);
     }
     const file = form.get("file");
     if (!file || typeof file === "string") return receiptError("Choose a file to upload.", 400);
 
     const bytes = new Uint8Array(await file.arrayBuffer());
+    const fileName = "name" in file ? (file as File).name : null;
+    const caption = form.get("caption");
+    const intentId = form.get("intent_id")?.toString();
     const inspected = inspectReceiptUpload({
       bytes,
       declaredType: file.type,
-      fileName: "name" in file ? (file as File).name : null,
-      caption: form.get("caption"),
+      fileName,
+      caption,
       maxBytes,
     });
 
-    const receipt = await storeReceipt(clients.serviceClient, {
-      expenseId: id,
-      wallet: clients.wallet,
-      inspected,
-      bytes,
+    // The same bytes, name and caption under the same key are the same upload;
+    // a retry replays the stored receipt instead of storing a second copy.
+    return await runIdempotentMutation({
+      request,
+      client: clients.userClient,
+      key: idempotency.key,
+      replayFields: replayFieldsUnder("data", RECEIPT_REPLAY_FIELDS),
+      principal: clients.wallet,
+      payload: {
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+        fileName,
+        declaredType: file.type,
+        caption: typeof caption === "string" ? caption : null,
+      },
+      leaseSeconds: 120,
+      replayHeaders: { ...RECEIPT_RESPONSE_HEADERS },
+      execute: async () => {
+        const receipt = await storeReceipt(clients.serviceClient, {
+          expenseId: id,
+          wallet: clients.wallet,
+          inspected,
+          bytes,
+          intentId: intentId ?? undefined,
+          encrypted: true,
+          requestId: request.headers.get("x-request-id") ?? crypto.randomUUID(),
+        });
+        return receiptJson({ data: receipt }, 201);
+      },
     });
-    return receiptJson({ data: receipt }, 201);
   } catch (err) {
     return errorResponse(err);
   }

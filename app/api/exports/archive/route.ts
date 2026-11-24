@@ -11,6 +11,11 @@
  *    RLS returns only trips and expenses that wallet can already see. A
  *    requested trip id outside that set is refused (403) — never silently
  *    dropped, never revealed.
+ *  - **Batched authorization (#417).** `exports.view` is resolved for every
+ *    trip in one query (`trips_with_permission`), so authorization costs one
+ *    round trip whether the archive holds 1 trip or 1,000. Any trip that is
+ *    missing, foreign or lacks the permission gets the same 403, so the
+ *    response never reveals which ids exist.
  *  - **Rate-limited** per wallet and per IP; exports are expensive.
  *  - **Audited.** Every request appends to `export_audit_events` (migration
  *    0011) with the caller's own session *before* data is returned. If the
@@ -20,15 +25,17 @@
 
 import crypto from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
-import { checkRateLimit, getClientIp } from "@/lib/auth/rateLimiter";
+import { checkRateLimit, getClientIp, rateLimiterUnavailableResponse } from "@/lib/auth/rateLimiter";
 import { buildArchive, exportFileStem } from "@/lib/export/tripExport";
+import { ResponseTooLargeError, parseJsonBody, responseLimitFor, serializeBounded } from "@/lib/api/bodyLimits";
+import { toPublicErrorResponse } from "@/lib/api/errors";
 import { getOrCreateRequestId, REQUEST_ID_HEADER } from "@/lib/observability/requestId";
-import { verifyWalletSession } from "@/lib/supabase/serverAuth";
-import { createServerClientForToken, isServerSupabaseConfigured } from "@/lib/supabase/server";
+import { isServerSupabaseConfigured } from "@/lib/supabase/server";
 import { fetchExpenses, fetchTrips, hasTripPermission } from "@/lib/supabase/queries";
 import type { StellarStarClient } from "@/lib/supabase/client";
 import type { ExportAuditEventRow } from "@/types/supabase";
 import { STELLAR_EXPLORER, STELLAR_NETWORK } from "@/lib/utils/constants";
+import { authenticateWalletRequest } from "@/lib/api/routeGuard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -36,7 +43,7 @@ export const dynamic = "force-dynamic";
 const ARCHIVE_LIMIT_PER_WALLET = 5;
 const ARCHIVE_LIMIT_PER_IP = 20;
 const ARCHIVE_WINDOW_MS = 60 * 60 * 1000;
-const MAX_REQUESTED_TRIPS = 100;
+const MAX_REQUESTED_TRIPS = 1000;
 
 type AuditRecord = Pick<ExportAuditEventRow, "status"> &
   Partial<Pick<ExportAuditEventRow, "trip_ids" | "trip_count" | "expense_count" | "byte_size" | "content_sha256">>;
@@ -87,23 +94,17 @@ function parseTripIds(body: unknown): string[] | null | "invalid" {
 
 export async function POST(request: NextRequest) {
   const requestId = getOrCreateRequestId(request.headers.get(REQUEST_ID_HEADER));
-  const authHeader = request.headers.get("authorization") ?? "";
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
-  const session = token ? verifyWalletSession(token) : null;
-  if (!session) {
-    return json({ error: "Sign in with your wallet to export your trips." }, 401, requestId);
-  }
+  const auth = authenticateWalletRequest(request, { message: "Sign in with your wallet to export your trips.", requestId });
+  if (!auth.ok) return auth.response;
+  const session = auth.ctx.claims;
   if (!isServerSupabaseConfigured()) {
     return json({ error: "Database service is not configured on the server." }, 503, requestId);
   }
 
-  let body: unknown = null;
-  try {
-    const textBody = await request.text();
-    body = textBody ? JSON.parse(textBody) : null;
-  } catch {
-    return json({ error: "Request body must be valid JSON." }, 400, requestId);
-  }
+  // Byte-limited, media-type checked, streamed read (#418). Empty = all trips.
+  const parsedBody = await parseJsonBody(request, { route: "/api/exports/archive", allowEmpty: true, requestId });
+  if (!parsedBody.ok) return parsedBody.response;
+  const body: unknown = parsedBody.value ?? null;
   const requested = parseTripIds(body);
   if (requested === "invalid") {
     return json({ error: `tripIds must be 1–${MAX_REQUESTED_TRIPS} trip ids.` }, 400, requestId);
@@ -111,12 +112,16 @@ export async function POST(request: NextRequest) {
 
   const wallet = session.wallet_address;
   const ip = getClientIp(request);
-  const client = createServerClientForToken(token);
+  const client = auth.ctx.db();
 
   const [walletLimit, ipLimit] = await Promise.all([
     checkRateLimit(`export-archive:wallet:${wallet}`, ARCHIVE_LIMIT_PER_WALLET, ARCHIVE_WINDOW_MS),
     checkRateLimit(`export-archive:ip:${ip}`, ARCHIVE_LIMIT_PER_IP, ARCHIVE_WINDOW_MS),
   ]);
+  if (walletLimit.unavailable || ipLimit.unavailable) {
+    const unav = walletLimit.unavailable ? walletLimit : ipLimit;
+    return rateLimiterUnavailableResponse(unav, requestId);
+  }
   if (!walletLimit.allowed || !ipLimit.allowed) {
     await audit(client, wallet, requestId, ip, { status: "rate_limited", trip_ids: requested ?? [] });
     const resetMs = Math.max(walletLimit.allowed ? 0 : walletLimit.resetMs, ipLimit.allowed ? 0 : ipLimit.resetMs);
@@ -134,15 +139,17 @@ export async function POST(request: NextRequest) {
       const visibleIds = new Set(visibleTrips.map((t) => t.id));
       if (requested.some((id) => !visibleIds.has(id))) {
         await audit(client, wallet, requestId, ip, { status: "forbidden", trip_ids: requested });
-        return json({ error: "One or more requested trips are not available to you." }, 403, requestId);
+        return json({ error: "You do not have permission to export one or more trips." }, 403, requestId);
       }
       trips = visibleTrips.filter((t) => requested.includes(t.id));
     }
 
-    const exportPermissions = await Promise.all(
-      trips.map((trip) => hasTripPermission(trip.id, "exports.view", client)),
+    const exportable = await fetchTripIdsWithPermission(
+      trips.map((trip) => trip.id),
+      "exports.view",
+      client,
     );
-    if (exportPermissions.some((allowed) => !allowed)) {
+    if (trips.some((trip) => !exportable.has(trip.id))) {
       await audit(client, wallet, requestId, ip, {
         status: "forbidden",
         trip_ids: trips.map((trip) => trip.id),
@@ -158,7 +165,18 @@ export async function POST(request: NextRequest) {
       expenses: visibleExpenses,
       includeUnassigned: !requested,
     });
-    const payload = JSON.stringify(archive, null, 2);
+    let payload: string;
+    try {
+      payload = serializeBounded(archive, responseLimitFor("/api/exports/archive"), 2);
+    } catch (err) {
+      if (!(err instanceof ResponseTooLargeError)) throw err;
+      await audit(client, wallet, requestId, ip, { status: "failed", trip_ids: trips.map((t) => t.id) });
+      return json(
+        { error: "This archive is too large to export at once. Export fewer trips per request.", code: err.code },
+        413,
+        requestId,
+      );
+    }
     const sha256 = crypto.createHash("sha256").update(payload).digest("hex");
 
     const audited = await audit(client, wallet, requestId, ip, {
@@ -191,7 +209,11 @@ export async function POST(request: NextRequest) {
     });
   } catch (err) {
     await audit(client, wallet, requestId, ip, { status: "failed", trip_ids: requested ?? [] });
-    const message = err instanceof Error ? err.message : "Failed to build the archive.";
-    return json({ error: message }, 500, requestId);
+    return toPublicErrorResponse(err, {
+      requestId,
+      fallbackMessage: "Failed to build the archive.",
+      route: "/api/exports/archive",
+      method: "POST",
+    });
   }
 }

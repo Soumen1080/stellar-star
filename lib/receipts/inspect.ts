@@ -88,6 +88,9 @@ const PDF_ACTIVE_CONTENT: Array<[RegExp, string]> = [
   [/\/RichMedia\b/, "pdf_rich_media"],
   [/\/XFA\b/, "pdf_xfa_form"],
   [/\/Encrypt\b/, "pdf_encrypted_uninspectable"],
+  [/\/SubmitForm\b/, "pdf_submit_form"],
+  [/\/ImportData\b/, "pdf_import_data"],
+  [/\/GoToR\b/, "pdf_remote_goto"],
 ];
 
 const POLYGLOT_MARKERS: Array<[RegExp, string]> = [
@@ -96,19 +99,42 @@ const POLYGLOT_MARKERS: Array<[RegExp, string]> = [
   [/<html[\s>]/i, "embedded_html"],
   [/<svg[\s>]/i, "embedded_svg"],
   [/<iframe[\s>]/i, "embedded_iframe"],
+  [/<object[\s>]/i, "embedded_object"],
+  [/<embed[\s>]/i, "embedded_embed"],
+  [/<applet[\s>]/i, "embedded_applet"],
+  [/javascript:/i, "embedded_javascript_uri"],
+  [/vbscript:/i, "embedded_vbscript_uri"],
+  [/\bon(error|load|unload|click|mouse|key)\s*=/i, "embedded_event_handler"],
 ];
 
 /**
- * The built-in scanner: a static heuristic scan, not antivirus. Anything it
- * flags is quarantined — stored outside the servable path and never given a
- * download link — rather than rejected, so a false positive can be reviewed
- * instead of silently losing the user's receipt. A deployment with a real AV
- * service can replace this function (see docs/RECEIPT_ATTACHMENTS.md).
+ * The built-in scanner: static heuristic scan for malware, executable binaries,
+ * polyglots, and active PDF content (issue #451). Anything flagged is quarantined
+ * rather than served.
  */
 export function scanReceipt(bytes: Uint8Array, type: ReceiptContentType): ScanResult {
   // latin1 maps every byte to one character, so byte patterns survive decoding.
   const text = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("latin1");
   const reasons = new Set<string>();
+
+  // Check for binary executable headers (PE/ELF/Mach-O/Shell scripts)
+  if (bytes.length >= 2 && bytes[0] === 0x4d && bytes[1] === 0x5a) {
+    reasons.add("malware_executable_pe");
+  }
+  if (bytes.length >= 4 && bytes[0] === 0x7f && bytes[1] === 0x45 && bytes[2] === 0x4c && bytes[3] === 0x46) {
+    reasons.add("malware_executable_elf");
+  }
+  if (bytes.length >= 4) {
+    const isMacho =
+      (bytes[0] === 0xfe && bytes[1] === 0xed && bytes[2] === 0xfa && (bytes[3] === 0xce || bytes[3] === 0xcf)) ||
+      (bytes[0] === 0xce && bytes[1] === 0xfa && bytes[2] === 0xed && bytes[3] === 0xfe) ||
+      (bytes[0] === 0xcf && bytes[1] === 0xfa && bytes[2] === 0xed && bytes[3] === 0xfe) ||
+      (bytes[0] === 0xca && bytes[1] === 0xfe && bytes[2] === 0xba && bytes[3] === 0xbe && type !== "image/jpeg");
+    if (isMacho) reasons.add("malware_executable_macho");
+  }
+  if (bytes.length >= 3 && bytes[0] === 0x23 && bytes[1] === 0x21 && bytes[2] === 0x2f) {
+    reasons.add("malware_shell_script");
+  }
 
   if (type === "application/pdf") {
     for (const [pattern, reason] of PDF_ACTIVE_CONTENT) if (pattern.test(text)) reasons.add(reason);
@@ -118,7 +144,7 @@ export function scanReceipt(bytes: Uint8Array, type: ReceiptContentType): ScanRe
   return {
     verdict: reasons.size > 0 ? "quarantine" : "clean",
     reasons: [...reasons].sort(),
-    scanner: "builtin-heuristic-v1",
+    scanner: "builtin-heuristic-v2",
   };
 }
 

@@ -20,6 +20,8 @@ import { ItineraryModal } from "./ItineraryModal";
 import { BookingModal } from "./BookingModal";
 import { CalendarExportModal } from "./CalendarExportModal";
 import { WorkspacePrivacyModal } from "./WorkspacePrivacyModal";
+import { ChorePanel } from "./ChorePanel";
+import { memberRole } from "@/lib/trip/roles";
 
 interface TravelWorkspacePanelProps {
   trip: Trip;
@@ -27,7 +29,7 @@ interface TravelWorkspacePanelProps {
   currentUserPublicKey?: string | null;
 }
 
-type WorkspaceSubTab = "itinerary" | "checklist" | "bookings";
+type WorkspaceSubTab = "itinerary" | "checklist" | "chores" | "bookings";
 
 export function TravelWorkspacePanel({
   trip,
@@ -43,6 +45,10 @@ export function TravelWorkspacePanel({
     toggleChecklistItem,
     updateChecklistItem,
     deleteChecklistItem,
+    addChore,
+    completeChore,
+    toggleChoreOptOut,
+    setChoresEnabled,
     addBookingReference,
     updateBookingReference,
     deleteBookingReference,
@@ -62,6 +68,20 @@ export function TravelWorkspacePanel({
   const [showPrivacyModal, setShowPrivacyModal] = useState(false);
 
   const completedChecklistCount = workspace.checklists.filter((c) => c.isCompleted).length;
+  const currentMember = trip.members.find(
+    (member) => member.walletAddress?.trim().toUpperCase() === currentUserPublicKey?.trim().toUpperCase(),
+  );
+  const isOwner = Boolean(currentMember && memberRole(currentMember, trip) === "owner");
+  const optedOut = Boolean(
+    currentUserPublicKey &&
+    workspace.choreOptOutWallets.includes(currentUserPublicKey.trim().toUpperCase()),
+  );
+  const optedOutMemberIds = trip.members
+    .filter((member) =>
+      member.walletAddress &&
+      workspace.choreOptOutWallets.includes(member.walletAddress.trim().toUpperCase())
+    )
+    .map((member) => member.id);
 
   return (
     <div className="space-y-5">
@@ -103,7 +123,7 @@ export function TravelWorkspacePanel({
         </div>
 
         {/* Stats Row */}
-        <div className="grid grid-cols-3 gap-2 pt-1 border-t border-[#F0F0F0] text-center">
+        <div className="grid grid-cols-4 gap-2 pt-1 border-t border-[#F0F0F0] text-center">
           <div className="p-2 rounded-xl bg-[#F9F9F9]">
             <span className="block text-xs font-bold text-[#0F0F14]">
               {workspace.itinerary.length}
@@ -121,6 +141,12 @@ export function TravelWorkspacePanel({
               {workspace.bookings.length}
             </span>
             <span className="text-[10px] text-[#777]">Bookings & Passes</span>
+          </div>
+          <div className="p-2 rounded-xl bg-[#F9F9F9]">
+            <span className="block text-xs font-bold text-[#0F0F14]">
+              {workspace.chores.length}
+            </span>
+            <span className="text-[10px] text-[#777]">Recurring Chores</span>
           </div>
         </div>
       </div>
@@ -162,6 +188,18 @@ export function TravelWorkspacePanel({
         >
           <Ticket size={13} />
           Bookings & Files ({workspace.bookings.length})
+        </button>
+        <button
+          type="button"
+          onClick={() => setSubTab("chores")}
+          className={`flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-semibold transition-all ${
+            subTab === "chores"
+              ? "bg-white text-[#0F0F14] shadow-sm"
+              : "text-[#777] hover:text-[#0F0F14]"
+          }`}
+        >
+          <CheckSquare size={13} />
+          Chores ({workspace.chores.length})
         </button>
       </div>
 
@@ -210,6 +248,23 @@ export function TravelWorkspacePanel({
             setShowBookingModal(true);
           }}
           onDeleteBooking={deleteBookingReference}
+        />
+      )}
+
+      {subTab === "chores" && (
+        <ChorePanel
+          chores={workspace.chores}
+          enabled={workspace.choresEnabled}
+          optedOut={optedOut}
+          optedOutMemberIds={optedOutMemberIds}
+          isOwner={isOwner}
+          members={trip.members}
+          expenses={expenses}
+          currentUserWallet={currentMember ? currentUserPublicKey : null}
+          onAdd={addChore}
+          onComplete={completeChore}
+          onToggleOptOut={toggleChoreOptOut}
+          onSetEnabled={setChoresEnabled}
         />
       )}
 

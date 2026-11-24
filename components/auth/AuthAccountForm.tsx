@@ -55,12 +55,10 @@ export function AuthAccountForm({
         <form onSubmit={onSubmit} className="space-y-5">
           {isSignUpMode && (
             <div>
-              <label className="block text-sm font-semibold text-[#0F0F14] mb-2">
-                Your Name <span className="text-[#FF6B6B]">*</span>
-              </label>
               <div className="relative">
                 <User size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-[#888]" />
                 <Input
+                  label="Your name"
                   type="text"
                   placeholder="Enter your full name"
                   value={displayName}
@@ -79,7 +77,7 @@ export function AuthAccountForm({
               animate={{ opacity: 1, y: 0 }}
               className="p-4 bg-[#FF6B6B]/10 border border-[#FF6B6B]/30 rounded-xl"
             >
-              <p className="text-sm font-medium text-[#FF6B6B]">{error}</p>
+              <p role="alert" className="text-sm font-medium text-red-700">{error}</p>
             </motion.div>
           )}
 

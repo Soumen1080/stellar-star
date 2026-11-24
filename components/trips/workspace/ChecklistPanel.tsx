@@ -15,7 +15,7 @@ interface ChecklistPanelProps {
   onUpdateItem: (itemId: string, updates: Partial<ChecklistItem>) => Promise<void>;
 }
 
-const CATEGORIES: { label: string; value: ChecklistCategory; icon: React.ComponentType<{ size?: number }> }[] = [
+const CATEGORIES: { label: string; value: ChecklistCategory; icon: React.ComponentType<any> }[] = [
   { label: "All Items", value: "general" as any, icon: CheckSquare },
   { label: "Packing List", value: "packing", icon: Luggage },
   { label: "Documents", value: "documents", icon: FileText },

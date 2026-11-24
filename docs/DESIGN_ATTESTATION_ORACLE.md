@@ -65,7 +65,7 @@ different nonces on one expense — each guard is proven to stand alone.
 `expires_at` must be in the future and no more than `MAX_ATTESTATION_TTL_SECS`
 (900s) out; the oracle mints for 300s. This bounds the blast radius of a stolen
 key: an attacker who signs a batch of claims has minutes to land them, not
-forever. `set_oracle_key` (admin-only) kills every outstanding attestation
+forever. `set_oracle_signers` (admin-only) removes retired signers from future quorum checks
 immediately — the compromise response. It is deliberately not the oracle's own
 privilege: a compromised oracle must not be able to re-anchor trust in itself.
 
@@ -97,10 +97,17 @@ table is told rather than finding out from a double-spend.
 This is also what makes net settlement work: one payment, several expenses,
 attested individually and bounded in total by the payment.
 
-### 6. Key custody
+### 6. Threshold key custody
 
-The signing key is a Stellar secret seed in the server-only
-`SETTLEMENT_ORACLE_SECRET`. Stellar keys *are* ed25519 keys, so one seed gives
+Contract v3 verifies an M-of-N quorum of distinct public keys. Production
+signers run in independent custody and availability domains and are configured
+as server-only `SETTLEMENT_ORACLE_SIGNERS` endpoints. The application verifies
+each response against the configured public key and the complete claim before
+passing the quorum to the contract. See `docs/SETTLEMENT_ORACLE_QUORUM.md` for
+the signer protocol, outage behavior, deployment, and overlap-based rotation.
+
+The local development signing key is a Stellar secret seed in server-only
+`SETTLEMENT_ORACLE_SECRETS`. Production uses separate signer endpoints. Stellar keys *are* ed25519 keys, so a seed gives
 signing here and a raw 32-byte public key for the contract — no extra dependency
 and no second key format. `lib/settlement/oracleKey.ts` refuses to run at all if
 it finds an oracle secret under a `NEXT_PUBLIC_` name, since Next.js inlines
@@ -153,15 +160,9 @@ issue calls this hole out directly. A nonce burned on-chain is the only version
 of "single-use" that survives multiple oracle instances, since it needs no
 coordination between them.
 
-**C. Threshold / multi-oracle signing (M-of-N).** Several independent oracles,
-contract verifies a quorum. Genuinely stronger — it removes the single trusted
-key, which is the residual weakness of the chosen design. Rejected as
-disproportionate for a testnet-oriented app with one operator: it multiplies the
-verification cost in the contract, needs a key registry and rotation protocol
-per oracle, and every oracle would be reading the same Horizon, so the
-independence it buys is smaller than it looks. The chosen design is
-forward-compatible — `get_oracle_key`/`set_oracle_key` become a key set, and the
-claim encoding does not change.
+**C. Single key.** Simpler, but concentrates trust in one secret. Contract v3
+replaces it with signer registry and quorum verification; see
+`docs/SETTLEMENT_ORACLE_QUORUM.md`.
 
 **D. Store a hash commitment on-chain and verify the payment lazily.** Have the
 contract record an unverified claim, and let anyone challenge it later with a
@@ -171,10 +172,9 @@ and a bond mechanism without removing the trust anchor.
 
 ## Residual weaknesses, stated plainly
 
-- **The oracle key is a single point of trust.** Anyone holding it can mint
-  proof of a payment that never happened. Mitigated by short TTLs, admin-held
-  rotation, and server-only custody; not eliminated. Alternative C is the path
-  if that becomes unacceptable.
+- **The quorum admin remains a trust boundary.** A compromised contract admin
+  can replace the signer set. Protect it with separate governance and follow
+  `docs/SETTLEMENT_ORACLE_QUORUM.md` for overlap-based recovery.
 - **The in-memory ledger fallback is single-instance only.** Without Supabase
   configured, running several oracle instances would let one payment be
   over-allocated. The response reports `durableLedger: false` so this is visible
@@ -204,11 +204,11 @@ and a bond mechanism without removing the trust anchor.
 
 ## Deployment
 
-1. `./scripts/deploy-contract.sh <deployer> <token-id> [oracle-secret]` —
-   generates an oracle keypair if not given, and initialises the contract with
-   its raw public key and the settlement asset.
-2. Set `SETTLEMENT_ORACLE_SECRET` (server-only) and
-   `NEXT_PUBLIC_SETTLEMENT_ORACLE_PUBLIC_KEY` / `NEXT_PUBLIC_SETTLEMENT_ASSET_ID`.
+1. Deploy contract v3 with at least three distinct signer public keys and
+   threshold 2. The deployment script accepts local signer seeds for development.
+2. In production configure independent `SETTLEMENT_ORACLE_SIGNERS` endpoints,
+   matching `NEXT_PUBLIC_SETTLEMENT_ORACLE_PUBLIC_KEYS` and threshold, and
+   `NEXT_PUBLIC_SETTLEMENT_ASSET_ID`.
 3. Run the `settlement_attestations` section of `supabase-setup.sql`.
 
 Without steps 2–3 the app degrades to off-chain-recorded settlement, which is

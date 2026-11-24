@@ -1,29 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
-import { verifyWalletSession } from "@/lib/supabase/serverAuth";
-import { createServerClientForToken } from "@/lib/supabase/server";
 import { claimTripInvite } from "@/lib/invitations/claim";
-import {
-  extractIdempotencyKey,
-  withIdempotency,
-  idempotentJsonResponse,
-  IdempotencyConflictError,
-  IdempotencyLockedError,
-} from "@/lib/idempotency/store";
+import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
+import { enforceAbuseProtection, enforceIdempotencyKeyLimit } from "@/lib/security/abuseProtection";
+import { authenticateWalletRequest } from "@/lib/api/routeGuard";
+import { parseJsonBody } from "@/lib/api/bodyLimits";
+import { toPublicErrorResponse, classifyApiError } from "@/lib/api/errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function POST(request: NextRequest) {
-  const authHeader = request.headers.get("authorization") ?? "";
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
-  const session = token ? verifyWalletSession(token) : null;
-
-  if (!session) {
-    return NextResponse.json(
-      { error: "Unauthorized: Sign in with your wallet before claiming a slot." },
-      { status: 401 },
-    );
-  }
+  const auth = authenticateWalletRequest(request, { message: "Unauthorized: Sign in with your wallet before claiming a slot." });
+  if (!auth.ok) return auth.response;
+  const session = auth.ctx.claims;
+  const abuse = await enforceAbuseProtection(request, "invitation.claim", session.wallet_address);
+  if (!abuse.ok) return abuse.response;
 
   let body: {
     token?: string;
@@ -32,24 +23,30 @@ export async function POST(request: NextRequest) {
     idempotencyKey?: string;
   };
 
-  try {
-    body = (await request.json()) as typeof body;
-  } catch {
-    return NextResponse.json({ error: "Request body must be valid JSON." }, { status: 400 });
-  }
+  const parsedBody = await parseJsonBody(request, { route: "/api/invitations/claim" });
+  if (!parsedBody.ok) return parsedBody.response;
+  body = (parsedBody.value) as typeof body;
+
+  // Issue #412: a valid key is required before any work.
+  const idempotency = requireIdempotencyKey(request, { body });
+  if (!idempotency.ok) return idempotency.response;
 
   if (!body.token || typeof body.token !== "string") {
     return NextResponse.json({ error: "Invitation token is required." }, { status: 400 });
   }
 
   try {
-    const serverClient = createServerClientForToken(token);
-    const idempotencyKey = extractIdempotencyKey(request, body);
+    const serverClient = auth.ctx.db();
+    const keyLimit = await enforceIdempotencyKeyLimit(request, session.wallet_address, idempotency.key);
+    if (!keyLimit.ok) return keyLimit.response;
 
-    const result = await withIdempotency({
+    return await runIdempotentMutation({
+      request,
       client: serverClient,
-      key: idempotencyKey,
-      walletAddress: session.wallet_address,
+      key: idempotency.key,
+      replayFields: ["success", "tripId", "tripName", "memberId", "memberName"],
+      principal: session.wallet_address,
+      // Kept from the pre-#412 wrapper so keys stored before the change still match.
       endpoint: "/api/invitations/claim",
       payload: body,
       execute: async () => {
@@ -59,17 +56,17 @@ export async function POST(request: NextRequest) {
           body.selectedMemberId,
           serverClient,
         );
-        return { data: claimed, status: 200 };
+        return NextResponse.json(claimed, { headers: { "Cache-Control": "no-store" } });
       },
     });
-
-    return idempotentJsonResponse(result);
   } catch (err) {
-    if (err instanceof IdempotencyConflictError || err instanceof IdempotencyLockedError) {
-      return NextResponse.json(
-        { error: err.message, code: err.code },
-        { status: 409 }
-      );
+    if (classifyApiError(err).isInternal) {
+      return toPublicErrorResponse(err, {
+        requestId: request.headers.get("x-request-id"),
+        fallbackMessage: "Failed to claim invitation.",
+        route: "/api/invitations/claim",
+        method: "POST",
+      });
     }
     const message = err instanceof Error ? err.message : "Failed to claim invitation.";
     let status = 400;

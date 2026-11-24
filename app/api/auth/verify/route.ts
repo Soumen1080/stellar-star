@@ -14,8 +14,9 @@ import {
   type ServerClient,
 } from "@/lib/supabase/server";
 import { consumeChallenge, AuthStoreError } from "@/lib/auth/challengeStore";
-import { checkRateLimit, getClientIp } from "@/lib/auth/rateLimiter";
+import { checkRateLimit, getClientIp, rateLimiterUnavailableResponse } from "@/lib/auth/rateLimiter";
 import type { UserUpdate } from "@/types/supabase";
+import { parseJsonBody } from "@/lib/api/bodyLimits";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -106,6 +107,9 @@ export async function POST(request: NextRequest) {
   try {
     const clientIp = getClientIp(request);
     const ipLimit = await checkRateLimit(`verify:ip:${clientIp}`, 20, 60_000);
+    if (ipLimit.unavailable) {
+      return rateLimiterUnavailableResponse(ipLimit);
+    }
     if (!ipLimit.allowed) {
       return NextResponse.json(
         { error: "Too many verification attempts. Please try again later." },
@@ -119,7 +123,9 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const body = await request.json();
+    const parsedBody = await parseJsonBody<any>(request, { route: "/api/auth/verify" });
+    if (!parsedBody.ok) return parsedBody.response;
+    const body = parsedBody.value;
     const { address, signedXdr, nonce, expiration, signature, displayName } = body ?? {};
 
     if (
@@ -137,6 +143,9 @@ export async function POST(request: NextRequest) {
     }
 
     const addrLimit = await checkRateLimit(`verify:addr:${address}`, 10, 60_000);
+    if (addrLimit.unavailable) {
+      return rateLimiterUnavailableResponse(addrLimit);
+    }
     if (!addrLimit.allowed) {
       return NextResponse.json(
         { error: "Too many verification attempts for this wallet. Please wait a minute." },

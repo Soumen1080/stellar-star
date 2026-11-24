@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import { Users, CheckCircle2, AlertCircle, ArrowRight, ShieldCheck, Loader2, Sparkles } from "lucide-react";
@@ -8,6 +8,11 @@ import { useWallet } from "@/hooks/useWallet";
 import { useSession } from "@/lib/supabase/useSession";
 import { useToast } from "@/components/ui/Toast";
 import type { TripInviteSummary } from "@/types/trip";
+import {
+  createIdempotencyKeyHolder,
+  idempotencyHeaders,
+  isIdempotencyConflict,
+} from "@/lib/idempotency/client";
 
 export default function JoinTripPage() {
   const params = useParams();
@@ -55,6 +60,9 @@ export default function JoinTripPage() {
     fetchSummary();
   }, [token]);
 
+  // One key per claim attempt, reused on retry so a double tap claims once (#412).
+  const claimKey = useRef(createIdempotencyKeyHolder());
+
   const handleClaim = async () => {
     if (!isConnected || !publicKey) {
       connect();
@@ -67,6 +75,7 @@ export default function JoinTripPage() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          ...idempotencyHeaders(claimKey.current.current()),
           ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
         },
         body: JSON.stringify({
@@ -76,6 +85,7 @@ export default function JoinTripPage() {
       });
 
       const data = await res.json();
+      if (res.ok || isIdempotencyConflict(res.status, data)) claimKey.current.reset();
       if (!res.ok) {
         throw new Error(data.error || "Failed to claim invitation slot.");
       }

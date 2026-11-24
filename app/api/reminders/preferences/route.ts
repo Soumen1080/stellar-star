@@ -11,6 +11,7 @@ import type { NextRequest } from "next/server";
 import { defaultPreferences } from "@/lib/reminders/repository";
 import { authenticate, json, readJson } from "@/lib/reminders/server";
 import { updatePreferences } from "@/lib/reminders/service";
+import { toPublicErrorResponse } from "@/lib/api/errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -34,6 +35,11 @@ export async function PUT(request: NextRequest) {
     if (!result.ok) return json({ error: result.message }, result.status, auth.requestId);
     return json({ data: result.preferences }, 200, auth.requestId);
   } catch (err) {
-    return json({ error: err instanceof Error ? err.message : "Failed to save preferences." }, 500, auth.requestId);
+    return toPublicErrorResponse(err, {
+      requestId: auth.requestId,
+      fallbackMessage: "Failed to save preferences.",
+      route: "/api/reminders/preferences",
+      method: "PUT",
+    });
   }
 }

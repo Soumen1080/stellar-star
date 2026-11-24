@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
+import { toPublicErrorResponse } from "@/lib/api/errors";
 import { Account, TransactionBuilder, Memo, Operation, Keypair } from "@stellar/stellar-sdk";
 import { NETWORK_PASSPHRASE, TX_BASE_FEE } from "@/lib/utils/constants";
 import { generateChallengeSignature, CHALLENGE_TTL_MS } from "@/lib/supabase/serverAuth";
 import { issueChallenge, AuthStoreError } from "@/lib/auth/challengeStore";
-import { checkRateLimit, getClientIp } from "@/lib/auth/rateLimiter";
+import { enforceAbuseProtection } from "@/lib/security/abuseProtection";
 import crypto from "crypto";
 
 export const runtime = "nodejs";
@@ -25,35 +26,8 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: "Invalid Stellar public key" }, { status: 400 });
     }
 
-    // Rate limiting: per-IP (30/min) and per-address (10/min)
-    const clientIp = getClientIp(request);
-    const ipLimit = await checkRateLimit(`challenge:ip:${clientIp}`, 30, 60_000);
-    if (!ipLimit.allowed) {
-      return NextResponse.json(
-        { error: "Too many challenge requests. Please try again later." },
-        {
-          status: 429,
-          headers: {
-            "Retry-After": String(Math.ceil(ipLimit.resetMs / 1000)),
-            "Cache-Control": "no-store",
-          },
-        },
-      );
-    }
-
-    const addrLimit = await checkRateLimit(`challenge:addr:${address}`, 10, 60_000);
-    if (!addrLimit.allowed) {
-      return NextResponse.json(
-        { error: "Too many challenge requests for this wallet. Please wait a minute." },
-        {
-          status: 429,
-          headers: {
-            "Retry-After": String(Math.ceil(addrLimit.resetMs / 1000)),
-            "Cache-Control": "no-store",
-          },
-        },
-      );
-    }
+    const abuse = await enforceAbuseProtection(request, "auth.challenge", address);
+    if (!abuse.ok) return abuse.response;
 
     const nonce = crypto.randomUUID();
     const expiration = Date.now() + CHALLENGE_TTL_MS;
@@ -86,6 +60,10 @@ export async function GET(request: NextRequest) {
     );
   } catch (error: any) {
     console.error("Challenge generation error:", error);
-    return NextResponse.json({ error: error.message || "Failed to generate challenge" }, { status: 500 });
+    return toPublicErrorResponse(error, {
+      fallbackMessage: "Failed to generate challenge",
+      route: "/api/auth/challenge",
+      method: "POST",
+    });
   }
 }

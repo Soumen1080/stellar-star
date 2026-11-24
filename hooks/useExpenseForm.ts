@@ -351,14 +351,18 @@ export function useExpenseForm({
           settled: false,
         };
 
-        await addExpense(expense);
-        trackAnalyticsEvent("expense_created", {
-          currency: currency.toUpperCase(),
-          split_mode: splitMode,
-          member_count: cleanMembers.length,
-          has_receipt: false,
-        });
-        toastSuccess("Expense created!", `"${expense.title}" split among ${cleanMembers.length} members.`);
+        const saveResult = await addExpense(expense);
+        if (saveResult?.queued) {
+          toastSuccess("Expense draft saved offline", `“${expense.title}” will sync when this wallet is online.`);
+        } else {
+          trackAnalyticsEvent("expense_created", {
+            currency: currency.toUpperCase(),
+            split_mode: splitMode,
+            member_count: cleanMembers.length,
+            has_receipt: false,
+          });
+          toastSuccess("Expense created!", `"${expense.title}" split among ${cleanMembers.length} members.`);
+        }
         onSuccess?.(expense.id);
       } catch (err: unknown) {
         const raw = err instanceof Error ? err.message : "Failed to create expense.";

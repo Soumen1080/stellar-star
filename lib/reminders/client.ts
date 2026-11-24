@@ -14,6 +14,7 @@ import type {
   ReminderPreferences,
   ReminderSchedule,
 } from "@/types/reminder";
+import { idempotencyHeaders, newIdempotencyKey } from "@/lib/idempotency/client";
 
 export class ReminderRequestError extends Error {
   readonly status: number;
@@ -40,13 +41,18 @@ async function call<T>(path: string, init: RequestInit = {}, fetchImpl: typeof f
   return body.data as T;
 }
 
+/**
+ * Writes below send an Idempotency-Key (#412). Pass the same key when retrying
+ * one action; a fresh key is generated when omitted.
+ */
 export function sendPaymentReminder(
   input: { tripId: string; expenseId: string; memberId: string; note?: string },
   fetchImpl?: typeof fetch,
+  idempotencyKey: string = newIdempotencyKey(),
 ) {
   return call<{ reminder: PaymentReminder; channels: ReminderChannel[] }>(
     "/api/reminders",
-    { method: "POST", body: JSON.stringify(input) },
+    { method: "POST", body: JSON.stringify(input), headers: idempotencyHeaders(idempotencyKey) },
     fetchImpl,
   );
 }
@@ -59,10 +65,15 @@ export function getPaymentRequest(id: string, fetchImpl?: typeof fetch) {
   return call<PaymentRequestContext>(`/api/reminders/${encodeURIComponent(id)}`, {}, fetchImpl);
 }
 
-export function actOnReminder(id: string, action: ReminderAction, fetchImpl?: typeof fetch) {
+export function actOnReminder(
+  id: string,
+  action: ReminderAction,
+  fetchImpl?: typeof fetch,
+  idempotencyKey: string = newIdempotencyKey(),
+) {
   return call<{ reminder: PaymentReminder; preferences: ReminderPreferences | null }>(
     `/api/reminders/${encodeURIComponent(id)}`,
-    { method: "PATCH", body: JSON.stringify({ action }) },
+    { method: "PATCH", body: JSON.stringify({ action }), headers: idempotencyHeaders(idempotencyKey) },
     fetchImpl,
   );
 }
@@ -86,18 +97,27 @@ export function listReminderSchedules(fetchImpl?: typeof fetch) {
   return call<ReminderSchedule[]>("/api/reminders/schedules", {}, fetchImpl);
 }
 
-export function createReminderSchedule(tripId: string, intervalDays: number, fetchImpl?: typeof fetch) {
+export function createReminderSchedule(
+  tripId: string,
+  intervalDays: number,
+  fetchImpl?: typeof fetch,
+  idempotencyKey: string = newIdempotencyKey(),
+) {
   return call<ReminderSchedule>(
     "/api/reminders/schedules",
-    { method: "POST", body: JSON.stringify({ tripId, intervalDays }) },
+    { method: "POST", body: JSON.stringify({ tripId, intervalDays }), headers: idempotencyHeaders(idempotencyKey) },
     fetchImpl,
   );
 }
 
-export function disableReminderSchedule(id: string, fetchImpl?: typeof fetch) {
+export function disableReminderSchedule(
+  id: string,
+  fetchImpl?: typeof fetch,
+  idempotencyKey: string = newIdempotencyKey(),
+) {
   return call<{ disabled: boolean }>(
     `/api/reminders/schedules?id=${encodeURIComponent(id)}`,
-    { method: "DELETE" },
+    { method: "DELETE", headers: idempotencyHeaders(idempotencyKey) },
     fetchImpl,
   );
 }

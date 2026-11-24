@@ -20,10 +20,10 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
+import { toPublicErrorResponse, classifyApiError } from "@/lib/api/errors";
 import crypto from "crypto";
 import { StrKey, TransactionBuilder } from "@stellar/stellar-sdk";
 import { NETWORK_PASSPHRASE, HORIZON_URL } from "@/lib/utils/constants";
-import { verifyWalletSession } from "@/lib/supabase/serverAuth";
 import { parseAssetKey, type AssetRef } from "@/lib/stellar/assets";
 import {
   isSponsorConfigured,
@@ -42,6 +42,8 @@ import {
   SPONSORSHIP_IDLE_RECLAIM_MS,
 } from "@/lib/onboarding/sponsorshipLedger";
 import { releaseInvite } from "@/lib/onboarding/abuseResistance";
+import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
+import { optionalWalletSession } from "@/lib/api/routeGuard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -91,11 +93,9 @@ export async function POST(request: NextRequest) {
   }
 
   let body: { account?: unknown; assetKey?: unknown; operatorSecret?: unknown };
-  try {
-    body = (await request.json()) as typeof body;
-  } catch {
-    return jsonError("Request body must be JSON.", 400);
-  }
+  const parsedBody = await parseJsonBody(request, { route: "/api/onboarding/revoke" });
+  if (!parsedBody.ok) return parsedBody.response;
+  body = (parsedBody.value) as typeof body;
 
   const { account, assetKey, operatorSecret } = body;
 
@@ -112,15 +112,14 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  const record = await getSponsorship(account);
-  if (!record || record.status !== "active") {
-    return jsonError("No active sponsorship for that account.", 404);
-  }
-
   // ── Authorisation: the sponsored user, or the operator ─────────────────────
-  const authHeader = request.headers.get("authorization") ?? "";
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
-  const session = token ? verifyWalletSession(token) : null;
+  // Checked before the sponsorship is looked up, so an unauthorised caller
+  // learns nothing about which accounts are sponsored.
+  // The operator authenticates with a secret instead, so a session is
+  // optional here; a session that is present but invalid is still refused.
+  const auth = optionalWalletSession(request);
+  if (!auth.ok) return auth.response;
+  const session = auth.ctx?.claims ?? null;
 
   const isSponsoredUser = session?.wallet_address === account;
 
@@ -137,64 +136,95 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // The operator may only reclaim genuinely idle sponsorships. Without this an
-  // operator key could cut off active users, which is a worse failure than a
-  // slowly filling cap.
-  if (isOperator && !isSponsoredUser) {
-    const reclaimable = await listReclaimable();
-    if (!reclaimable.some((r) => r.account === account)) {
-      const idleDays = Math.round(SPONSORSHIP_IDLE_RECLAIM_MS / (24 * 60 * 60 * 1000));
-      return jsonError(
-        `That sponsorship is still active. Operators may only reclaim accounts idle for ` +
-          `more than ${idleDays} days.`,
-        409,
-      );
-    }
-  }
+  // Issue #412: a valid key is required before any lookup or submission.
+  const idempotency = requireIdempotencyKey(request);
+  if (!idempotency.ok) return idempotency.response;
 
-  // ── Build, sign, submit ────────────────────────────────────────────────────
-  try {
-    const { xdr } = await buildSponsorshipRevocation({
-      sponsorPublicKey: sponsorPublicKey(),
-      sponsoredAccount: account,
-      asset,
-    });
+  // The "still active?" check runs under the claim, so a retry of a revocation
+  // that landed replays its success instead of reporting 404. The operator
+  // secret is deliberately left out of the fingerprint.
+  return runIdempotentMutation({
+    request,
+    client: isSponsoredUser ? (auth.ctx?.dbIfConfigured() ?? null) : null,
+    key: idempotency.key,
+    replayFields: ["revoked", "hash", "releasedStroops", "message"],
+    principal: isSponsoredUser ? account : "operator:sponsorship",
+    payload: { account, assetKey: typeof assetKey === "string" ? assetKey : null },
+    leaseSeconds: 120,
+    execute: async () => {
+      const record = await getSponsorship(account);
+      if (!record || record.status !== "active") {
+        return jsonError("No active sponsorship for that account.", 404);
+      }
 
-    const signed = signAsSponsor(xdr, loadSponsorKeypair());
-    // Parsed back to fail loudly here rather than at Horizon on a malformed build.
-    TransactionBuilder.fromXDR(signed, NETWORK_PASSPHRASE);
+      // The operator may only reclaim genuinely idle sponsorships. Without this an
+      // operator key could cut off active users, which is a worse failure than a
+      // slowly filling cap.
+      if (isOperator && !isSponsoredUser) {
+        const reclaimable = await listReclaimable();
+        if (!reclaimable.some((r) => r.account === account)) {
+          const idleDays = Math.round(SPONSORSHIP_IDLE_RECLAIM_MS / (24 * 60 * 60 * 1000));
+          return jsonError(
+            `That sponsorship is still active. Operators may only reclaim accounts idle for ` +
+              `more than ${idleDays} days.`,
+            409,
+          );
+        }
+      }
 
-    const { hash } = await submit(signed);
+      // ── Build, sign, submit ──────────────────────────────────────────────────
+      try {
+        const { xdr } = await buildSponsorshipRevocation({
+          sponsorPublicKey: sponsorPublicKey(),
+          sponsoredAccount: account,
+          asset,
+        });
 
-    // Ledger updated only after the network accepted it — marking it revoked
-    // first would free cap headroom for reserves that are still locked.
-    await markRevoked(account);
-    await releaseInvite(record.sponsoredBy, account).catch(() => {});
+        const signed = signAsSponsor(xdr, loadSponsorKeypair());
+        // Parsed back to fail loudly here rather than at Horizon on a malformed build.
+        TransactionBuilder.fromXDR(signed, NETWORK_PASSPHRASE);
 
-    // A successful revocation is activity on the sponsorship record; stamping
-    // it keeps the idle-reclaim window honest if the record is ever re-opened
-    // or audited, and prevents a stale lastActiveAt from misclassifying it.
-    await recordSponsorshipActivity(account).catch(() => {});
+        const { hash } = await submit(signed);
 
-    return NextResponse.json(
-      {
-        revoked: true,
-        hash,
-        releasedStroops: record.lockedStroops,
-        message: "Sponsorship released. The account is now self-supporting.",
-      },
-      { headers: { "Cache-Control": "no-store" } },
-    );
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "Revocation failed.";
-    // The most common cause: the account cannot yet cover its own reserve. That
-    // is not an error state for the user — the sponsorship simply continues.
-    // Record the attempt so an operator cannot be tricked into repeatedly
-    // retrying a revocation that the network will keep rejecting, and so the
-    // idle window reflects that the account is still under sponsorship.
-    await recordSponsorshipActivity(account).catch(() => {});
-    return jsonError(message, 409, { sponsorshipRetained: true });
-  }
+        // Ledger updated only after the network accepted it — marking it revoked
+        // first would free cap headroom for reserves that are still locked.
+        await markRevoked(account);
+        await releaseInvite(record.sponsoredBy, account).catch(() => {});
+
+        // A successful revocation is activity on the sponsorship record; stamping
+        // it keeps the idle-reclaim window honest if the record is ever re-opened
+        // or audited, and prevents a stale lastActiveAt from misclassifying it.
+        await recordSponsorshipActivity(account).catch(() => {});
+
+        return NextResponse.json(
+          {
+            revoked: true,
+            hash,
+            releasedStroops: record.lockedStroops,
+            message: "Sponsorship released. The account is now self-supporting.",
+          },
+          { headers: { "Cache-Control": "no-store" } },
+        );
+      } catch (err) {
+        if (classifyApiError(err).isInternal) {
+          return toPublicErrorResponse(err, {
+            requestId: request.headers.get("x-request-id"),
+            fallbackMessage: "Revocation failed.",
+            route: "/api/onboarding/revoke",
+            method: "POST",
+          });
+        }
+        const message = err instanceof Error ? err.message : "Revocation failed.";
+        // The most common cause: the account cannot yet cover its own reserve. That
+        // is not an error state for the user — the sponsorship simply continues.
+        // Record the attempt so an operator cannot be tricked into repeatedly
+        // retrying a revocation that the network will keep rejecting, and so the
+        // idle window reflects that the account is still under sponsorship.
+        await recordSponsorshipActivity(account).catch(() => {});
+        return jsonError(message, 409, { sponsorshipRetained: true });
+      }
+    },
+  });
 }
 
 /** Sponsorships eligible for reclamation, for an operator dashboard or cron. */

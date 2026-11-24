@@ -156,21 +156,36 @@ export function disputeKey(expenseId: string, memberId: string): string {
 function unpaidDebts(expenses: Expense[], disputedShares: ReadonlySet<string> = new Set()): RawDebt[] {
   const debts: RawDebt[] = [];
   for (const expense of expenses) {
+    if (expense.voided) continue;
     const payer = expense.members.find((m) => m.id === expense.paidByMemberId);
     if (!payer) continue;
     for (const share of expense.shares) {
       if (share.paid || share.memberId === payer.id || disputedShares.has(disputeKey(expense.id, share.memberId))) continue;
-      debts.push({
-        expenseId: expense.id,
-        fromId: share.memberId,
-        toId: payer.id,
-        from: share.name,
-        to: payer.name,
-        amount: share.amount,
-        asset: settlementAssetOf(expense),
-        fromWallet: share.walletAddress,
-        toWallet: payer.walletAddress,
-      });
+      if (expense.correctionType === "reversal") {
+        debts.push({
+          expenseId: expense.id,
+          fromId: payer.id,
+          toId: share.memberId,
+          from: payer.name,
+          to: share.name,
+          amount: share.amount,
+          asset: settlementAssetOf(expense),
+          fromWallet: payer.walletAddress,
+          toWallet: share.walletAddress,
+        });
+      } else {
+        debts.push({
+          expenseId: expense.id,
+          fromId: share.memberId,
+          toId: payer.id,
+          from: share.name,
+          to: payer.name,
+          amount: share.amount,
+          asset: settlementAssetOf(expense),
+          fromWallet: share.walletAddress,
+          toWallet: payer.walletAddress,
+        });
+      }
     }
   }
   return debts;
@@ -181,6 +196,7 @@ export function expensesInScope(trip: Trip, expenses: Expense[], disputedShares:
   const ids = new Set(trip.expenseIds);
   return expenses.filter(
     (e) =>
+      !e.voided &&
       ids.has(e.id) &&
       e.shares.some((s) => !s.paid && s.memberId !== e.paidByMemberId && !disputedShares.has(disputeKey(e.id, s.memberId))),
   );

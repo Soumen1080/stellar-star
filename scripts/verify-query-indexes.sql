@@ -55,4 +55,16 @@ SELECT nonce FROM public.auth_challenges
  ORDER BY created_at ASC
  LIMIT 1;
 
+-- Indexed expense search (#450): text matches must come from the GIN index on
+-- expense_search_documents, tenant-scoped through the member_wallets GIN index.
+EXPLAIN (COSTS OFF)
+SELECT expense_id FROM public.expense_search_documents
+ WHERE search_vector @@ public.expense_search_query(ARRAY['beach', 'goa'])
+   AND member_wallets @> ARRAY['GQUERYPLAN'];
+
+-- No usable term (minimum-query rules) folds to a NULL tsquery: no rows, no scan.
+EXPLAIN (COSTS OFF)
+SELECT expense_id FROM public.expense_search_documents
+ WHERE search_vector @@ public.expense_search_query(ARRAY['a', '%']);
+
 ROLLBACK;

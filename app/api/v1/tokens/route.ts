@@ -42,14 +42,9 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   let body: any;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json(
-      { error: { code: "BAD_REQUEST", message: "Invalid JSON body.", status: 400 } },
-      { status: 400 }
-    );
-  }
+  const parsedBody = await parseJsonBody(request, { route: "/api/v1/tokens", format: "v1" });
+  if (!parsedBody.ok) return parsedBody.response;
+  body = parsedBody.value;
 
   const wallet = getWalletFromRequest(request) || body.wallet_address;
   if (!wallet || typeof wallet !== "string") {
@@ -68,28 +63,56 @@ export async function POST(request: NextRequest) {
     : ["trips:read", "expenses:read"];
   const expiresInDays = body.expires_in_days !== undefined ? Number(body.expires_in_days) : 90;
 
-  try {
-    const { token, record } = generateScopedToken({
-      walletAddress: wallet,
-      name,
-      scopes,
-      expiresInDays,
-    });
+  // A retry mints nothing new; it replays the token issued the first time.
+  // The response carries the raw secret, so it stays in the process-local
+  // ledger (like the token store itself) and is never written to the database.
+  return runIdempotentMutation({
+    request,
+    key: idempotency.key,
+    replayFields: [
+      "data.token",
+      "data.tokenId",
+      "data.tokenMasked",
+      "data.walletAddress",
+      "data.name",
+      "data.scopes",
+      "data.createdAt",
+      "data.expiresAt",
+      "data.revokedAt",
+      "data.lastUsedAt",
+    ],
+    principal: wallet.toUpperCase(),
+    payload: { name, scopes, expiresInDays },
+    persist: false,
+    format: "v1",
+    execute: async () => {
+      try {
+        const { token, record } = generateScopedToken({
+          walletAddress: wallet,
+          name,
+          scopes,
+          expiresInDays,
+        });
 
-    return NextResponse.json(
-      {
-        data: {
-          token, // Returned in full ONLY on creation
-          ...record,
-        },
-      },
-      { status: 201 }
-    );
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : "Failed to create scoped token.";
-    return NextResponse.json(
-      { error: { code: "TOKEN_CREATION_FAILED", message, status: 400 } },
-      { status: 400 }
-    );
-  }
+        return NextResponse.json(
+          {
+            data: {
+              token, // Returned in full ONLY on creation
+              ...record,
+            },
+          },
+          { status: 201, headers: { "Cache-Control": "no-store" } }
+        );
+      } catch (err: unknown) {
+        return toPublicErrorResponse(err, {
+          format: "v1",
+          fallbackMessage: "Failed to create scoped token.",
+          route: "/api/v1/tokens",
+          method: "POST",
+          status: 400,
+          code: "TOKEN_CREATION_FAILED",
+        });
+      }
+    },
+  });
 }

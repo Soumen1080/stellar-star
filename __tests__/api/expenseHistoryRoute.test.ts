@@ -17,9 +17,16 @@ const TRIP_ID = "11111111-1111-4111-8111-111111111111";
 const mockedSearch = searchExpenseHistory as jest.MockedFunction<typeof searchExpenseHistory>;
 
 function authed(url: string, init: { method?: string; body?: string } = {}) {
+  const isWrite = (init.method ?? "GET") !== "GET";
   return new NextRequest(url, {
     ...init,
-    headers: { Authorization: `Bearer ${signWalletSession(WALLET)}` },
+    headers: {
+      Authorization: `Bearer ${signWalletSession(WALLET)}`,
+      // JSON bodies must declare their media type (#418).
+      ...(init.body !== undefined ? { "Content-Type": "application/json" } : {}),
+      // Writes require an Idempotency-Key (#412).
+      ...(isWrite ? { "Idempotency-Key": crypto.randomUUID() } : {}),
+    },
   });
 }
 

@@ -14,6 +14,7 @@ import type { ExpenseReceipt, ReceiptLink } from "@/types/receipt";
 import type { ExpenseAccess } from "./access";
 import type { InspectedReceipt } from "./inspect";
 import { ReceiptValidationError } from "./inspect";
+import { consumeTenantQuota, releaseTenantStorageQuota } from "@/lib/quotas/server";
 import {
   MAX_RECEIPTS_PER_EXPENSE,
   RECEIPT_BUCKET,
@@ -21,6 +22,14 @@ import {
   receiptRetentionDays,
   type ReceiptContentType,
 } from "./policy";
+import { cleanupAbandonedUploads, recordPromotedIntent, recordQuarantinedIntent } from "./intent";
+import {
+  encryptObjectPayload,
+  getActiveKey,
+  saveObjectEncryptionMetadata,
+  logObjectAccess,
+  cryptoEraseObject,
+} from "@/lib/security/objectEncryption";
 
 type Client = SupabaseClient<Database>;
 
@@ -29,10 +38,12 @@ const RECEIPT_COLUMNS =
 
 export class ReceiptStoreError extends Error {
   readonly status: number;
-  constructor(message: string, status = 500) {
+  readonly retryAfterMs: number;
+  constructor(message: string, status = 500, retryAfterMs = 0) {
     super(message);
     this.name = "ReceiptStoreError";
     this.status = status;
+    this.retryAfterMs = retryAfterMs;
   }
 }
 
@@ -125,7 +136,19 @@ export async function storeReceipt(
     inspected,
     bytes,
     now = new Date(),
-  }: { expenseId: string; wallet: string; inspected: InspectedReceipt; bytes: Uint8Array; now?: Date },
+    intentId,
+    encrypted = false,
+    requestId,
+  }: {
+    expenseId: string;
+    wallet: string;
+    inspected: InspectedReceipt;
+    bytes: Uint8Array;
+    now?: Date;
+    intentId?: string;
+    encrypted?: boolean;
+    requestId?: string;
+  },
 ): Promise<ExpenseReceipt> {
   const { count, error: countError } = await serviceClient
     .from("expense_receipts")
@@ -145,13 +168,48 @@ export async function storeReceipt(
   const storagePath = receiptStoragePath(expenseId, id, inspected.ext, quarantined);
   const retainUntil = new Date(now.getTime() + receiptRetentionDays() * 86_400_000);
 
+  const quota = await consumeTenantQuota(wallet, { objects: 1, bytes: bytes.byteLength }, id);
+  if (!quota.available) throw new ReceiptStoreError("Storage quota service is unavailable.", 503);
+  if (!quota.allowed) {
+    throw new ReceiptStoreError(
+      quota.metric === "objects" ? "Your object storage limit has been reached." : "Your storage byte limit has been reached.",
+      429,
+      quota.resetMs,
+    );
+  }
+
+  let uploadPayload: Uint8Array = bytes;
+  let encryptionResult: ReturnType<typeof encryptObjectPayload> | null = null;
+  let activeKey: Awaited<ReturnType<typeof getActiveKey>> | null = null;
+
+  if (encrypted) {
+    try {
+      activeKey = await getActiveKey(serviceClient as never);
+      if (activeKey?.key_material) {
+        encryptionResult = encryptObjectPayload({
+          bytes,
+          keyMaterial: activeKey.key_material,
+          keyId: activeKey.key_id,
+          storagePath,
+          algorithm: activeKey.algorithm,
+        });
+        uploadPayload = encryptionResult.ciphertext;
+      }
+    } catch {
+      // If encryption setup fails, fall back to unencrypted upload
+    }
+  }
+
   const bucket = serviceClient.storage.from(RECEIPT_BUCKET);
-  const { error: uploadError } = await bucket.upload(storagePath, bytes, {
+  const { error: uploadError } = await bucket.upload(storagePath, uploadPayload, {
     contentType: inspected.contentType,
     cacheControl: "private, max-age=0, no-store",
     upsert: false,
   });
-  if (uploadError) throw new ReceiptStoreError("Could not store the file. Please try again.", 502);
+  if (uploadError) {
+    await releaseTenantStorageQuota(id);
+    throw new ReceiptStoreError("Could not store the file. Please try again.", 502);
+  }
 
   const { data, error } = await serviceClient
     .from("expense_receipts")
@@ -176,12 +234,75 @@ export async function storeReceipt(
   if (error || !data) {
     // Never leave an object without the metadata row that governs its access
     // and retention.
-    await bucket.remove([storagePath]);
+    const { error: cleanupError } = await bucket.remove([storagePath]);
+    if (!cleanupError) await releaseTenantStorageQuota(id);
     if (error?.code === "23505") {
       throw new ReceiptValidationError("This exact file is already attached to the expense.", 409);
     }
     throw new ReceiptStoreError("Could not save the receipt details. Please try again.");
   }
+
+  // Update upload intent if intentId was passed
+  if (intentId) {
+    if (quarantined) {
+      await recordQuarantinedIntent(serviceClient, {
+        intentId,
+        storagePath,
+        fileName: inspected.fileName,
+        contentType: inspected.contentType,
+        sizeBytes: inspected.sizeBytes,
+        checksum: inspected.checksum,
+        caption: inspected.caption,
+        scanResult: { ...inspected.scan },
+        now,
+      }).catch(() => {});
+    } else {
+      await recordPromotedIntent(serviceClient, {
+        intentId,
+        receiptId: id,
+        promotedPath: storagePath,
+        fileName: inspected.fileName,
+        contentType: inspected.contentType,
+        sizeBytes: inspected.sizeBytes,
+        checksum: inspected.checksum,
+        caption: inspected.caption,
+        scanResult: { ...inspected.scan },
+        now,
+      }).catch(() => {});
+    }
+  }
+
+  // Issue #453: Persist object encryption metadata and log access
+  if (encrypted && encryptionResult && activeKey) {
+    await saveObjectEncryptionMetadata(serviceClient as never, {
+      bucket: RECEIPT_BUCKET,
+      storagePath,
+      ownerWallet: wallet,
+      expenseId,
+      keyId: activeKey.key_id,
+      algorithm: activeKey.algorithm,
+      iv: encryptionResult.iv,
+      authTag: encryptionResult.authTag,
+      ciphertextSha256: encryptionResult.ciphertextSha256,
+      plaintextSha256: encryptionResult.plaintextSha256,
+      byteSize: bytes.byteLength,
+      status: quarantined ? "quarantined" : "active",
+      now,
+    }).catch(() => {});
+
+    if (requestId) {
+      await logObjectAccess(serviceClient as never, {
+        bucket: RECEIPT_BUCKET,
+        storagePath,
+        actorWallet: wallet,
+        action: "encrypt",
+        status: "success",
+        keyId: activeKey.key_id,
+        requestId,
+      }).catch(() => {});
+    }
+  }
+
   return rowToReceipt(data as ExpenseReceiptRow);
 }
 
@@ -226,8 +347,25 @@ export async function removeReceipt(
     now?: Date;
   },
 ): Promise<void> {
+  const { data: quotaRow, error: quotaRowError } = await serviceClient
+    .from("expense_receipts")
+    .select("id, size_bytes, uploaded_by_wallet, status")
+    .eq("id", receiptId)
+    .maybeSingle();
+  if (quotaRowError) throw new ReceiptStoreError("Could not check storage quota details.");
+  if (!quotaRow) throw new ReceiptStoreError("That receipt is no longer available.", 404);
+  if (quotaRow.status === "removed") return;
   const { error: removeError } = await serviceClient.storage.from(RECEIPT_BUCKET).remove([storagePath]);
-  if (removeError) throw new ReceiptStoreError("Could not delete the stored file.", 502);
+    if (removeError) throw new ReceiptStoreError("Could not delete the stored file.", 502);
+
+  // Issue #453: Cryptographically erase object metadata
+  await cryptoEraseObject(serviceClient as never, {
+    bucket: RECEIPT_BUCKET,
+    storagePath,
+    actorWallet: wallet ?? "system:retention",
+    requestId: `remove-${receiptId}`,
+    now,
+  }).catch(() => {});
 
   const { error } = await serviceClient
     .from("expense_receipts")
@@ -240,6 +378,7 @@ export async function removeReceipt(
       removal_reason: reason,
     })
     .eq("id", receiptId);
+  await releaseTenantStorageQuota(receiptId);
   if (error) throw new ReceiptStoreError("The file was deleted but its record could not be updated.");
 }
 
@@ -250,7 +389,7 @@ export async function removeReceipt(
 export async function purgeExpiredReceipts(
   serviceClient: Client,
   { now = new Date(), batchSize = 100 }: { now?: Date; batchSize?: number } = {},
-): Promise<{ purged: number; failed: number }> {
+): Promise<{ purged: number; failed: number; abandonedCleaned: number }> {
   const { data, error } = await serviceClient
     .from("expense_receipts")
     .select("id, storage_path, expense_id, retain_until")
@@ -275,5 +414,12 @@ export async function purgeExpiredReceipts(
       failed += 1;
     }
   }
-  return { purged, failed };
+
+  // Clean up abandoned upload intents and orphaned quarantine objects (#451)
+  const { failed: abandonedFailed } = await cleanupAbandonedUploads(serviceClient, {
+    now,
+    batchSize,
+  }).catch(() => ({ cleaned: 0, failed: 0 }));
+
+  return { purged, failed: failed + abandonedFailed };
 }
