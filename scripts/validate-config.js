@@ -103,6 +103,19 @@ function validateConfig(env = process.env, options = {}) {
     rawNetwork === "PUBLIC" ||
     env.PRODUCTION_CHECK === "1";
 
+  if (isProduction) {
+    const activeId = env.JWT_ACTIVE_KEY_ID?.trim();
+    let keys = null;
+    try { keys = JSON.parse(env.JWT_SIGNING_KEYS || "null"); } catch {}
+    if (!activeId || !keys || typeof keys !== "object" || Array.isArray(keys) || typeof keys[activeId] !== "string" || keys[activeId].length < 32) {
+      errors.push("Production requires JWT_ACTIVE_KEY_ID and JWT_SIGNING_KEYS with a configured active secret of at least 32 characters.");
+    }
+    const previousUntil = Number(env.JWT_PREVIOUS_KEYS_UNTIL);
+    if (Number.isFinite(previousUntil) && previousUntil > 0 && previousUntil <= Date.now()) {
+      warnings.push("JWT_PREVIOUS_KEYS_UNTIL has expired; remove retired keys from JWT_SIGNING_KEYS.");
+    }
+  }
+
   // 1. Network Validation
   let network = rawNetwork.toUpperCase();
   if (!network) {
