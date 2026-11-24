@@ -445,6 +445,58 @@ export type ExpenseReceiptRow = {
   removal_reason: "user" | "retention" | "expense_deleted" | null;
 };
 
+/** Issue #452: OCR job queue row. */
+export type OcrJobRow = {
+  id: string;
+  receipt_id: string;
+  expense_id: string | null;
+  trip_id: string | null;
+  wallet: string;
+  status: "pending" | "leased" | "completed" | "failed" | "cancelled";
+  priority: number;
+  leased_at: string | null;
+  leased_by: string | null;
+  lease_expires_at: string | null;
+  timeout_ms: number;
+  attempts: number;
+  max_attempts: number;
+  last_error: string | null;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+};
+
+/** Issue #452: OCR result with confidence and provenance. */
+export type OcrResultRow = {
+  id: string;
+  job_id: string;
+  receipt_id: string;
+  raw_text: string | null;
+  confidence: number | null;
+  parsed_fields: Json;
+  line_items: Json;
+  engine: string;
+  engine_version: string | null;
+  worker_id: string | null;
+  processing_ms: number | null;
+  reviewed: boolean;
+  reviewed_at: string | null;
+  reviewed_by: string | null;
+  created_at: string;
+};
+
+/** Issue #452: OCR quota configuration. */
+export type OcrQuotaConfigRow = {
+  id: string;
+  scope: "global" | "user" | "trip";
+  max_jobs: number;
+  window_seconds: number;
+  max_file_bytes: number;
+  max_concurrent: number;
+  created_at: string;
+  updated_at: string;
+};
+
 export type RecurringTemplateRow = {
   id: string;
   trip_id: string | null;
@@ -1053,6 +1105,33 @@ export type Database = {
         Update: Partial<
           Pick<ExpenseReceiptRow, "status" | "file_name" | "caption" | "removed_at" | "removed_by_wallet" | "removal_reason">
         >;
+        Relationships: [];
+      };
+      ocr_jobs: {
+        Row: OcrJobRow;
+        Insert: Omit<OcrJobRow, "id" | "created_at" | "status" | "leased_at" | "leased_by" | "lease_expires_at" | "attempts" | "started_at" | "completed_at" | "last_error"> & {
+          id?: string;
+          created_at?: string;
+          status?: OcrJobRow["status"];
+          attempts?: number;
+        };
+        Update: Partial<Pick<OcrJobRow, "status" | "leased_at" | "leased_by" | "lease_expires_at" | "attempts" | "started_at" | "completed_at" | "last_error">>;
+        Relationships: [];
+      };
+      ocr_results: {
+        Row: OcrResultRow;
+        Insert: Omit<OcrResultRow, "id" | "created_at" | "reviewed" | "reviewed_at" | "reviewed_by"> & {
+          id?: string;
+          created_at?: string;
+          reviewed?: boolean;
+        };
+        Update: Partial<Pick<OcrResultRow, "reviewed" | "reviewed_at" | "reviewed_by">>;
+        Relationships: [];
+      };
+      ocr_quota_config: {
+        Row: OcrQuotaConfigRow;
+        Insert: Omit<OcrQuotaConfigRow, "id" | "created_at" | "updated_at"> & { id?: string };
+        Update: Partial<Omit<OcrQuotaConfigRow, "id" | "created_at">>;
         Relationships: [];
       };
       recurring_expense_templates: {
