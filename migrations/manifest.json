@@ -2,7 +2,7 @@
   "$schema": "./manifest.schema.json",
   "formatVersion": "1.0.0",
   "description": "Canonical append-only migration manifest guaranteeing deterministic execution ordering and immutable identities",
-  "totalMigrations": 42,
+  "totalMigrations": 43,
   "migrations": [
     {
       "sequence": 1,
@@ -423,6 +423,16 @@
       "checksum": "9feb416fd866e845",
       "sha256": "9feb416fd866e845414e822ddf38e84e8f371c040c8e949e9f0e1b5973325b26",
       "description": "RLS-scoped tsvector search documents, GIN indexes, minimum-query rules, ranked keyset search (search_expense_ids), index-backed search_expenses"
+    },
+    {
+      "sequence": 43,
+      "id": "0029_ocr_queue_and_quotas",
+      "version": "0029",
+      "filename": "0029_ocr_queue_and_quotas.sql",
+      "name": "0029_ocr_queue_and_quotas",
+      "checksum": "ocr_queue_quotas_v1",
+      "sha256": "ocr_queue_quotas_v1",
+      "description": "OCR background worker queue with per-user/trip quotas, results persistence, and review gate (#452)"
     }
   ]
 }

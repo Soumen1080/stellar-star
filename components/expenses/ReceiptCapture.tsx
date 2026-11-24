@@ -18,10 +18,13 @@ export function ReceiptCapture({ onUse, onCancel }: {
     {capture.file && <>
       <ReceiptPhotoPreview file={capture.file} />
       {!capture.draft && <div className="flex flex-wrap gap-3">
-        <button type="button" disabled={capture.busy} onClick={() => void capture.extract()}>Extract fields on this device</button>
+        <button type="button" disabled={capture.busy} onClick={() => void capture.extractServer()}>Scan on server</button>
+        <button type="button" disabled={capture.busy} onClick={() => void capture.extractDevice()}>Extract fields on this device</button>
         <button type="button" disabled={capture.busy} onClick={capture.manual}>Enter receipt fields manually</button>
       </div>}
-      {capture.busy && <p role="status">Reading receipt: {capture.progress}%</p>}
+      {capture.busy && <p role="status">
+        {capture.ocrMode === "server" ? "Server is reading receipt" : "Reading receipt"}: {capture.progress}%
+      </p>}
       {capture.draft && <ReceiptDraftReview draft={capture.draft} onChange={capture.setDraft}
         onUse={() => { if (capture.file && capture.draft && canUseReceiptDraft(capture.draft)) onUse(capture.draft, capture.file); }} />}
     </>}
