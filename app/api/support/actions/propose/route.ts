@@ -11,6 +11,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { checkStaffAuthorization } from "@/lib/support/service";
 import { proposeCorrectiveAction, DualControlError } from "@/lib/support/dualControl";
 import { createServiceRoleClient, createServerAnonClient, isServerSupabaseConfigured } from "@/lib/supabase/server";
+import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
+import { SUPPORT_PROPOSAL_REPLAY_FIELDS, replayFieldsUnder } from "@/lib/idempotency/replay";
+import { parseJsonBody } from "@/lib/api/bodyLimits";
+import { toPublicErrorResponse } from "@/lib/api/errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -33,12 +37,14 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  // Issue #412: a valid key is required before any work.
+  const idempotency = requireIdempotencyKey(request);
+  if (!idempotency.ok) return idempotency.response;
+
   let body: any;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "Invalid JSON request body." }, { status: 400 });
-  }
+  const parsedBody = await parseJsonBody(request, { route: "/api/support/actions/propose" });
+  if (!parsedBody.ok) return parsedBody.response;
+  body = (parsedBody.value) as typeof body;
 
   const { actionType, targetId, targetType, ticketRef, reason, details } = body;
 
@@ -53,31 +59,43 @@ export async function POST(request: NextRequest) {
   }
 
   const client = getClient();
-  try {
-    const proposal = await proposeCorrectiveAction(
-      {
-        actionType,
-        targetId,
-        targetType,
-        ticketRef,
-        reason,
-        details,
-        proposedBy: auth.staffIdentifier,
-      },
-      client as any
-    );
+  return runIdempotentMutation({
+    request,
+    client: client ?? null,
+    key: idempotency.key,
+    replayFields: ["ok", ...replayFieldsUnder("data", SUPPORT_PROPOSAL_REPLAY_FIELDS)],
+    principal: `staff:${auth.staffIdentifier}`,
+    payload: body,
+    execute: async () => {
+      try {
+        const proposal = await proposeCorrectiveAction(
+          {
+            actionType,
+            targetId,
+            targetType,
+            ticketRef,
+            reason,
+            details,
+            proposedBy: auth.staffIdentifier,
+          },
+          client as any
+        );
 
-    return NextResponse.json(
-      { ok: true, data: proposal },
-      { status: 201, headers: { "Cache-Control": "no-store" } }
-    );
-  } catch (err: any) {
-    if (err instanceof DualControlError) {
-      return NextResponse.json({ error: err.message, code: err.code }, { status: err.status });
-    }
-    return NextResponse.json(
-      { error: err?.message || "Failed to submit proposal." },
-      { status: 500 }
-    );
-  }
+        return NextResponse.json(
+          { ok: true, data: proposal },
+          { status: 201, headers: { "Cache-Control": "no-store" } }
+        );
+      } catch (err: any) {
+        if (err instanceof DualControlError) {
+          return NextResponse.json({ error: err.message, code: err.code }, { status: err.status });
+        }
+        return toPublicErrorResponse(err, {
+          requestId: request.headers.get("x-request-id"),
+          fallbackMessage: "Failed to submit proposal.",
+          route: "/api/support/actions/propose",
+          method: "POST",
+        });
+      }
+    },
+  });
 }

@@ -84,6 +84,7 @@ describe("Invitation API Routes (/api/invitations/verify & /api/invitations/clai
         method: "POST",
         headers: {
           Authorization: `Bearer ${sessionToken}`,
+          "Idempotency-Key": crypto.randomUUID(),
           "Content-Type": "application/json",
         },
         body: JSON.stringify({ selectedMemberId: "m-bob" }),
@@ -104,6 +105,7 @@ describe("Invitation API Routes (/api/invitations/verify & /api/invitations/clai
         method: "POST",
         headers: {
           Authorization: `Bearer ${sessionToken}`,
+          "Idempotency-Key": crypto.randomUUID(),
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
@@ -128,6 +130,7 @@ describe("Invitation API Routes (/api/invitations/verify & /api/invitations/clai
         method: "POST",
         headers: {
           Authorization: `Bearer ${sessionToken}`,
+          "Idempotency-Key": crypto.randomUUID(),
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
@@ -151,6 +154,7 @@ describe("Invitation API Routes (/api/invitations/verify & /api/invitations/clai
         method: "POST",
         headers: {
           Authorization: `Bearer ${sessionToken}`,
+          "Idempotency-Key": crypto.randomUUID(),
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
@@ -178,6 +182,7 @@ describe("Invitation API Routes (/api/invitations/verify & /api/invitations/clai
         method: "POST",
         headers: {
           Authorization: `Bearer ${sessionToken}`,
+          "Idempotency-Key": crypto.randomUUID(),
           "Content-Type": "application/json",
         },
         body: JSON.stringify({

@@ -127,7 +127,11 @@ describe("SEP-0007 encodings", () => {
     expect(tx.source).toBe(DEBTOR);
     expect(tx.sequence).toBe("4243");
     expect(tx.timeBounds).toEqual({ minTime: "0", maxTime: String(request.expiresAt) });
-    expect(tx.memo.value?.toString()).toBe(request.memo);
+    const memoVal = tx.memo.value;
+    const memoStr = Buffer.isBuffer(memoVal) || memoVal instanceof Uint8Array
+      ? Buffer.from(memoVal).toString("utf-8")
+      : String(memoVal);
+    expect(memoStr).toBe(request.memo);
     expect(tx.operations).toHaveLength(1);
     expect(tx.operations[0]).toMatchObject({ type: "payment", destination: CREDITOR, amount: "12.3456789" });
 

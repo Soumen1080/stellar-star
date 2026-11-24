@@ -308,6 +308,15 @@ export type SettlementAttestationRow = {
   created_at: string;
 };
 
+export type ReconciliationJobStatusValue =
+  | "not_submitted"
+  | "submitted_not_confirmed"
+  | "confirmed_not_recorded"
+  | "recorded"
+  | "escalated"
+  | "failed"
+  | "dead_letter";
+
 export type ReconciliationJobRow = {
   id: string;
   intent_id: string | null;
@@ -323,7 +332,7 @@ export type ReconciliationJobRow = {
   request_id: string | null;
   tx_hash: string | null;
   ledger: number | null;
-  status: "not_submitted" | "submitted_not_confirmed" | "confirmed_not_recorded" | "recorded" | "escalated" | "failed";
+  status: ReconciliationJobStatusValue;
   attempts: number;
   max_attempts: number;
   backoff_ms: number;
@@ -335,6 +344,19 @@ export type ReconciliationJobRow = {
   recorded_at: string | null;
   created_at: string;
   updated_at: string;
+  /** Leased queue (migration 0026, #416). */
+  dedupe_key: string | null;
+  lease_owner: string | null;
+  lease_token: string | null;
+  leased_at: string | null;
+  lease_expires_at: string | null;
+  heartbeat_at: string | null;
+  claim_count: number;
+  lease_recoveries: number;
+  max_lease_recoveries: number;
+  dead_lettered_at: string | null;
+  dead_lettered_from: string | null;
+  dead_letter_reason: string | null;
 };
 
 export type TransactionalOutboxRow = {
@@ -421,6 +443,79 @@ export type ExpenseReceiptRow = {
   removed_at: string | null;
   removed_by_wallet: string | null;
   removal_reason: "user" | "retention" | "expense_deleted" | null;
+};
+
+/** Issue #452: OCR job queue row. */
+export type OcrJobRow = {
+  id: string;
+  receipt_id: string;
+  expense_id: string | null;
+  trip_id: string | null;
+  wallet: string;
+  status: "pending" | "leased" | "completed" | "failed" | "cancelled";
+  priority: number;
+  leased_at: string | null;
+  leased_by: string | null;
+  lease_expires_at: string | null;
+  timeout_ms: number;
+  attempts: number;
+  max_attempts: number;
+  last_error: string | null;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+};
+
+/** Issue #452: OCR result with confidence and provenance. */
+export type OcrResultRow = {
+  id: string;
+  job_id: string;
+  receipt_id: string;
+  raw_text: string | null;
+  confidence: number | null;
+  parsed_fields: Json;
+  line_items: Json;
+  engine: string;
+  engine_version: string | null;
+  worker_id: string | null;
+  processing_ms: number | null;
+  reviewed: boolean;
+  reviewed_at: string | null;
+  reviewed_by: string | null;
+  created_at: string;
+};
+
+/** Issue #452: OCR quota configuration. */
+export type OcrQuotaConfigRow = {
+  id: string;
+  scope: "global" | "user" | "trip";
+  max_jobs: number;
+  window_seconds: number;
+  max_file_bytes: number;
+  max_concurrent: number;
+  created_at: string;
+  updated_at: string;
+};
+
+/** Issue #451: Receipt upload intent row. */
+export type ReceiptUploadIntentRow = {
+  id: string;
+  expense_id: string;
+  wallet: string;
+  idempotency_key: string;
+  status: "pending" | "quarantined" | "promoted" | "rejected" | "abandoned";
+  file_name: string | null;
+  content_type: string | null;
+  size_bytes: number | null;
+  checksum_sha256: string | null;
+  caption: string | null;
+  storage_path: string | null;
+  promoted_path: string | null;
+  scan_result: Json;
+  receipt_id: string | null;
+  expires_at: string;
+  created_at: string;
+  updated_at: string;
 };
 
 export type RecurringTemplateRow = {
@@ -552,9 +647,44 @@ export type IdempotencyRecordRow = {
   request_fingerprint: string;
   status: "pending" | "completed" | "failed";
   response_status: number | null;
+  /** Allowlisted replay summary (#414); NULL once redacted or omitted for size. */
   response_body: Json;
   created_at: string;
   locked_until: string;
+  response_digest: string | null;
+  response_bytes: number | null;
+  replay_omitted: boolean;
+  completed_at: string | null;
+  replay_expires_at: string | null;
+  redacted_at: string | null;
+};
+
+export type ReconciliationWorkerRunRow = {
+  id: string;
+  request_id: string;
+  actor_kind: "cron" | "staff";
+  actor_id: string;
+  trigger: "schedule" | "manual";
+  batch_size: number;
+  batches: number;
+  wallet_filter: string | null;
+  started_at: string;
+  finished_at: string;
+  duration_ms: number;
+  outcome: "succeeded" | "failed";
+  processed: number;
+  recorded: number;
+  escalated: number;
+  pending: number;
+  failed: number;
+  error_count: number;
+  errored_job_ids: string[];
+  failure_code: string | null;
+  created_at: string;
+  /** Migration 0026 (#416): lease owner used for the run's claims. */
+  worker_id: string | null;
+  dead_lettered: number;
+  lease_lost: number;
 };
 
 export type Database = {
@@ -818,6 +948,29 @@ export type Database = {
         Update: Partial<DeletedAccountRow>;
         Relationships: [];
       };
+      expense_search_documents: {
+        Row: {
+          expense_id: string;
+          member_wallets: string[];
+          created_at: string;
+          search_vector: string;
+          updated_at: string;
+        };
+        Insert: never;
+        Update: never;
+        Relationships: [];
+      };
+      reconciliation_worker_runs: {
+        Row: ReconciliationWorkerRunRow;
+        Insert: Omit<ReconciliationWorkerRunRow, "created_at" | "worker_id" | "dead_lettered" | "lease_lost"> & {
+          created_at?: string;
+          worker_id?: string | null;
+          dead_lettered?: number;
+          lease_lost?: number;
+        };
+        Update: never;
+        Relationships: [];
+      };
       reconciliation_queue: {
         Row: ReconciliationJobRow;
         Insert: {
@@ -835,7 +988,7 @@ export type Database = {
           request_id?: string | null;
           tx_hash?: string | null;
           ledger?: number | null;
-          status?: "not_submitted" | "submitted_not_confirmed" | "confirmed_not_recorded" | "recorded" | "escalated" | "failed";
+          status?: ReconciliationJobStatusValue;
           attempts?: number;
           max_attempts?: number;
           backoff_ms?: number;
@@ -847,6 +1000,10 @@ export type Database = {
           recorded_at?: string | null;
           created_at?: string;
           updated_at?: string;
+          dedupe_key?: string | null;
+          claim_count?: number;
+          lease_recoveries?: number;
+          max_lease_recoveries?: number;
         };
         Update: Partial<Omit<ReconciliationJobRow, "id" | "created_at">>;
         Relationships: [];
@@ -971,6 +1128,44 @@ export type Database = {
         >;
         Relationships: [];
       };
+      ocr_jobs: {
+        Row: OcrJobRow;
+        Insert: Omit<OcrJobRow, "id" | "created_at" | "status" | "leased_at" | "leased_by" | "lease_expires_at" | "attempts" | "started_at" | "completed_at" | "last_error"> & {
+          id?: string;
+          created_at?: string;
+          status?: OcrJobRow["status"];
+          attempts?: number;
+        };
+        Update: Partial<Pick<OcrJobRow, "status" | "leased_at" | "leased_by" | "lease_expires_at" | "attempts" | "started_at" | "completed_at" | "last_error">>;
+        Relationships: [];
+      };
+      ocr_results: {
+        Row: OcrResultRow;
+        Insert: Omit<OcrResultRow, "id" | "created_at" | "reviewed" | "reviewed_at" | "reviewed_by"> & {
+          id?: string;
+          created_at?: string;
+          reviewed?: boolean;
+        };
+        Update: Partial<Pick<OcrResultRow, "reviewed" | "reviewed_at" | "reviewed_by">>;
+        Relationships: [];
+      };
+      ocr_quota_config: {
+        Row: OcrQuotaConfigRow;
+        Insert: Omit<OcrQuotaConfigRow, "id" | "created_at" | "updated_at"> & { id?: string };
+        Update: Partial<Omit<OcrQuotaConfigRow, "id" | "created_at">>;
+        Relationships: [];
+      };
+      receipt_upload_intents: {
+        Row: ReceiptUploadIntentRow;
+        Insert: Omit<ReceiptUploadIntentRow, "id" | "created_at" | "updated_at" | "status" | "receipt_id" | "promoted_path"> & {
+          id?: string;
+          status?: ReceiptUploadIntentRow["status"];
+          receipt_id?: string | null;
+          promoted_path?: string | null;
+        };
+        Update: Partial<Pick<ReceiptUploadIntentRow, "status" | "file_name" | "content_type" | "size_bytes" | "checksum_sha256" | "caption" | "storage_path" | "promoted_path" | "scan_result" | "receipt_id" | "updated_at">>;
+        Relationships: [];
+      };
       recurring_expense_templates: {
         Row: RecurringTemplateRow;
         Insert: Omit<
@@ -1040,6 +1235,12 @@ export type Database = {
           response_body?: Json;
           created_at?: string;
           locked_until?: string;
+          response_digest?: string | null;
+          response_bytes?: number | null;
+          replay_omitted?: boolean;
+          completed_at?: string | null;
+          replay_expires_at?: string | null;
+          redacted_at?: string | null;
         };
         Update: Partial<IdempotencyRecordRow>;
         Relationships: [];
@@ -1092,6 +1293,13 @@ export type Database = {
         Args: { p_dispute_id: string; p_action: "upheld" | "dismissed" | "adjusted"; p_reason: string };
         Returns: undefined;
       };
+      search_expense_ids: {
+        Args: { p_terms: string[]; p_trip_id?: string | null; p_category?: string | null;
+          p_tags?: string[] | null; p_payer?: string | null; p_status?: string | null; p_asset?: string | null;
+          p_from?: string | null; p_to?: string | null; p_cursor_rank?: number | null;
+          p_cursor_created_at?: string | null; p_cursor_id?: string | null; p_limit?: number };
+        Returns: { id: string; created_at: string; search_rank: number }[];
+      };
       search_expenses: {
         Args: { p_trip_id: string | null; p_terms: string[] | null; p_category: string | null;
           p_tags: string[] | null; p_payer: string | null; p_status: string | null; p_asset: string | null;
@@ -1121,6 +1329,10 @@ export type Database = {
       trip_has_permission: {
         Args: { p_trip_id: string; p_permission: string };
         Returns: boolean;
+      };
+      trips_with_permission: {
+        Args: { p_trip_ids: string[]; p_permission: string };
+        Returns: string[];
       };
       expense_has_permission: {
         Args: { p_expense_id: string; p_permission: string };
@@ -1175,6 +1387,64 @@ export type Database = {
           count: number;
         };
       };
+      claim_idempotency_key: {
+        Args: {
+          p_wallet_address: string;
+          p_key: string;
+          p_endpoint: string;
+          p_request_fingerprint: string;
+          p_lease_seconds?: number;
+          p_now?: string;
+        };
+        Returns: {
+          outcome: string;
+          status?: string;
+          response_status?: number;
+          response_body?: Json;
+          response_digest?: string | null;
+          replay_omitted?: boolean;
+          locked_until?: string;
+          retry_after_seconds?: number;
+          recovered?: boolean;
+          error?: string;
+        };
+      };
+      complete_idempotency_key: {
+        Args: {
+          p_wallet_address: string;
+          p_key: string;
+          p_request_fingerprint: string;
+          p_response_status: number;
+          p_response_body: Json;
+          p_response_digest?: string | null;
+          p_response_bytes?: number | null;
+          p_replay_omitted?: boolean;
+          p_replay_seconds?: number;
+          p_now?: string;
+        };
+        Returns: void;
+      };
+      purge_idempotency_records: {
+        Args: {
+          p_now?: string;
+          p_batch_size?: number;
+          p_audit_retention_days?: number;
+          p_stale_pending_hours?: number;
+        };
+        Returns: {
+          redacted: number;
+          deleted: number;
+          stale_pending_deleted: number;
+          batch_size: number;
+        };
+      };
+      release_idempotency_key: {
+        Args: {
+          p_wallet_address: string;
+          p_key: string;
+        };
+        Returns: void;
+      };
       check_rate_limit: {
         Args: {
           p_key: string;
@@ -1188,6 +1458,22 @@ export type Database = {
           resetMs: number;
           count: number;
         };
+      };
+      consume_tenant_quotas: {
+        Args: {
+          p_wallet_address: string;
+          p_objects?: number;
+          p_bytes?: number;
+          p_jobs?: number;
+          p_events?: number;
+          p_requests?: number;
+          p_resource_id?: string | null;
+        };
+        Returns: Json;
+      };
+      release_tenant_storage_quota: {
+        Args: { p_resource_id: string };
+        Returns: boolean;
       };
       claim_trip_invite: {
         Args: {
@@ -1317,6 +1603,46 @@ export type Database = {
       prune_old_partitions: {
         Args: { p_parent_table: string; p_cutoff_date: string };
         Returns: number;
+      };
+      enqueue_reconciliation_job: {
+        Args: {
+          p_dedupe_key: string;
+          p_intent_id: string | null;
+          p_trip_id: string;
+          p_expense_id: string;
+          p_member_id: string;
+          p_payer_wallet: string;
+          p_member_wallet: string;
+          p_asset: string;
+          p_amount: string;
+          p_amount_stroops: string;
+          p_expected_memo?: string | null;
+          p_request_id?: string | null;
+          p_tx_hash?: string | null;
+          p_max_attempts?: number;
+          p_backoff_ms?: number;
+        };
+        Returns: ReconciliationJobRow[];
+      };
+      claim_reconciliation_jobs: {
+        Args: { p_worker_id: string; p_batch_size?: number; p_lease_seconds?: number };
+        Returns: ReconciliationJobRow[];
+      };
+      heartbeat_reconciliation_job: {
+        Args: { p_id: string; p_lease_token: string; p_lease_seconds?: number };
+        Returns: boolean;
+      };
+      fail_reconciliation_job: {
+        Args: { p_id: string; p_lease_token: string; p_error_code: string; p_backoff_ms?: number };
+        Returns: "retry" | "dead_letter" | "lease_lost";
+      };
+      release_reconciliation_job: {
+        Args: { p_id: string; p_lease_token: string };
+        Returns: boolean;
+      };
+      requeue_reconciliation_job: {
+        Args: { p_id: string };
+        Returns: boolean;
       };
       claim_outbox_batch: {
         Args: {

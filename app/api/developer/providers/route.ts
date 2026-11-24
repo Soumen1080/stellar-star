@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { providerRegistry } from "@/lib/routing";
+import { parseJsonBody } from "@/lib/api/bodyLimits";
+import { toPublicErrorResponse } from "@/lib/api/errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -52,7 +54,9 @@ export async function GET() {
  */
 export async function POST(req: Request) {
   try {
-    const body = await req.json().catch(() => ({}));
+    const parsedBody = await parseJsonBody<Record<string, any>>(req, { route: "/api/developer/providers", allowEmpty: true });
+    if (!parsedBody.ok) return parsedBody.response;
+    const body = parsedBody.value ?? {};
     const { action, providerId, disabled } = body;
 
     if (action === "toggle") {
@@ -109,7 +113,10 @@ export async function POST(req: Request) {
       { status: 400 },
     );
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : "Provider operation failed";
-    return NextResponse.json({ success: false, error: message }, { status: 500 });
+    return toPublicErrorResponse(err, {
+      fallbackMessage: "Provider operation failed",
+      route: "/api/developer/providers",
+      method: "POST",
+    });
   }
 }

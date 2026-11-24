@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { toPublicErrorResponse } from "@/lib/api/errors";
 import {
   getDatabaseObservabilityReport,
   simulateDatabaseQuery,
@@ -6,6 +7,7 @@ import {
   DEFAULT_ROUTE_BUDGETS,
   type QueryTraceStatus,
 } from "@/lib/supabase/queryBudget";
+import { parseJsonBody } from "@/lib/api/bodyLimits";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -43,7 +45,9 @@ export async function GET() {
  */
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json().catch(() => ({}));
+    const parsedBody = await parseJsonBody<Record<string, any>>(request, { route: "/api/analytics/database-performance", allowEmpty: true });
+    if (!parsedBody.ok) return parsedBody.response;
+    const body = parsedBody.value ?? {};
     const {
       simulate = false,
       route = "/api/trips",
@@ -97,7 +101,10 @@ export async function POST(request: NextRequest) {
       { status: 400 }
     );
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Failed to process database performance request.";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return toPublicErrorResponse(err, {
+      fallbackMessage: "Failed to process database performance request.",
+      route: "/api/analytics/database-performance",
+      method: "POST",
+    });
   }
 }

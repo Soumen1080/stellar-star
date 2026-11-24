@@ -9,9 +9,13 @@
  */
 
 import type { NextRequest } from "next/server";
+import { REQUEST_ID_HEADER } from "@/lib/observability/requestId";
 import { normalizeNote } from "@/lib/reminders/policy";
 import { authenticate, ID_PATTERN, json, readJson } from "@/lib/reminders/server";
 import { sendReminder } from "@/lib/reminders/service";
+import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
+import { REMINDER_REPLAY_FIELDS, replayFieldsUnder } from "@/lib/idempotency/replay";
+import { toPublicErrorResponse } from "@/lib/api/errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -26,13 +30,22 @@ export async function GET(request: NextRequest) {
     const visible = role === "recipient" ? reminders.filter((r) => r.state !== "muted") : reminders;
     return json({ data: visible }, 200, auth.requestId);
   } catch (err) {
-    return json({ error: err instanceof Error ? err.message : "Failed to load reminders." }, 500, auth.requestId);
+    return toPublicErrorResponse(err, {
+      requestId: auth.requestId,
+      fallbackMessage: "Failed to load reminders.",
+      route: "/api/reminders",
+      method: "GET",
+    });
   }
 }
 
 export async function POST(request: NextRequest) {
   const auth = authenticate(request);
   if (!auth.ok) return auth.response;
+
+  // Issue #412: a valid key is required before any work.
+  const idempotency = requireIdempotencyKey(request);
+  if (!idempotency.ok) return idempotency.response;
 
   const body = await readJson(request);
   if (!body) return json({ error: "Request body must be a JSON object." }, 400, auth.requestId);
@@ -44,22 +57,39 @@ export async function POST(request: NextRequest) {
   if (note === "invalid") return json({ error: "The note must be 280 characters or fewer." }, 400, auth.requestId);
 
   try {
-    const result = await sendReminder(auth.deps, {
-      senderWallet: auth.wallet,
-      tripId: tripId as string,
-      expenseId: expenseId as string,
-      memberId: memberId as string,
-      note,
-      trigger: "manual",
+    // A double-click or retry sends one reminder, not two.
+    return await runIdempotentMutation({
+      request,
+      client: auth.client,
+      key: idempotency.key,
+      replayFields: ["data.channels", ...replayFieldsUnder("data.reminder", REMINDER_REPLAY_FIELDS)],
+      principal: auth.wallet,
+      payload: { tripId, expenseId, memberId, note },
+      replayHeaders: { [REQUEST_ID_HEADER]: auth.requestId },
+      execute: async () => {
+        const result = await sendReminder(auth.deps, {
+          senderWallet: auth.wallet,
+          tripId: tripId as string,
+          expenseId: expenseId as string,
+          memberId: memberId as string,
+          note,
+          trigger: "manual",
+        });
+        if (!result.ok) {
+          const headers: Record<string, string> = result.retryAfterMs
+            ? { "Retry-After": String(Math.ceil(result.retryAfterMs / 1000)) }
+            : {};
+          return json({ error: result.message }, result.status, auth.requestId, headers);
+        }
+        return json({ data: { reminder: result.reminder, channels: result.channels } }, 201, auth.requestId);
+      },
     });
-    if (!result.ok) {
-      const headers: Record<string, string> = result.retryAfterMs
-        ? { "Retry-After": String(Math.ceil(result.retryAfterMs / 1000)) }
-        : {};
-      return json({ error: result.message }, result.status, auth.requestId, headers);
-    }
-    return json({ data: { reminder: result.reminder, channels: result.channels } }, 201, auth.requestId);
   } catch (err) {
-    return json({ error: err instanceof Error ? err.message : "Failed to send the reminder." }, 500, auth.requestId);
+    return toPublicErrorResponse(err, {
+      requestId: auth.requestId,
+      fallbackMessage: "Failed to send the reminder.",
+      route: "/api/reminders",
+      method: "POST",
+    });
   }
 }

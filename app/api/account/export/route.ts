@@ -1,38 +1,25 @@
 import { NextRequest, NextResponse } from "next/server";
-import { verifyWalletSession } from "@/lib/supabase/serverAuth";
-import { createServerClientForToken, isServerSupabaseConfigured } from "@/lib/supabase/server";
+import { isServerSupabaseConfigured } from "@/lib/supabase/server";
+import { authenticateWalletRequest } from "@/lib/api/routeGuard";
+import { toPublicErrorResponse } from "@/lib/api/errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
-  const authHeader = request.headers.get("authorization") ?? "";
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
-
-  if (!token) {
-    return NextResponse.json(
-      { error: "Unauthorized: Sign in with your wallet to export your data." },
-      { status: 401 }
-    );
-  }
-
-  const session = verifyWalletSession(token);
-  if (!session || !session.wallet_address) {
-    return NextResponse.json(
-      { error: "Invalid or expired session token." },
-      { status: 401 }
-    );
-  }
+  const auth = authenticateWalletRequest(request, { message: "Unauthorized: Sign in with your wallet to export your data." });
+  if (!auth.ok) return auth.response;
+  const session = auth.ctx.claims;
 
   if (!isServerSupabaseConfigured()) {
-    return NextResponse.json(
+    return respond(
       { error: "Database service is not configured on the server." },
       { status: 503 }
     );
   }
 
   try {
-    const client = createServerClientForToken(token);
+    const client = auth.ctx.db();
     const wallet = session.wallet_address;
 
     // Fetch user profile
@@ -75,14 +62,15 @@ export async function GET(request: NextRequest) {
         "This export contains your off-chain application data. Public blockchain transactions, contract calls, and signatures are recorded on the public Stellar ledger.",
     };
 
-    return NextResponse.json(exportPayload, {
+    return respond(exportPayload, {
       headers: { "Cache-Control": "no-store" },
     });
-  } catch (err: any) {
-    console.error("[account/export] Export failed:", err);
-    return NextResponse.json(
-      { error: err.message || "Failed to generate account export." },
-      { status: 500 }
-    );
+  } catch (err) {
+    return toPublicErrorResponse(err, {
+      requestId: auth.ctx.requestId,
+      fallbackMessage: "Failed to generate account export.",
+      route: "/api/account/export",
+      method: "GET",
+    });
   }
 }

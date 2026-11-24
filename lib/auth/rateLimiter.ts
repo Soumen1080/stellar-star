@@ -1,14 +1,21 @@
 /**
  * lib/auth/rateLimiter.ts
  *
- * Distributed Sliding-Window Rate Limiter for Authentication Endpoints.
+ * Distributed Sliding-Window Rate Limiter for Authentication & Protected Endpoints.
  *
  * Enforces per-IP and per-wallet rate limits across multi-instance deployments.
- * Backed by Supabase database RPC when configured, with a memory sliding-window
- * fallback for local development and test environments.
+ * Backed by Supabase database RPC when configured.
+ *
+ * In accordance with Issue #409:
+ * - Fail closed when central durable limiter is unavailable (e.g. database error,
+ *   outage, or unconfigured in production) by returning { allowed: false, unavailable: true }
+ *   and rejecting protected requests with a retryable 503.
+ * - In-memory sliding-window limiter is permitted ONLY in explicitly non-production
+ *   environments (e.g. local development and unit tests).
+ * - Exposes accurate "limiter unavailable" and throughput metrics.
  */
 
-import { NextRequest } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { createServiceRoleClient, isServerSupabaseConfigured } from "@/lib/supabase/server";
 
 export interface RateLimitResult {
@@ -16,6 +23,19 @@ export interface RateLimitResult {
   remaining: number;
   resetMs: number;
   count?: number;
+  unavailable?: boolean;
+  error?: string;
+}
+
+export interface RateLimiterMetrics {
+  totalChecks: number;
+  allowedCount: number;
+  blockedCount: number;
+  unavailableCount: number;
+  durableChecks: number;
+  inMemoryChecks: number;
+  lastUnavailableAt: number | null;
+  lastError: string | null;
 }
 
 interface MemoryRateLimitRecord {
@@ -25,30 +45,71 @@ interface MemoryRateLimitRecord {
 
 declare global {
   var stellarStarRateLimits: Map<string, MemoryRateLimitRecord> | undefined;
+  var stellarStarRateLimiterMetrics: RateLimiterMetrics | undefined;
 }
 
 const memoryLimits = globalThis.stellarStarRateLimits ?? new Map<string, MemoryRateLimitRecord>();
 globalThis.stellarStarRateLimits = memoryLimits;
 
-/** Extracts client IP address safely from request headers. */
-export function getClientIp(request: NextRequest): string {
-  const forwardedFor = request.headers?.get?.("x-forwarded-for");
-  if (forwardedFor) {
-    const firstIp = forwardedFor.split(",")[0]?.trim();
-    if (firstIp) return firstIp;
-  }
+const initialMetrics: RateLimiterMetrics = {
+  totalChecks: 0,
+  allowedCount: 0,
+  blockedCount: 0,
+  unavailableCount: 0,
+  durableChecks: 0,
+  inMemoryChecks: 0,
+  lastUnavailableAt: null,
+  lastError: null,
+};
 
-  const realIp = request.headers?.get?.("x-real-ip");
-  if (realIp) return realIp.trim();
+let metrics: RateLimiterMetrics = globalThis.stellarStarRateLimiterMetrics ?? { ...initialMetrics };
+globalThis.stellarStarRateLimiterMetrics = metrics;
 
-  const cfIp = request.headers?.get?.("cf-connecting-ip");
-  if (cfIp) return cfIp.trim();
-
-  return "127.0.0.1";
+/** Returns a snapshot of current rate limiter metrics */
+export function getRateLimiterMetrics(): RateLimiterMetrics {
+  return { ...metrics };
 }
+
+/** Resets rate limiter metrics */
+export function resetRateLimiterMetrics(): void {
+  metrics = { ...initialMetrics };
+  globalThis.stellarStarRateLimiterMetrics = metrics;
+}
+
+function handleRateLimiterUnavailable(errorMessage: string, windowMs: number): RateLimitResult {
+  metrics.totalChecks += 1;
+  metrics.unavailableCount += 1;
+  metrics.lastUnavailableAt = Date.now();
+  metrics.lastError = errorMessage;
+
+  return {
+    allowed: false,
+    remaining: 0,
+    resetMs: Math.max(windowMs, 1000),
+    unavailable: true,
+    error: errorMessage,
+  };
+}
+
+// Re-export ingress-aware client IP resolver (Issue #410)
+export {
+  getClientIp,
+  resolveClientIp,
+  normalizeIp,
+  isApprovedIngress,
+  type IpResolverOptions,
+} from "@/lib/security/ipResolver";
 
 /**
  * Checks and increments rate limit for a key using sliding window.
+ *
+ * In production or when Supabase is configured:
+ *  - Calls central durable Supabase RPC `check_auth_rate_limit`.
+ *  - If central limiter is down / errors / throws, FAILS CLOSED with `unavailable: true`.
+ *  - In-memory counters are NEVER used in production.
+ *
+ * In explicitly non-production environments (test/development) without Supabase:
+ *  - Uses memory-backed sliding-window rate limiting.
  */
 export async function checkRateLimit(
   key: string,
@@ -60,58 +121,154 @@ export async function checkRateLimit(
   if (isServerSupabaseConfigured()) {
     try {
       const client = createServiceRoleClient();
-      if (client) {
-        const { data, error } = await client.rpc("check_auth_rate_limit", {
-          p_key: key,
-          p_limit: limit,
-          p_window_ms: windowMs,
-          p_now: now,
-        });
-
-        if (!error && data && typeof data === "object") {
-          const parsed = data as { allowed: boolean; remaining: number; reset_ms: number };
-          return {
-            allowed: Boolean(parsed.allowed),
-            remaining: Number(parsed.remaining),
-            resetMs: Number(parsed.reset_ms),
-            count: Math.max(0, limit - Number(parsed.remaining)),
-          };
-        }
+      if (!client) {
+        return handleRateLimiterUnavailable(
+          "Service role client could not be created",
+          windowMs,
+        );
       }
-    } catch {
-      // Fall through to memory rate limiting
+
+      const { data, error } = await client.rpc("check_auth_rate_limit", {
+        p_key: key,
+        p_limit: limit,
+        p_window_ms: windowMs,
+        p_now: now,
+      });
+
+      if (error) {
+        const errorMsg =
+          typeof error === "object" && error !== null && "message" in error
+            ? String((error as { message: unknown }).message)
+            : "Rate limit RPC failed";
+        return handleRateLimiterUnavailable(errorMsg, windowMs);
+      }
+
+      if (data && typeof data === "object") {
+        const parsed = data as {
+          allowed: boolean;
+          remaining: number;
+          reset_ms?: number;
+          resetMs?: number;
+          count?: number;
+        };
+        const resetMs = Number(parsed.reset_ms ?? parsed.resetMs ?? windowMs);
+        const remaining = Number(parsed.remaining ?? 0);
+        const allowed = Boolean(parsed.allowed);
+        const count =
+          typeof parsed.count === "number"
+            ? parsed.count
+            : Math.max(0, limit - remaining);
+
+        metrics.totalChecks += 1;
+        metrics.durableChecks += 1;
+        if (allowed) {
+          metrics.allowedCount += 1;
+        } else {
+          metrics.blockedCount += 1;
+        }
+
+        return {
+          allowed,
+          remaining,
+          resetMs,
+          count,
+          unavailable: false,
+        };
+      }
+
+      return handleRateLimiterUnavailable(
+        "Empty response from rate limit RPC",
+        windowMs,
+      );
+    } catch (err: unknown) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      return handleRateLimiterUnavailable(errorMsg, windowMs);
     }
   }
 
-  // 2. In-memory sliding window rate limiting
+  // 2. If Supabase is NOT configured:
+  const isProduction =
+    process.env.NODE_ENV === "production" ||
+    process.env.VALIDATE_PRODUCTION === "1";
+
+  if (isProduction) {
+    // In production, durable central rate limiting is mandatory.
+    // In-memory limiting across separate serverless/container instances allows limit multiplication.
+    return handleRateLimiterUnavailable(
+      "Durable rate limiter is required in production but central limiter is not configured",
+      windowMs,
+    );
+  }
+
+  // 3. In-memory sliding window rate limiting (non-production only)
+  metrics.totalChecks += 1;
+  metrics.inMemoryChecks += 1;
   const record = memoryLimits.get(key);
 
   if (!record || now - record.windowStart >= windowMs) {
     memoryLimits.set(key, { count: 1, windowStart: now });
+    metrics.allowedCount += 1;
     return {
       allowed: true,
       remaining: Math.max(0, limit - 1),
       resetMs: windowMs,
+      unavailable: false,
     };
   }
 
   if (record.count < limit) {
     record.count += 1;
+    metrics.allowedCount += 1;
     return {
       allowed: true,
       remaining: Math.max(0, limit - record.count),
       resetMs: Math.max(0, windowMs - (now - record.windowStart)),
+      unavailable: false,
     };
   }
 
+  metrics.blockedCount += 1;
   return {
     allowed: false,
     remaining: 0,
     resetMs: Math.max(0, windowMs - (now - record.windowStart)),
+    unavailable: false,
   };
 }
 
-/** Resets rate limits for tests */
+/**
+ * Standard HTTP 503 Service Unavailable response for when rate limiting is unavailable.
+ * Sets Retry-After header and returns safe, standardized JSON telemetry.
+ */
+export function rateLimiterUnavailableResponse(
+  result?: RateLimitResult,
+  requestId?: string,
+  customMessage?: string,
+): NextResponse {
+  const retrySeconds = Math.max(1, Math.ceil((result?.resetMs ?? 10_000) / 1000));
+  const body: Record<string, unknown> = {
+    error:
+      customMessage ||
+      "Rate limiting service is temporarily unavailable. Please retry shortly.",
+    code: "RATE_LIMITER_UNAVAILABLE",
+    retryAfterSeconds: retrySeconds,
+  };
+  if (requestId) {
+    body.requestId = requestId;
+  }
+
+  return NextResponse.json(body, {
+    status: 503,
+    headers: {
+      "Retry-After": String(retrySeconds),
+      "Cache-Control": "no-store",
+      ...(requestId ? { "x-request-id": requestId } : {}),
+    },
+  });
+}
+
+/** Resets rate limits and metrics for tests */
 export function __resetRateLimitsForTests(): void {
   memoryLimits.clear();
+  resetRateLimiterMetrics();
 }

@@ -1,13 +1,21 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
 import {
+  apiIdempotencyClient,
   authenticateApiRequest,
-  getIdempotentResponse,
-  storeIdempotentResponse,
   recordAuditLog,
 } from "@/lib/api/middleware";
+import { runIdempotentMutation } from "@/lib/idempotency/route";
+import { TRIP_REPLAY_FIELDS, replayFieldsUnder } from "@/lib/idempotency/replay";
 import { fetchPermittedTrips, insertTrip } from "@/lib/api/data";
+import { CursorError, parseLimit } from "@/lib/pagination/keyset";
 import { dispatchWebhookEvent } from "@/lib/api/webhooks";
 import type { Trip } from "@/types/trip";
+import { parseJsonBody, limitedJson, responseLimitFor } from "@/lib/api/bodyLimits";
+import { toPublicErrorResponse } from "@/lib/api/errors";
+
+/** Every JSON response here is size-capped (#418). */
+const respond = (body: unknown, init?: ResponseInit) =>
+  limitedJson(body, init, responseLimitFor("/api/v1/trips"));
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -24,14 +32,25 @@ export async function GET(request: NextRequest) {
 
   const { tokenPayload, ip, userAgent } = auth.context;
   const url = new URL(request.url);
-  const limit = Math.min(Math.max(parseInt(url.searchParams.get("limit") || "20", 10), 1), 100);
   const cursor = url.searchParams.get("cursor");
-
-  const { trips, hasMore, nextCursor } = await fetchPermittedTrips(
-    tokenPayload.walletAddress,
-    limit,
-    cursor
-  );
+  let limit: number;
+  let page: Awaited<ReturnType<typeof fetchPermittedTrips>>;
+  try {
+    // Finite limit and opaque keyset cursor (#449).
+    limit = parseLimit(url.searchParams.get("limit"));
+    page = await fetchPermittedTrips(tokenPayload.walletAddress, limit, cursor);
+  } catch (err) {
+    if (err instanceof CursorError) {
+      return respond({ error: { code: "INVALID_PAGINATION", message: err.message, status: 400 } }, { status: 400 });
+    }
+    return toPublicErrorResponse(err, {
+      format: "v1",
+      fallbackMessage: "Failed to load trips.",
+      route: "/api/v1/trips",
+      method: "GET",
+    });
+  }
+  const { trips, hasMore, nextCursor } = page;
 
   recordAuditLog({
     timestamp: new Date().toISOString(),
@@ -46,7 +65,7 @@ export async function GET(request: NextRequest) {
     idempotencyKey: null,
   });
 
-  return NextResponse.json({
+  return respond({
     data: trips,
     pagination: {
       limit,
@@ -60,51 +79,30 @@ export async function POST(request: NextRequest) {
   const startTime = Date.now();
   const auth = await authenticateApiRequest(request, {
     requiredScopes: ["trips:write"],
+    requireIdempotencyKey: true,
   });
 
   if (!auth.success) {
     return auth.response;
   }
 
-  const { tokenPayload, ip, userAgent, idempotencyKey } = auth.context;
-
-  // Check Idempotency-Key cache
-  const replayed = getIdempotentResponse(tokenPayload.walletAddress, idempotencyKey);
-  if (replayed) {
-    recordAuditLog({
-      timestamp: new Date().toISOString(),
-      tokenId: tokenPayload.tokenId,
-      walletAddress: tokenPayload.walletAddress,
-      method: "POST",
-      path: "/api/v1/trips",
-      statusCode: replayed.status,
-      latencyMs: Date.now() - startTime,
-      ip,
-      userAgent,
-      idempotencyKey,
-    });
-    return replayed;
-  }
+  const { tokenPayload, ip, userAgent } = auth.context;
+  const idempotencyKey = auth.context.idempotencyKey as string;
 
   let body: any;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json(
-      { error: { code: "BAD_REQUEST", message: "Invalid JSON body.", status: 400 } },
-      { status: 400 }
-    );
-  }
+  const parsedBody = await parseJsonBody(request, { route: "/api/v1/trips", format: "v1" });
+  if (!parsedBody.ok) return parsedBody.response;
+  body = parsedBody.value;
 
   if (!body.name || typeof body.name !== "string" || !body.name.trim()) {
-    return NextResponse.json(
+    return respond(
       { error: { code: "VALIDATION_FAILED", message: "Trip name is required.", status: 400 } },
       { status: 400 }
     );
   }
 
   if (!Array.isArray(body.members) || body.members.length === 0) {
-    return NextResponse.json(
+    return respond(
       {
         error: {
           code: "VALIDATION_FAILED",
@@ -116,48 +114,51 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const tripId = crypto.randomUUID();
-  const newTrip: Trip = {
-    id: tripId,
-    name: body.name.trim(),
-    description: body.description?.trim() || "",
-    members: body.members.map((m: any) => ({
-      id: crypto.randomUUID(),
-      name: String(m.name || "").trim(),
-      walletAddress: m.wallet_address ? String(m.wallet_address).trim().toUpperCase() : undefined,
-    })),
-    expenseIds: [],
-    startsOn: body.starts_on || undefined,
-    endsOn: body.ends_on || undefined,
-    createdAt: new Date().toISOString(),
-    settled: false,
-    createdByWallet: tokenPayload.walletAddress,
-  };
+  const response = await runIdempotentMutation({
+    request,
+    client: apiIdempotencyClient(),
+    key: idempotencyKey,
+    replayFields: replayFieldsUnder("data", TRIP_REPLAY_FIELDS),
+    principal: tokenPayload.walletAddress,
+    payload: body,
+    format: "v1",
+    execute: async () => {
+      const tripId = crypto.randomUUID();
+      const newTrip: Trip = {
+        id: tripId,
+        name: body.name.trim(),
+        description: body.description?.trim() || "",
+        members: body.members.map((m: any) => ({
+          id: crypto.randomUUID(),
+          name: String(m.name || "").trim(),
+          walletAddress: m.wallet_address ? String(m.wallet_address).trim().toUpperCase() : undefined,
+        })),
+        expenseIds: [],
+        startsOn: body.starts_on || undefined,
+        endsOn: body.ends_on || undefined,
+        createdAt: new Date().toISOString(),
+        settled: false,
+        createdByWallet: tokenPayload.walletAddress,
+      };
 
-  const created = await insertTrip(newTrip);
+      const created = await insertTrip(newTrip);
 
-  // Dispatch webhook event
-  dispatchWebhookEvent({
-    event: "trip.created",
-    data: {
-      trip_id: created.id,
-      name: created.name,
-      member_count: created.members.length,
-      created_by_wallet: created.createdByWallet,
-      created_at: created.createdAt,
+      // Dispatch webhook event
+      dispatchWebhookEvent({
+        event: "trip.created",
+        data: {
+          trip_id: created.id,
+          name: created.name,
+          member_count: created.members.length,
+          created_by_wallet: created.createdByWallet,
+          created_at: created.createdAt,
+        },
+        walletAddress: tokenPayload.walletAddress,
+      }).catch(() => {});
+
+      return respond({ data: created }, { status: 201 });
     },
-    walletAddress: tokenPayload.walletAddress,
-  }).catch(() => {});
-
-  const responseBody = { data: created };
-
-  // Cache for idempotency if key was provided
-  storeIdempotentResponse(
-    tokenPayload.walletAddress,
-    idempotencyKey,
-    201,
-    responseBody
-  );
+  });
 
   recordAuditLog({
     timestamp: new Date().toISOString(),
@@ -165,12 +166,12 @@ export async function POST(request: NextRequest) {
     walletAddress: tokenPayload.walletAddress,
     method: "POST",
     path: "/api/v1/trips",
-    statusCode: 201,
+    statusCode: response.status,
     latencyMs: Date.now() - startTime,
     ip,
     userAgent,
     idempotencyKey,
   });
 
-  return NextResponse.json(responseBody, { status: 201 });
+  return response;
 }

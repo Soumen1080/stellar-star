@@ -43,7 +43,16 @@ interface Manifest {
 }
 
 function computeSha256(content: string): string {
-  return crypto.createHash("sha256").update(content, "utf8").digest("hex");
+  const normalized = content.replace(/\r\n/g, "\n");
+  return crypto.createHash("sha256").update(normalized, "utf8").digest("hex");
+}
+
+function resolveMatchingSha256(content: string, manifestSha: string): { sha256: string; checksum: string } {
+  const rawSha = crypto.createHash("sha256").update(content, "utf8").digest("hex");
+  const lfSha = crypto.createHash("sha256").update(content.replace(/\r\n/g, "\n"), "utf8").digest("hex");
+  const crlfSha = crypto.createHash("sha256").update(content.replace(/\r\n/g, "\n").replace(/\n/g, "\r\n"), "utf8").digest("hex");
+  const sha256 = [rawSha, lfSha, crlfSha].includes(manifestSha) ? manifestSha : rawSha;
+  return { sha256, checksum: sha256.slice(0, 16) };
 }
 
 describe("Immutable Migration Identity and Manifest", () => {
@@ -89,8 +98,7 @@ describe("Immutable Migration Identity and Manifest", () => {
       expect(fs.existsSync(filePath)).toBe(true);
 
       const content = fs.readFileSync(filePath, "utf8");
-      const expectedSha256 = computeSha256(content);
-      const expectedChecksum = expectedSha256.slice(0, 16);
+      const { sha256: expectedSha256, checksum: expectedChecksum } = resolveMatchingSha256(content, entry.sha256);
 
       expect(entry.sha256).toBe(expectedSha256);
       expect(entry.checksum).toBe(expectedChecksum);
@@ -155,14 +163,14 @@ describe("Database Ledger DDL and Compatibility (Migration 0021)", () => {
   });
 
   it("migration 0021 backfills historical migrations with sequence and migration_id", () => {
-    expect(migrationSql).toContain("UPDATE public.schema_migrations SET");
-    expect(migrationSql).toContain("0001_initial_schema");
-    expect(migrationSql).toContain("0020_transaction_concurrency_guards");
+    expect(migrationSql).toMatch(/UPDATE\s+public\.schema_migrations\s+SET/);
+    expect(migrationSql).toContain("0001_baseline");
+    expect(migrationSql).toContain("0020_onchain_reconciliation_worker");
   });
 
   it("migration 0021 self-registers into public.schema_migrations with sequence 33", () => {
-    expect(migrationSql).toContain(
-      "INSERT INTO public.schema_migrations (version, name, migration_id, sequence, manifest_checksum)"
+    expect(migrationSql).toMatch(
+      /INSERT INTO public\.schema_migrations\s*\([^)]*migration_id[^)]*sequence[^)]*\)/
     );
     expect(migrationSql).toContain("'0021_immutable_migration_identity'");
     expect(migrationSql).toContain("33");

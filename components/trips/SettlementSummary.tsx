@@ -33,6 +33,7 @@ import { useSettlementProposal } from "@/hooks/useSettlementProposal";
 import { disputeKey, proposalPaymentGate, type ProposalPaymentGate } from "@/lib/settlement/proposal";
 import { SettlementProposalPanel } from "@/components/trips/SettlementProposalPanel";
 import { AssetReadinessPanel } from "@/components/onboarding/AssetReadinessPanel";
+import { FirstSettlementChecklist } from "@/components/onboarding/FirstSettlementChecklist";
 
 interface SettlementSummaryProps {
   trip: Trip;
@@ -384,6 +385,12 @@ export function SettlementSummary({ trip, expenses, onChainEvents = [] }: Settle
   return (
     <div className="space-y-2">
       <SettlementProposalPanel state={proposalState} hasOutstanding={netPayments.length > 0} expenses={expenses} />
+
+      <FirstSettlementChecklist
+        assetKey={netPayments[0]?.asset ?? "native"}
+        amount={netPayments[0]?.amount}
+        recipientAddress={netPayments[0]?.toWallet}
+      />
 
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">

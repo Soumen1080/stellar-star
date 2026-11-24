@@ -4,13 +4,19 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { Input } from "@/components/ui/Input";
 import { Modal } from "@/components/ui/Modal";
 
-jest.mock("framer-motion", () => ({
-  motion: {
-    div: React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(({ children, ...props }, ref) => (
+jest.mock("framer-motion", () => {
+  const MockDiv = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(
+    ({ children, ...props }, ref) => (
       <div ref={ref} {...props}>{children}</div>
-    )),
-  },
-}));
+    )
+  );
+  MockDiv.displayName = "MockMotionDiv";
+  return {
+    motion: {
+      div: MockDiv,
+    },
+  };
+});
 
 describe("accessible shared controls", () => {
   it("associates field errors and hints with their input", () => {

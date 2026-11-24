@@ -16,6 +16,8 @@ import { TripTabs, type TripTab } from "@/components/trips/TripTabs"; import { R
 import { TravelWorkspacePanel } from "@/components/trips/workspace/TravelWorkspacePanel"; import { InviteMemberModal } from "@/components/trips/InviteMemberModal";
 import { SaveTripTemplateForm } from "@/components/trips/SaveTripTemplateForm"; import { DuplicateTripFlow } from "@/components/trips/TripCopyFlow";
 import { TripExportMenu } from "@/components/export/TripExportMenu"; import { ReminderSchedulePanel } from "@/components/reminders/ReminderSchedulePanel";
+import { GuidedOnboardingBanner } from "@/components/onboarding/GuidedOnboardingBanner";
+import type { OnboardingMode } from "@/components/onboarding/GuidedOnboardingModal";
 import { HouseholdCoordinationPanel } from "@/components/household/HouseholdCoordinationPanel"; import { useAuth } from "@/context/AuthContext";
 import { useContractEvents } from "@/hooks/useContractEvents"; import { useExpense } from "@/hooks/useExpense";
 import { useTrip } from "@/hooks/useTrip"; import { useTripAutoSettlement } from "@/hooks/useTripAutoSettlement";
@@ -38,7 +40,14 @@ export function generateTripMetadata({ tripName, walletAddress, tripId }: { trip
   else if (safeName) title = `${safeName} | Stellar Star`;
   else if (safeId) title = `Trip ${safeId} | Stellar Star`;
   const description = safeName ? `View and settle expenses for ${safeName} on Stellar Star.` : safeId ? `View details and expenses for trip ${safeId} on Stellar Star.` : "Group expense splitting on the Stellar blockchain.";
-  return { title, description, openGraph: { title, description } };
+  return {
+    title,
+    description,
+    openGraph: { title, description },
+    other: {
+      "content-security-policy": "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline'; style-src 'self' 'unsafe-inline';",
+    },
+  };
 }
 
 export default function TripDetailPage() {
@@ -128,12 +137,19 @@ export default function TripDetailPage() {
     setShowExpenseForm(true);
   };
 
+  const onboardingMode: OnboardingMode = isOwner
+    ? "create"
+    : callerMember
+    ? "join"
+    : "view";
+
   return (
     <AuthGuard>
       <div className="min-h-screen bg-[#F6F6F6]">
         <TripDetailNav tripName={sanitizeText(trip.name)} />
 
         <main className="max-w-2xl mx-auto px-4 sm:px-6 py-8">
+          <GuidedOnboardingBanner mode={onboardingMode} tripId={trip.id} />
           <TripDetailHeader
             trip={trip}
             expenses={tripExpenses}

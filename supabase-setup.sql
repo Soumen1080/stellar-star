@@ -66,11 +66,69 @@ COMMENT ON FUNCTION public.current_wallet() IS
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS public.schema_migrations (
-  version     TEXT PRIMARY KEY,
-  name        TEXT NOT NULL,
-  applied_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  checksum    TEXT NOT NULL
+  version           TEXT PRIMARY KEY,
+  name              TEXT NOT NULL,
+  applied_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  checksum          TEXT NOT NULL,
+  migration_id      TEXT,
+  sequence          INT,
+  manifest_checksum TEXT
 );
+
+CREATE INDEX IF NOT EXISTS idx_schema_migrations_name
+  ON public.schema_migrations (name);
+
+CREATE INDEX IF NOT EXISTS idx_schema_migrations_sequence
+  ON public.schema_migrations (sequence);
+
+CREATE INDEX IF NOT EXISTS idx_schema_migrations_migration_id
+  ON public.schema_migrations (migration_id);
+
+CREATE OR REPLACE FUNCTION public.record_migration_v2(
+  p_migration_id TEXT,
+  p_version TEXT,
+  p_name TEXT,
+  p_checksum TEXT,
+  p_sequence INT
+)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+  -- Update existing record if found by version or name
+  UPDATE public.schema_migrations
+  SET migration_id = p_migration_id,
+      sequence = p_sequence,
+      manifest_checksum = p_checksum
+  WHERE name = p_name OR version = p_version;
+
+  -- Insert if not present
+  IF NOT FOUND THEN
+    INSERT INTO public.schema_migrations (
+      version,
+      name,
+      checksum,
+      migration_id,
+      sequence,
+      manifest_checksum,
+      applied_at
+    ) VALUES (
+      p_version,
+      p_name,
+      p_checksum,
+      p_migration_id,
+      p_sequence,
+      p_checksum,
+      NOW()
+    )
+    ON CONFLICT (version) DO UPDATE
+      SET migration_id = EXCLUDED.migration_id,
+          sequence = EXCLUDED.sequence,
+          manifest_checksum = EXCLUDED.manifest_checksum;
+  END IF;
+END;
+$$;
 
 CREATE TABLE IF NOT EXISTS public.users (
   id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),

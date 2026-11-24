@@ -29,6 +29,11 @@ jest.mock("@/components/ui/Toast", () => ({
     error: mockToastError,
   }),
 }));
+jest.mock("@/hooks/useWallet", () => ({
+  useWallet: () => ({
+    publicKey: "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+  }),
+}));
 
 describe("TravelWorkspacePanel", () => {
   const mockTrip: Trip = {

@@ -22,6 +22,16 @@ jest.mock("@/hooks/usePayment", () => ({
   }),
 }));
 
+jest.mock("@/hooks/useExpense", () => ({
+  useExpense: () => ({
+    expenses: [],
+    getExpensesForTrip: () => [],
+    addExpense: jest.fn(),
+    deleteExpense: jest.fn(),
+    refreshExpenses: jest.fn(),
+  }),
+}));
+
 // Helper component to switch locale inside tests
 function LocaleSwitcher({ locale }: { locale: any }) {
   const { setLocale } = useLocale();

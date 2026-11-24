@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { getSupabaseClient } from "@/lib/supabase/client";
+import { acquireRealtimeChannel, type RealtimeClientLike } from "@/lib/supabase/realtimeRegistry";
 import {
   archiveHouseholdChoreRow,
   completeHouseholdChoreRow,
@@ -99,20 +100,46 @@ export function useHouseholdChores(
         disposed = true;
       };
     }
-    const channel = client
-      .channel(`household-chores-${tripId}`)
-      .on("postgres_changes", { event: "*", schema: "public", table: "household_chores", filter: `trip_id=eq.${tripId}` }, () => void refresh())
-      .on("postgres_changes", { event: "*", schema: "public", table: "household_chore_completions", filter: `trip_id=eq.${tripId}` }, () => void refresh())
-      .on("postgres_changes", { event: "*", schema: "public", table: "household_chore_preferences", filter: `trip_id=eq.${tripId}` }, () => void refresh())
-      .subscribe((status) => {
-        if (status === "CHANNEL_ERROR" && !disposed) {
-          setError("Live chore updates are unavailable. Refresh the page to see the latest changes.");
-        }
-      });
+    // One shared, trip-filtered channel for all three tables, ref-counted
+    // across every mounted consumer of this trip (#448). Bursts of events are
+    // coalesced into a single refresh instead of one 3-query reload each.
+    let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+    const scheduleRefresh = () => {
+      if (disposed || refreshTimer) return;
+      refreshTimer = setTimeout(() => {
+        refreshTimer = null;
+        if (!disposed) void refresh();
+      }, 250);
+    };
+
+    let release: () => void = () => {};
+    try {
+      release = acquireRealtimeChannel(
+        client as unknown as RealtimeClientLike,
+        { kind: "trip", tripId, wallet: walletAddress },
+        [
+          { table: "household_chores" },
+          { table: "household_chore_completions" },
+          { table: "household_chore_preferences" },
+        ],
+        {
+          onChange: scheduleRefresh,
+          onResync: scheduleRefresh,
+          onStatus: (status) => {
+            if (status === "CHANNEL_ERROR" && !disposed) {
+              setError("Live chore updates are unavailable. Refresh the page to see the latest changes.");
+            }
+          },
+        },
+      );
+    } catch (err) {
+      console.warn("[StellarStar] Live chore updates unavailable:", err);
+    }
 
     return () => {
       disposed = true;
-      void client.removeChannel(channel);
+      if (refreshTimer) clearTimeout(refreshTimer);
+      release();
     };
   }, [enabled, refresh, tripId, walletAddress]);
 

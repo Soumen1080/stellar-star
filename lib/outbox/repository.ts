@@ -14,7 +14,7 @@ import {
   type OutboxChannel,
 } from "./types";
 import { type StellarStarClient, requireAuthenticatedClient } from "@/lib/supabase/client";
-import { type TransactionalOutboxRow, type TransactionalOutboxInsert } from "@/types/supabase";
+import { type TransactionalOutboxRow, type TransactionalOutboxInsert, type Json } from "@/types/supabase";
 
 // ─── In-Memory Store for Testing & Local Execution ──────────────────────────
 
@@ -73,8 +73,8 @@ export function outboxEventToInsert(
     aggregate_id: event.aggregateId,
     event_type: event.eventType,
     channel: event.channel,
-    payload: event.payload,
-    headers: event.headers ?? {},
+    payload: event.payload as unknown as Json,
+    headers: (event.headers ?? {}) as unknown as Json,
     trace_id: event.traceId,
     deduplication_key: event.deduplicationKey,
     status: event.status ?? "pending",

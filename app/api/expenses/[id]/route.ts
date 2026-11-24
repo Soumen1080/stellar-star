@@ -11,8 +11,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { verifyWalletSession } from "@/lib/supabase/serverAuth";
-import { createServerClientForToken, createServiceRoleClient, isServerSupabaseConfigured } from "@/lib/supabase/server";
+import type { ServerClient } from "@/lib/supabase/server";
 import { fetchExpenseById, updateExpenseRow } from "@/lib/supabase/queries";
 import {
   mergeExpenseUpdates,
@@ -20,7 +19,11 @@ import {
   recomputeSharesWithSettled,
 } from "@/lib/expense/conflictResolver";
 import { Money } from "@/lib/money";
+import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
+import { EXPENSE_REPLAY_FIELDS, replayFieldsUnder } from "@/lib/idempotency/replay";
 import type { Expense } from "@/types/expense";
+import { authenticateWalletRequest } from "@/lib/api/routeGuard";
+import { toPublicErrorResponse } from "@/lib/api/errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -34,17 +37,11 @@ export async function GET(
     return NextResponse.json({ error: "Expense ID is required." }, { status: 400 });
   }
 
-  const authHeader = request.headers.get("authorization") ?? "";
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
-  const session = token ? verifyWalletSession(token) : null;
+  const auth = authenticateWalletRequest(request, { message: "Unauthorized: Sign in with your wallet." });
+  if (!auth.ok) return auth.response;
+  const session = auth.ctx.claims;
 
-  if (!session) {
-    return NextResponse.json({ error: "Unauthorized: Sign in with your wallet." }, { status: 401 });
-  }
-
-  const client = isServerSupabaseConfigured()
-    ? createServerClientForToken(token)
-    : undefined;
+  const client = auth.ctx.dbIfConfigured() ?? undefined;
 
   const expense = await fetchExpenseById(id, client as any);
   if (!expense) {
@@ -76,32 +73,48 @@ export async function PATCH(
     return NextResponse.json({ error: "Expense ID is required." }, { status: 400 });
   }
 
-  const authHeader = request.headers.get("authorization") ?? "";
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
-  const session = token ? verifyWalletSession(token) : null;
+  const auth = authenticateWalletRequest(request, { message: "Unauthorized: Sign in with your wallet." });
+  if (!auth.ok) return auth.response;
+  const session = auth.ctx.claims;
 
-  if (!session) {
-    return NextResponse.json({ error: "Unauthorized: Sign in with your wallet." }, { status: 401 });
-  }
+  // Issue #412: a valid key is required before any work.
+  const idempotency = requireIdempotencyKey(request);
+  if (!idempotency.ok) return idempotency.response;
 
   let body: any;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "Invalid JSON request body." }, { status: 400 });
-  }
+  const parsedBody = await parseJsonBody(request, { route: "/api/expenses/[id]" });
+  if (!parsedBody.ok) return parsedBody.response;
+  body = (parsedBody.value) as typeof body;
 
-  const client = isServerSupabaseConfigured()
-    ? createServerClientForToken(token)
-    : undefined;
+  const client = auth.ctx.dbIfConfigured() ?? undefined;
 
+  // The version check runs inside the claim on purpose: a retry of an edit
+  // that already succeeded must replay that success, not trip the OCC check
+  // against the version it just wrote.
+  return runIdempotentMutation({
+    request,
+    client: client ?? null,
+    key: idempotency.key,
+    replayFields: ["ok", "autoMerged", ...replayFieldsUnder("data", EXPENSE_REPLAY_FIELDS)],
+    principal: session.wallet_address,
+    payload: body,
+    execute: () => applyExpenseUpdate(id, session.wallet_address, body, client),
+  });
+}
+
+async function applyExpenseUpdate(
+  id: string,
+  walletAddress: string,
+  body: any,
+  client: ServerClient | undefined,
+): Promise<NextResponse> {
   const existing = await fetchExpenseById(id, client as any);
   if (!existing) {
     return NextResponse.json({ error: "Expense not found." }, { status: 404 });
   }
 
   // Acceptance criteria 1: Only authorized trip members can edit
-  const callerWallet = session.wallet_address.toUpperCase();
+  const callerWallet = walletAddress.toUpperCase();
   const isMember = existing.members.some(
     (m) => m.walletAddress && m.walletAddress.toUpperCase() === callerWallet
   );
@@ -124,7 +137,7 @@ export async function PATCH(
     );
   }
 
-  const { updates, expectedVersion, baseExpense } = body;
+  const { updates, expectedVersion, baseExpense } = body ?? {};
   if (!updates || typeof updates !== "object") {
     return NextResponse.json({ error: "Missing updates object." }, { status: 400 });
   }
@@ -181,9 +194,11 @@ export async function PATCH(
         { status: 409 }
       );
     }
-    return NextResponse.json(
-      { error: err?.message || "Failed to update expense." },
-      { status: 500 }
-    );
+    return toPublicErrorResponse(err, {
+      requestId: auth.ctx.requestId,
+      fallbackMessage: "Failed to update expense.",
+      route: "/api/expenses/[id]",
+      method: "PATCH",
+    });
   }
 }

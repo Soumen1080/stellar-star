@@ -1,12 +1,17 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Copy, Check, Link, Loader2, QrCode } from "lucide-react";
 import { Modal } from "@/components/ui/Modal";
 import { useToast } from "@/components/ui/Toast";
 import { useSession } from "@/lib/supabase/useSession";
 import { QRCodeSVG } from "qrcode.react";
 import type { Trip } from "@/types/trip";
+import {
+  createIdempotencyKeyHolder,
+  idempotencyHeaders,
+  isIdempotencyConflict,
+} from "@/lib/idempotency/client";
 
 interface InviteMemberModalProps {
   trip: Trip;
@@ -65,6 +70,9 @@ export function InviteMemberModal({ trip, isOpen, onClose }: InviteMemberModalPr
     });
   }, [isOpen, unclaimedKey, unclaimedMembers]);
 
+  // One key per "generate" action, reused on retry so a double click mints one link (#412).
+  const generateKey = useRef(createIdempotencyKeyHolder());
+
   const handleGenerate = async () => {
     setLoading(true);
     try {
@@ -72,6 +80,7 @@ export function InviteMemberModal({ trip, isOpen, onClose }: InviteMemberModalPr
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          ...idempotencyHeaders(generateKey.current.current()),
           ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
         },
         body: JSON.stringify({
@@ -83,6 +92,7 @@ export function InviteMemberModal({ trip, isOpen, onClose }: InviteMemberModalPr
       });
 
       const data = await res.json();
+      if (res.ok || isIdempotencyConflict(res.status, data)) generateKey.current.reset();
       if (!res.ok) {
         throw new Error(data.error || "Failed to create invitation link.");
       }

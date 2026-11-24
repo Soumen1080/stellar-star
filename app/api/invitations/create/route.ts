@@ -1,30 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
-import { verifyWalletSession } from "@/lib/supabase/serverAuth";
-import { createServerClientForToken } from "@/lib/supabase/server";
 import { createTripInvite } from "@/lib/invitations/claim";
-import {
-  extractIdempotencyKey,
-  withIdempotency,
-  idempotentJsonResponse,
-  IdempotencyConflictError,
-  IdempotencyLockedError,
-} from "@/lib/idempotency/store";
+import { requireIdempotencyKey, runIdempotentMutation } from "@/lib/idempotency/route";
 import { enforceAbuseProtection, enforceIdempotencyKeyLimit } from "@/lib/security/abuseProtection";
+import { authenticateWalletRequest } from "@/lib/api/routeGuard";
+import { parseJsonBody } from "@/lib/api/bodyLimits";
+import { toPublicErrorResponse } from "@/lib/api/errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function POST(request: NextRequest) {
-  const authHeader = request.headers.get("authorization") ?? "";
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
-  const session = token ? verifyWalletSession(token) : null;
-
-  if (!session) {
-    return NextResponse.json(
-      { error: "Unauthorized: Sign in with your wallet to create invites." },
-      { status: 401 },
-    );
-  }
+  const auth = authenticateWalletRequest(request, { message: "Unauthorized: Sign in with your wallet to create invites." });
+  if (!auth.ok) return auth.response;
+  const session = auth.ctx.claims;
   const abuse = await enforceAbuseProtection(request, "invitation.create", session.wallet_address);
   if (!abuse.ok) return abuse.response;
 
@@ -36,11 +24,13 @@ export async function POST(request: NextRequest) {
     idempotencyKey?: string;
   };
 
-  try {
-    body = (await request.json()) as typeof body;
-  } catch {
-    return NextResponse.json({ error: "Request body must be valid JSON." }, { status: 400 });
-  }
+  const parsedBody = await parseJsonBody(request, { route: "/api/invitations/create" });
+  if (!parsedBody.ok) return parsedBody.response;
+  body = (parsedBody.value) as typeof body;
+
+  // Issue #412: a valid key is required before any work.
+  const idempotency = requireIdempotencyKey(request, { body });
+  if (!idempotency.ok) return idempotency.response;
 
   if (!body.tripId || typeof body.tripId !== "string") {
     return NextResponse.json({ error: "tripId is required." }, { status: 400 });
@@ -48,16 +38,21 @@ export async function POST(request: NextRequest) {
 
   try {
     const origin = request.nextUrl.origin;
-    const serverClient = createServerClientForToken(token);
-    const idempotencyKey = extractIdempotencyKey(request, body);
-    const keyLimit = await enforceIdempotencyKeyLimit(request, session.wallet_address, idempotencyKey);
+    const serverClient = auth.ctx.db();
+    const keyLimit = await enforceIdempotencyKeyLimit(request, session.wallet_address, idempotency.key);
     if (!keyLimit.ok) return keyLimit.response;
 
-    const result = await withIdempotency({
+    return await runIdempotentMutation({
+      request,
       client: serverClient,
-      key: idempotencyKey,
-      walletAddress: session.wallet_address,
+      key: idempotency.key,
+      replayFields: ["inviteUrl", "invite.id", "invite.tripId", "invite.memberId", "invite.expiresAt", "invite.maxUses", "invite.uses", "invite.revoked", "invite.createdAt"],
+      principal: session.wallet_address,
+      // Kept from the pre-#412 wrapper so keys stored before the change still match.
       endpoint: "/api/invitations/create",
+      // The invite URL carries the raw join token, so the replay stays in the
+      // process-local ledger and the token is never written to the database.
+      persist: false,
       payload: body,
       execute: async () => {
         const created = await createTripInvite(
@@ -71,25 +66,15 @@ export async function POST(request: NextRequest) {
           },
           serverClient,
         );
-        return { data: created, status: 200 };
+        return NextResponse.json(created, { headers: { "Cache-Control": "no-store" } });
       },
     });
-
-    return idempotentJsonResponse(result);
   } catch (err) {
-    if (err instanceof IdempotencyConflictError) {
-      return NextResponse.json(
-        { error: err.message, code: err.code },
-        { status: 409 }
-      );
-    }
-    if (err instanceof IdempotencyLockedError) {
-      return NextResponse.json(
-        { error: err.message, code: err.code },
-        { status: 409 }
-      );
-    }
-    const message = err instanceof Error ? err.message : "Failed to create invitation.";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return toPublicErrorResponse(err, {
+      requestId: request.headers.get("x-request-id"),
+      fallbackMessage: "Failed to create invitation.",
+      route: "/api/invitations/create",
+      method: "POST",
+    });
   }
 }
