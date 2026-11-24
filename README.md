@@ -88,9 +88,16 @@ Every payment can be traced through an explorer transaction hash, and settlement
 | Transaction hash receipt links | ✅ Live |
 | SEP-0007 QR generation | ✅ Live |
 | Trip net-balance optimization | ✅ Live |
+| Shared household chores with rotation | 🧪 Research prototype (opt-in; separate from balances) |
 | Realtime sync (Supabase + contract events) | ✅ Live |
 | Responsive mobile-first UI | ✅ Live |
 | Duplicate wallet address validation (trip and expense forms) | ✅ Live |
+| Optional recurring chore coordination (off-chain research prototype) | 🧪 Pilot |
+
+Chore coordination supports a rotating member order, completion history, opt-out,
+trip-owner disable, and optional references to existing supply expenses. Chores
+never represent payments or affect balances. Pilot success metrics and release
+gates are documented in [docs/CHORE_COORDINATION_PILOT.md](docs/CHORE_COORDINATION_PILOT.md).
 
 ---
 

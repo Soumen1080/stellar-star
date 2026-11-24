@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from "next";
+import { publicEnv } from "@/lib/config/publicEnv";
 import { Poppins } from "next/font/google";
 import "./globals.css";
 import { WalletProvider } from "@/context/WalletContext";
@@ -16,7 +17,7 @@ const poppins = Poppins({
   display: "swap",
 });
 
-const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? "https://stellar-star-five.vercel.app";
+const siteUrl = publicEnv.siteUrl ?? "https://stellar-star-five.vercel.app";
 
 const metadataBase = (() => {
   try {
@@ -27,6 +28,7 @@ const metadataBase = (() => {
 })();
 
 export const metadata: Metadata = {
+  manifest: "/manifest.webmanifest",
   metadataBase,
   title: {
     default: "Stellar-star - Split Bills on the Stellar Blockchain",
@@ -89,6 +91,8 @@ import { LocaleProvider } from "@/context/LocaleContext";
 import { AnalyticsProvider } from "@/context/AnalyticsContext";
 import { ConsentBanner } from "@/components/analytics/ConsentBanner";
 import { ConsentModal } from "@/components/analytics/ConsentModal";
+import { OfflineRuntime } from "@/components/system/OfflineRuntime";
+import { MotionConfig } from "framer-motion";
 
 export default function RootLayout({
   children,
@@ -96,11 +100,12 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" className="scroll-smooth" suppressHydrationWarning>
+    <html lang="en" suppressHydrationWarning>
       <body
         className={`${poppins.className} bg-[#F6F6F6] text-[#0F0F14] font-sans antialiased`}
         suppressHydrationWarning
       >
+        <MotionConfig reducedMotion="user">
         <LocaleProvider>
           <AnalyticsProvider>
             <ToastProvider>
@@ -110,6 +115,7 @@ export default function RootLayout({
                     <TripProvider>
                       <ConfigProvider>
                         <NetworkMismatchBanner />
+                        <OfflineRuntime />
                         {children}
                         <ConsentBanner />
                         <ConsentModal />
@@ -121,6 +127,7 @@ export default function RootLayout({
             </ToastProvider>
           </AnalyticsProvider>
         </LocaleProvider>
+        </MotionConfig>
       </body>
     </html>
   );

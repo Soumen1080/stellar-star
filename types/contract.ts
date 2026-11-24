@@ -36,6 +36,7 @@ export enum ContractErrorCode {
   AttestationTtlTooLong = 13,
   AssetMismatch = 14,
   UnknownStorageVersion = 15,
+  InvalidSignerSet = 16,
 }
 
 /**

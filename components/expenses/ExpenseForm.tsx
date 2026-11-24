@@ -18,6 +18,7 @@ import { ExpenseSplitPreview } from "@/components/expenses/ExpenseSplitPreview";
 import { useExpenseForm } from "@/hooks/useExpenseForm";
 import type { ExpenseFormInitialValues } from "@/hooks/useExpenseForm";
 import type { Member } from "@/types/expense";
+import { publicEnv } from "@/lib/config/publicEnv";
 
 interface ExpenseFormProps {
   onSuccess?: (expenseId?: string) => void;
@@ -68,7 +69,7 @@ export function ExpenseForm({
 
   return (
     <form onSubmit={form.handleSubmit} className="space-y-5">
-      {process.env.NEXT_PUBLIC_RECEIPT_OCR_ENABLED !== "false" && <>
+      {publicEnv.receiptOcrEnabled !== "false" && <>
         {receiptError && <p role="alert">{receiptError}</p>}
         {capturing ? <ReceiptCapture onCancel={() => setCapturing(false)} onUse={(draft, file) => {
           if (!canUseReceiptDraft(draft)) return;

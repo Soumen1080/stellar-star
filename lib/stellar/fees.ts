@@ -17,6 +17,7 @@
  */
 
 import { HORIZON_URL } from "@/lib/utils/constants";
+import { resilientHorizonRead } from "@/lib/stellar/resilience";
 
 /** Protocol-minimum fee per operation, in stroops (0.00001 XLM). */
 export const FEE_MIN_STROOPS = 100;
@@ -40,7 +41,8 @@ export async function fetchFeeStats(
   fetchImpl: typeof fetch = fetch
 ): Promise<RawFeeStats | null> {
   try {
-    const res = await fetchImpl(`${horizonUrl}/fee_stats`, { cache: "no-store" });
+    const doFetch = () => fetchImpl(`${horizonUrl}/fee_stats`, { cache: "no-store" });
+    const res = fetchImpl === fetch ? await resilientHorizonRead(doFetch) : await doFetch();
     if (!res.ok) return null;
     return (await res.json()) as RawFeeStats;
   } catch {

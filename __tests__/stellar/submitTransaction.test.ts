@@ -19,10 +19,12 @@ jest.mock("@stellar/stellar-sdk", () => {
 });
 
 import { submitSignedTransaction } from "@/lib/stellar/submitTransaction";
+import { paymentSubmissionTracker } from "@/lib/routing/consistency";
 
 describe("submitSignedTransaction", () => {
   beforeEach(() => {
     jest.resetAllMocks();
+    paymentSubmissionTracker.clear();
     fromXdrMock.mockReturnValue({ id: "tx" });
   });
 

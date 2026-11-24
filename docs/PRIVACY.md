@@ -42,6 +42,7 @@ When you interact with the Stellar network (including making direct transfers, s
 To provide friendly group accounting, Stellar Star stores operational data in Postgres (Supabase) and private object storage:
 - **User Profiles**: Display name, wallet address mapping, last login timestamp.
 - **Trip & Expense Data**: Group names, trip notes, expense titles, split apportionments, exchange-rate conversion provenance.
+- **Household Coordination (optional pilot)**: Chore titles/details, due dates, member rotation, completion timestamps, opt-out preferences, and optional references to existing trip expenses. This is off-chain trip data and is hidden when the trip owner disables the module.
 - **Private Address Book**: Custom contact names and invite tags.
 - **Receipt Attachments**: Scanned receipt images and invoices stored in private buckets.
 - **Capability Tokens**: Unguessable invitation tokens and authentication challenge nonces.
@@ -60,6 +61,7 @@ Stellar Star retains off-chain data only as long as necessary to fulfill product
 | **Address Book & Contacts** | `public.contacts` | Retained while active | Deleted immediately upon account deletion or manual contact removal. |
 | **Receipt Attachments** | Supabase Storage & `expense_receipts` | Up to 730 days (2 years) | Purged via automated retention cron (`/api/receipts/retention`) or account deletion. |
 | **Trip Invitations** | `public.trip_invites` | 7 days default TTL | Expired links rendered unusable immediately; tombstoned records purged after 30 days. |
+| **Household Chores** | `household_chores`, `household_chore_completions`, `household_chore_preferences` | Retained with the trip | Deleted with the trip; disabling the module hides records but preserves history. |
 | **Audit Logs** | `export_audit_events`, error logs | 90 days | Automated rolling purge; client IP addresses are salted and hashed with SHA-256. |
 | **Auth Challenges & Nonces** | `public.auth_challenges` | 5 minutes | Purged immediately upon verification; expired entries sweep every minute. |
 | **Rate Limit Counters** | `public.auth_rate_limits` | 60 seconds rolling window | Expired window records automatically overwritten. |

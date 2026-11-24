@@ -24,3 +24,27 @@ export interface ReceiptLink {
   /** ISO timestamp after which the signed URL stops working. */
   expiresAt: string;
 }
+
+/** Status of a short-lived upload intent (issue #451). */
+export type UploadIntentStatus = "pending" | "quarantined" | "promoted" | "rejected" | "abandoned";
+
+/** Short-lived upload intent metadata. */
+export interface ReceiptUploadIntent {
+  id: string;
+  expenseId: string;
+  wallet: string;
+  idempotencyKey: string;
+  status: UploadIntentStatus;
+  fileName: string | null;
+  contentType: string | null;
+  sizeBytes: number | null;
+  checksum: string | null;
+  caption: string | null;
+  storagePath: string | null;
+  promotedPath: string | null;
+  scanResult: Record<string, unknown>;
+  receiptId: string | null;
+  expiresAt: string;
+  createdAt: string;
+  updatedAt: string;
+}

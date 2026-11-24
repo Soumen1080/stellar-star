@@ -13,9 +13,11 @@
  */
 
 import { Keypair } from "@stellar/stellar-sdk";
+import { publicEnv } from "@/lib/config/publicEnv";
 import { buildClaimMessage, type SettlementClaim } from "@/lib/settlement/attestationMessage";
 import { CONTRACT_ID, ORACLE_PUBLIC_KEY, SETTLEMENT_ASSET_ID } from "@/lib/utils/constants";
 import { REQUEST_ID_HEADER } from "@/lib/observability/requestId";
+import { idempotencyHeaders, newIdempotencyKey } from "@/lib/idempotency/client";
 
 export type { SettlementClaim };
 
@@ -25,10 +27,8 @@ export type { SettlementClaim };
  */
 export interface Attestation {
   claim: SettlementClaim;
-  /** ed25519 signature over `buildClaimMessage(claim)`, lowercase hex. */
-  signature: string;
-  /** Stellar address (G...) of the signing oracle, for client-side checking. */
-  oraclePublicKey: string;
+  /** M distinct ed25519 signatures over the complete domain-separated claim. */
+  signatures: Array<{ signer: string; signature: string }>;
 }
 
 /**
@@ -48,6 +48,11 @@ export interface AttestationRequest {
   txHash: string;
   /** Session token from /api/auth/verify. The oracle only attests for you. */
   accessToken?: string | null;
+  /**
+   * Idempotency-Key for this attempt (#412). Pass the same value when retrying
+   * the same claim; a fresh key is generated when omitted.
+   */
+  idempotencyKey?: string;
 }
 
 /** Why an attestation could not be obtained, and whether retrying can help. */
@@ -69,8 +74,13 @@ export class AttestationError extends Error {
 
 /** True when a settlement can even be attempted on-chain in this deployment. */
 export function isAttestationConfigured(): boolean {
-  return Boolean(CONTRACT_ID && ORACLE_PUBLIC_KEY && SETTLEMENT_ASSET_ID);
+  return Boolean(CONTRACT_ID && getExpectedSigners().length >= getThreshold() && SETTLEMENT_ASSET_ID);
 }
+
+function getExpectedSigners(): string[] {
+  return (publicEnv.settlementOraclePublicKeys || publicEnv.settlementOraclePublicKey || ORACLE_PUBLIC_KEY).split(",").map((key) => key.trim()).filter(Boolean);
+}
+function getThreshold(): number { return Math.max(1, Number(publicEnv.settlementOracleThreshold) || 2); }
 
 interface AttestationResponseBody {
   attestation?: Attestation;
@@ -86,7 +96,7 @@ interface AttestationResponseBody {
  * because the claim is simply not true and retrying will not make it true.
  */
 export async function requestAttestation(claim: AttestationRequest): Promise<Attestation> {
-  const { accessToken, requestId, ...body } = claim;
+  const { accessToken, requestId, idempotencyKey = newIdempotencyKey(), ...body } = claim;
 
   let response: Response;
   try {
@@ -95,6 +105,7 @@ export async function requestAttestation(claim: AttestationRequest): Promise<Att
       headers: {
         "Content-Type": "application/json",
         [REQUEST_ID_HEADER]: requestId,
+        ...idempotencyHeaders(idempotencyKey),
         ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
       },
       body: JSON.stringify(body),
@@ -151,15 +162,18 @@ export async function requestAttestation(claim: AttestationRequest): Promise<Att
  */
 export function verifyAttestation(attestation: Attestation): boolean {
   try {
-    const expectedOracle = process.env.NEXT_PUBLIC_SETTLEMENT_ORACLE_PUBLIC_KEY || ORACLE_PUBLIC_KEY;
-    if (!expectedOracle) return false;
-    if (attestation.oraclePublicKey !== expectedOracle) return false;
-
+    const expectedOracle = publicEnv.settlementOraclePublicKey || ORACLE_PUBLIC_KEY;
+    const expected = new Set(getExpectedSigners());
+    const seen = new Set<string>();
     const message = buildClaimMessage(attestation.claim);
-    const signature = Buffer.from(attestation.signature, "hex");
-    if (signature.length !== 64) return false;
-
-    return Keypair.fromPublicKey(expectedOracle).verify(message, signature);
+    let valid = 0;
+    for (const entry of attestation.signatures) {
+      if (seen.has(entry.signer) || !expected.has(entry.signer)) continue;
+      seen.add(entry.signer);
+      const signature = Buffer.from(entry.signature, "hex");
+      if (signature.length === 64 && Keypair.fromPublicKey(entry.signer).verify(message, signature)) valid += 1;
+    }
+    return valid >= getThreshold();
   } catch {
     return false;
   }

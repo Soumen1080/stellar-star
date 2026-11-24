@@ -33,6 +33,7 @@ import {
   type AssetRef,
 } from "@/lib/stellar/assets";
 import { HORIZON_URL } from "@/lib/utils/constants";
+import { getCachedTrustline } from "@/lib/stellar/cache";
 
 /** Classic Stellar assets are int64 stroops with exactly 7 decimals. */
 const STROOPS_PER_UNIT = 10_000_000n;
@@ -391,28 +392,34 @@ export async function hasTrustline(
 ): Promise<boolean> {
   if (isNative(asset)) return true;
 
-  let response: Response;
-  try {
-    response = await fetchImpl(`${horizonUrl}/accounts/${account}`, { cache: "no-store" });
-  } catch {
-    throw new PathPaymentError("unavailable", "Could not reach Horizon to check the trustline.");
-  }
+  return getCachedTrustline(
+    account,
+    asset,
+    async () => {
+      let response: Response;
+      try {
+        response = await fetchImpl(`${horizonUrl}/accounts/${account}`, { cache: "no-store" });
+      } catch {
+        throw new PathPaymentError("unavailable", "Could not reach Horizon to check the trustline.");
+      }
 
-  if (!response.ok) {
-    throw new PathPaymentError(
-      "unavailable",
-      `Horizon returned HTTP ${response.status} while checking the trustline.`,
-    );
-  }
+      if (!response.ok) {
+        throw new PathPaymentError(
+          "unavailable",
+          `Horizon returned HTTP ${response.status} while checking the trustline.`,
+        );
+      }
 
-  const account_ = (await response.json()) as {
-    balances?: Array<{ asset_type?: string; asset_code?: string; asset_issuer?: string }>;
-  };
+      const account_ = (await response.json()) as {
+        balances?: Array<{ asset_type?: string; asset_code?: string; asset_issuer?: string }>;
+      };
 
-  return (account_.balances ?? []).some((balance) => {
-    if (balance.asset_type === "native") return false;
-    return balance.asset_code === asset.code && balance.asset_issuer === asset.issuer;
-  });
+      return (account_.balances ?? []).some((balance) => {
+        if (balance.asset_type === "native") return false;
+        return balance.asset_code === asset.code && balance.asset_issuer === asset.issuer;
+      });
+    },
+  );
 }
 
 /** Re-exported so callers building operations do not need a second import. */

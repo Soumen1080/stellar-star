@@ -21,6 +21,8 @@
 
 import { HORIZON_URL } from "@/lib/utils/constants";
 import { assetKey, fromHorizonFields, isNative, type AssetRef } from "@/lib/stellar/assets";
+import { chainMetadataCache, getCachedBaseReserve } from "@/lib/stellar/cache";
+import { resilientHorizonRead } from "@/lib/stellar/resilience";
 
 /**
  * Last-resort base reserve, in stroops (0.5 XLM at protocol 19+).
@@ -48,10 +50,11 @@ export function __resetBaseReserveCache(): void {
   cachedBaseReserveStroops = BASE_RESERVE_STROOPS;
   lastBaseReserveFetch = 0;
   baseReserveFromLedger = false;
+  chainMetadataCache.clear();
 }
 
 /**
- * Fetches the live base reserve from the network, with a 60s cache.
+ * Fetches the live base reserve from the network, with safe network-scoped caching.
  *
  * A failed read does NOT refresh the cache timestamp: retrying on the next call
  * is much better than pinning the hardcoded fallback for a minute, because
@@ -66,25 +69,41 @@ export async function getNetworkBaseReserve(
     return cachedBaseReserveStroops;
   }
 
-  try {
-    const res = await fetchImpl(`${horizonUrl}/ledgers?order=desc&limit=1`, {
-      cache: "no-store",
-      headers: { "Cache-Control": "no-cache" },
-    });
-    if (res.ok) {
-      const data = await res.json();
-      const val = data._embedded?.records?.[0]?.base_reserve_in_stroops;
-      if (val) {
-        cachedBaseReserveStroops = BigInt(val);
-        lastBaseReserveFetch = now;
-        baseReserveFromLedger = true;
+  const result = await getCachedBaseReserve(
+    async () => {
+      try {
+        const res = await fetchImpl(`${horizonUrl}/ledgers?order=desc&limit=1`, {
+          cache: "no-store",
+          headers: { "Cache-Control": "no-cache" },
+        });
+        if (res.ok) {
+          const data = await res.json();
+          const val = data._embedded?.records?.[0]?.base_reserve_in_stroops;
+          if (val) {
+            cachedBaseReserveStroops = BigInt(val);
+            lastBaseReserveFetch = Date.now();
+            baseReserveFromLedger = true;
+          }
+        }
+      } catch {
+        // Fall through to the previous value; the timestamp is deliberately not
+        // advanced, so the next call retries the ledger.
       }
-    }
-  } catch {
-    // Fall through to the previous value; the timestamp is deliberately not
-    // advanced, so the next call retries the ledger.
+      return cachedBaseReserveStroops;
+    },
+    horizonUrl,
+    { forceRefresh: !baseReserveFromLedger },
+  );
+
+  if (!baseReserveFromLedger) {
+    chainMetadataCache.invalidateByFilter({
+      network: horizonUrl,
+      entityType: "ledger_params",
+      entityId: "base_reserve",
+    });
   }
-  return cachedBaseReserveStroops;
+
+  return result;
 }
 
 /** Every account carries two base reserves before any subentries. */
@@ -202,10 +221,16 @@ export async function getAccountState(
   horizonUrl: string = HORIZON_URL,
   fetchImpl: typeof fetch = fetch,
 ): Promise<AccountState> {
-  const response = await fetchImpl(`${horizonUrl}/accounts/${publicKey}`, {
-    cache: "no-store",
-    headers: { "Cache-Control": "no-cache" },
-  });
+  const fetchAccounts = () =>
+    fetchImpl(`${horizonUrl}/accounts/${publicKey}`, {
+      cache: "no-store",
+      headers: { "Cache-Control": "no-cache" },
+    });
+
+  const response =
+    fetchImpl === fetch
+      ? await resilientHorizonRead(fetchAccounts)
+      : await fetchAccounts();
 
   const baseReserveStroops = await getNetworkBaseReserve(horizonUrl, fetchImpl);
 

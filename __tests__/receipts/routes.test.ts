@@ -13,7 +13,10 @@ jest.mock("@/lib/supabase/queries", () => ({
 jest.mock("@/lib/supabase/server", () => ({
   isServerSupabaseConfigured: () => true,
   createServerClientForToken: (token: string) => ({ kind: "user", wallet: jest.requireActual("@/lib/supabase/serverAuth").verifyWalletSession(token)?.wallet_address }),
-  createServiceRoleClient: () => ({ kind: "service" }),
+  createServiceRoleClient: () => ({
+    kind: "service",
+    rpc: jest.fn().mockResolvedValue({ data: { allowed: true, remaining: 10, reset_ms: 60000 }, error: null }),
+  }),
 }));
 
 jest.mock("@/lib/receipts/store", () => {
@@ -54,9 +57,20 @@ const receipt = (overrides: Partial<ExpenseReceipt> = {}): ExpenseReceipt => ({
   ...overrides,
 });
 
-function request(url: string, { wallet = PAYER, method = "GET", body }: { wallet?: string | null; method?: string; body?: FormData } = {}) {
+function request(
+  url: string,
+  {
+    wallet = PAYER,
+    method = "GET",
+    body,
+    idempotencyKey,
+  }: { wallet?: string | null; method?: string; body?: FormData; idempotencyKey?: string | null } = {},
+) {
   const headers: Record<string, string> = {};
   if (wallet) headers.Authorization = `Bearer ${signWalletSession(wallet)}`;
+  // Writes require an Idempotency-Key (#412); null sends none.
+  const key = idempotencyKey === undefined && method !== "GET" ? crypto.randomUUID() : idempotencyKey;
+  if (key) headers["Idempotency-Key"] = key;
   return new NextRequest(url, { method, headers, body });
 }
 
@@ -172,6 +186,76 @@ describe("mobile upload", () => {
       expenseCtx,
     );
     expect(res.status).toBe(400);
+  });
+});
+
+describe("idempotency keys (#412)", () => {
+  it("refuses an upload without a key before reading the file", async () => {
+    const res = await uploadRoute(
+      request(`http://x/api/expenses/${EXPENSE_ID}/receipts`, {
+        method: "POST",
+        idempotencyKey: null,
+        body: uploadForm(new Blob([JPEG], { type: "image/jpeg" }), "bill.jpg"),
+      }),
+      expenseCtx,
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe("IDEMPOTENCY_KEY_REQUIRED");
+    expect(mocked.loadExpenseAccess).not.toHaveBeenCalled();
+    expect(mocked.storeReceipt).not.toHaveBeenCalled();
+  });
+
+  it("stores a retried upload once and replays the 201 privately", async () => {
+    const key = crypto.randomUUID();
+    const upload = () =>
+      uploadRoute(
+        request(`http://x/api/expenses/${EXPENSE_ID}/receipts`, {
+          method: "POST",
+          idempotencyKey: key,
+          body: uploadForm(new Blob([JPEG], { type: "image/jpeg" }), "bill.jpg", "Dinner"),
+        }),
+        expenseCtx,
+      );
+    const first = await upload();
+    const retry = await upload();
+    expect(first.status).toBe(201);
+    expect(retry.status).toBe(201);
+    expect(retry.headers.get("Idempotent-Replayed")).toBe("true");
+    expect(retry.headers.get("cache-control")).toBe("no-store, private");
+    expect(retry.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(mocked.storeReceipt).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats different bytes under the same key as a conflict", async () => {
+    const key = crypto.randomUUID();
+    const send = (bytes: BlobPart) =>
+      uploadRoute(
+        request(`http://x/api/expenses/${EXPENSE_ID}/receipts`, {
+          method: "POST",
+          idempotencyKey: key,
+          body: uploadForm(new Blob([bytes], { type: "image/jpeg" }), "bill.jpg"),
+        }),
+        expenseCtx,
+      );
+    expect((await send(JPEG)).status).toBe(201);
+    const other = new Uint8Array([...JPEG, 0x00]);
+    const conflict = await send(other);
+    expect(conflict.status).toBe(409);
+    expect((await conflict.json()).code).toBe("IDEMPOTENCY_CONFLICT");
+    expect(mocked.storeReceipt).toHaveBeenCalledTimes(1);
+  });
+
+  it("replays a retried removal instead of removing again", async () => {
+    mocked.loadReceipt.mockResolvedValue({ receipt: receipt(), storagePath: "receipts/e/r.jpg" });
+    const key = crypto.randomUUID();
+    const remove = () =>
+      removeRoute(request(`http://x/api/receipts/${RECEIPT_ID}`, { method: "DELETE", idempotencyKey: key }), receiptCtx);
+    const first = await remove();
+    const retry = await remove();
+    expect(first.status).toBe(200);
+    expect(retry.status).toBe(200);
+    expect(retry.headers.get("Idempotent-Replayed")).toBe("true");
+    expect(mocked.removeReceipt).toHaveBeenCalledTimes(1);
   });
 });
 

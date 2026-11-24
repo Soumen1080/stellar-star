@@ -37,7 +37,7 @@ interface BookingReferencesPanelProps {
   onDeleteBooking: (bookingId: string) => Promise<void>;
 }
 
-const TYPE_ICONS: Record<BookingType, React.ComponentType<{ size?: number; className?: string }>> = {
+const TYPE_ICONS: Record<BookingType, React.ComponentType<any>> = {
   flight: Plane,
   hotel: Building,
   rental: Car,

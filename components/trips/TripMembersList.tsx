@@ -1,12 +1,17 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { ExternalLink, UserPlus } from "lucide-react";
 import type { Member } from "@/types/expense";
 import { normalizeWalletAddress } from "@/lib/trip/members";
 import type { Trip, TripPermission, TripRole } from "@/types/trip";
 import { canManageTripRoles, memberRole, TRIP_PERMISSIONS } from "@/lib/trip/roles";
 import { useSession } from "@/lib/supabase/useSession";
+import {
+  createIdempotencyKeyHolder,
+  idempotencyHeaders,
+  isIdempotencyConflict,
+} from "@/lib/idempotency/client";
 export { MemberList } from "./MemberList";
 
 interface TripMembersListProps {
@@ -31,6 +36,9 @@ export function TripMembersList({
   const [customPermissions, setCustomPermissions] = useState<Record<string, TripPermission[]>>({});
   const [busyMemberId, setBusyMemberId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // One key per role change / transfer, reused if that action is retried (#412).
+  const roleKey = useRef(createIdempotencyKeyHolder());
+  const transferKey = useRef(createIdempotencyKeyHolder());
   const [roleHistory, setRoleHistory] = useState<Array<{
     id: string;
     member_id: string;
@@ -55,6 +63,7 @@ export function TripMembersList({
         headers: {
           Authorization: `Bearer ${sessionToken}`,
           "Content-Type": "application/json",
+          ...idempotencyHeaders(roleKey.current.current()),
         },
         body: JSON.stringify({
           role,
@@ -64,6 +73,7 @@ export function TripMembersList({
         }),
       });
       const result = await response.json();
+      if (response.ok || isIdempotencyConflict(response.status, result)) roleKey.current.reset();
       if (!response.ok) throw new Error(result.error ?? "Unable to change this member's role.");
       setPendingRole((value) => ({ ...value, [member.id]: role }));
       await onRoleChanged?.();
@@ -84,10 +94,12 @@ export function TripMembersList({
         headers: {
           Authorization: `Bearer ${sessionToken}`,
           "Content-Type": "application/json",
+          ...idempotencyHeaders(transferKey.current.current()),
         },
         body: JSON.stringify({ memberId: member.id }),
       });
       const result = await response.json();
+      if (response.ok || isIdempotencyConflict(response.status, result)) transferKey.current.reset();
       if (!response.ok) throw new Error(result.error ?? "Unable to transfer trip ownership.");
       await onRoleChanged?.();
     } catch (transferError) {

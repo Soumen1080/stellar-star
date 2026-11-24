@@ -18,7 +18,8 @@ import { useWallet } from "@/hooks/useWallet";
 export default function ExpensesPage() {
   const { publicKey } = useWallet();
   const { user } = useAuth();
-  const { expenses, deleteExpense, isLoading, isOffline } = useExpense();
+  const { expenses, deleteExpense, isLoading, isOffline, expenseDrafts, syncExpenseDrafts, discardExpenseDraft } = useExpense();
+  const pendingExpenseDrafts = expenseDrafts ?? [];
   const [showForm, setShowForm] = useState(false);
   const { success: toastSuccess, error: toastError } = useToast();
 
@@ -85,6 +86,17 @@ export default function ExpensesPage() {
               You are currently viewing offline data. Some features may be unavailable.
             </div>
           )}
+
+          {pendingExpenseDrafts.length > 0 && <section aria-label="Queued expense drafts" className="mb-6 rounded-xl border border-amber-200 bg-amber-50 p-4">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div><h2 className="font-semibold text-amber-950">Expense drafts awaiting sync</h2><p className="text-xs text-amber-800">Drafts are not shared until the server accepts them. Payment and settlement still require a connection.</p></div>
+              <button type="button" onClick={() => void syncExpenseDrafts()} disabled={isOffline} className="min-h-11 rounded-lg bg-amber-900 px-3 text-sm font-semibold text-white disabled:opacity-50">Sync now</button>
+            </div>
+            <ul className="space-y-2">{pendingExpenseDrafts.map((draft) => <li key={draft.idempotencyKey} className="flex items-start justify-between gap-3 rounded-lg bg-white/80 p-3 text-sm">
+              <div><p className="font-medium text-[#0F0F14]">{draft.expense.title}</p><p className={draft.status === "conflict" ? "text-red-700" : "text-amber-800"}>{draft.status === "conflict" ? `Conflict: ${draft.message || "Review required."}` : "Queued · waiting for connection"}</p></div>
+              {draft.status === "conflict" && <button type="button" onClick={() => discardExpenseDraft(draft.idempotencyKey)} className="min-h-11 shrink-0 px-2 text-red-700 underline">Discard draft</button>}
+            </li>)}</ul>
+          </section>}
 
           {isLoading ? (
             <div className="flex justify-center py-12">

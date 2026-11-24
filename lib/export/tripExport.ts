@@ -197,6 +197,7 @@ export function computeTripBalances(trip: Trip, expenses: Expense[]): AssetBalan
   const nameOf = new Map(trip.members.map((m) => [m.id, m]));
 
   for (const expense of expenses) {
+    if (expense.voided) continue;
     const asset = settlementAssetOf(expense);
     const bucket = byAsset.get(asset) ?? { total: Money.zero(), members: new Map() };
     byAsset.set(asset, bucket);

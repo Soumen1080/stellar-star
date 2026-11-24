@@ -14,6 +14,7 @@ import type { ExpenseReceipt, ReceiptLink } from "@/types/receipt";
 import type { ExpenseAccess } from "./access";
 import type { InspectedReceipt } from "./inspect";
 import { ReceiptValidationError } from "./inspect";
+import { consumeTenantQuota, releaseTenantStorageQuota } from "@/lib/quotas/server";
 import {
   MAX_RECEIPTS_PER_EXPENSE,
   RECEIPT_BUCKET,
@@ -21,6 +22,7 @@ import {
   receiptRetentionDays,
   type ReceiptContentType,
 } from "./policy";
+import { cleanupAbandonedUploads, recordPromotedIntent, recordQuarantinedIntent } from "./intent";
 
 type Client = SupabaseClient<Database>;
 
@@ -29,10 +31,12 @@ const RECEIPT_COLUMNS =
 
 export class ReceiptStoreError extends Error {
   readonly status: number;
-  constructor(message: string, status = 500) {
+  readonly retryAfterMs: number;
+  constructor(message: string, status = 500, retryAfterMs = 0) {
     super(message);
     this.name = "ReceiptStoreError";
     this.status = status;
+    this.retryAfterMs = retryAfterMs;
   }
 }
 
@@ -125,7 +129,15 @@ export async function storeReceipt(
     inspected,
     bytes,
     now = new Date(),
-  }: { expenseId: string; wallet: string; inspected: InspectedReceipt; bytes: Uint8Array; now?: Date },
+    intentId,
+  }: {
+    expenseId: string;
+    wallet: string;
+    inspected: InspectedReceipt;
+    bytes: Uint8Array;
+    now?: Date;
+    intentId?: string;
+  },
 ): Promise<ExpenseReceipt> {
   const { count, error: countError } = await serviceClient
     .from("expense_receipts")
@@ -145,13 +157,26 @@ export async function storeReceipt(
   const storagePath = receiptStoragePath(expenseId, id, inspected.ext, quarantined);
   const retainUntil = new Date(now.getTime() + receiptRetentionDays() * 86_400_000);
 
+  const quota = await consumeTenantQuota(wallet, { objects: 1, bytes: bytes.byteLength }, id);
+  if (!quota.available) throw new ReceiptStoreError("Storage quota service is unavailable.", 503);
+  if (!quota.allowed) {
+    throw new ReceiptStoreError(
+      quota.metric === "objects" ? "Your object storage limit has been reached." : "Your storage byte limit has been reached.",
+      429,
+      quota.resetMs,
+    );
+  }
+
   const bucket = serviceClient.storage.from(RECEIPT_BUCKET);
   const { error: uploadError } = await bucket.upload(storagePath, bytes, {
     contentType: inspected.contentType,
     cacheControl: "private, max-age=0, no-store",
     upsert: false,
   });
-  if (uploadError) throw new ReceiptStoreError("Could not store the file. Please try again.", 502);
+  if (uploadError) {
+    await releaseTenantStorageQuota(id);
+    throw new ReceiptStoreError("Could not store the file. Please try again.", 502);
+  }
 
   const { data, error } = await serviceClient
     .from("expense_receipts")
@@ -176,12 +201,44 @@ export async function storeReceipt(
   if (error || !data) {
     // Never leave an object without the metadata row that governs its access
     // and retention.
-    await bucket.remove([storagePath]);
+    const { error: cleanupError } = await bucket.remove([storagePath]);
+    if (!cleanupError) await releaseTenantStorageQuota(id);
     if (error?.code === "23505") {
       throw new ReceiptValidationError("This exact file is already attached to the expense.", 409);
     }
     throw new ReceiptStoreError("Could not save the receipt details. Please try again.");
   }
+
+  // Update upload intent if intentId was passed
+  if (intentId) {
+    if (quarantined) {
+      await recordQuarantinedIntent(serviceClient, {
+        intentId,
+        storagePath,
+        fileName: inspected.fileName,
+        contentType: inspected.contentType,
+        sizeBytes: inspected.sizeBytes,
+        checksum: inspected.checksum,
+        caption: inspected.caption,
+        scanResult: { ...inspected.scan },
+        now,
+      }).catch(() => {});
+    } else {
+      await recordPromotedIntent(serviceClient, {
+        intentId,
+        receiptId: id,
+        promotedPath: storagePath,
+        fileName: inspected.fileName,
+        contentType: inspected.contentType,
+        sizeBytes: inspected.sizeBytes,
+        checksum: inspected.checksum,
+        caption: inspected.caption,
+        scanResult: { ...inspected.scan },
+        now,
+      }).catch(() => {});
+    }
+  }
+
   return rowToReceipt(data as ExpenseReceiptRow);
 }
 
@@ -226,6 +283,14 @@ export async function removeReceipt(
     now?: Date;
   },
 ): Promise<void> {
+  const { data: quotaRow, error: quotaRowError } = await serviceClient
+    .from("expense_receipts")
+    .select("id, size_bytes, uploaded_by_wallet, status")
+    .eq("id", receiptId)
+    .maybeSingle();
+  if (quotaRowError) throw new ReceiptStoreError("Could not check storage quota details.");
+  if (!quotaRow) throw new ReceiptStoreError("That receipt is no longer available.", 404);
+  if (quotaRow.status === "removed") return;
   const { error: removeError } = await serviceClient.storage.from(RECEIPT_BUCKET).remove([storagePath]);
   if (removeError) throw new ReceiptStoreError("Could not delete the stored file.", 502);
 
@@ -240,6 +305,7 @@ export async function removeReceipt(
       removal_reason: reason,
     })
     .eq("id", receiptId);
+  await releaseTenantStorageQuota(receiptId);
   if (error) throw new ReceiptStoreError("The file was deleted but its record could not be updated.");
 }
 
@@ -250,7 +316,7 @@ export async function removeReceipt(
 export async function purgeExpiredReceipts(
   serviceClient: Client,
   { now = new Date(), batchSize = 100 }: { now?: Date; batchSize?: number } = {},
-): Promise<{ purged: number; failed: number }> {
+): Promise<{ purged: number; failed: number; abandonedCleaned: number }> {
   const { data, error } = await serviceClient
     .from("expense_receipts")
     .select("id, storage_path, expense_id, retain_until")
@@ -275,5 +341,12 @@ export async function purgeExpiredReceipts(
       failed += 1;
     }
   }
-  return { purged, failed };
+
+  // Clean up abandoned upload intents and orphaned quarantine objects (#451)
+  const { failed: abandonedFailed } = await cleanupAbandonedUploads(serviceClient, {
+    now,
+    batchSize,
+  }).catch(() => ({ cleaned: 0, failed: 0 }));
+
+  return { purged, failed: failed + abandonedFailed };
 }

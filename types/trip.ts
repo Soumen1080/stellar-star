@@ -1,4 +1,5 @@
 import type { Expense, Member, SplitMode } from "./expense";
+export type { Member } from "./expense";
 import type { TravelWorkspace } from "./workspace";
 export type { TripPermission, TripRole } from "./expense";
 
@@ -51,6 +52,8 @@ export interface Trip {
   copiedFromTripId?: string;
   /** Lightweight travel workspace: itinerary, checklists, booking references */
   workspace?: TravelWorkspace;
+  /** Pilot-only shared household chores; disabled until the owner opts in. */
+  householdCoordinationEnabled?: boolean;
 }
 
 export type TripFormData = {

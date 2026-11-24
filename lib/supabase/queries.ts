@@ -6,9 +6,29 @@
  * re-derived (and drifting) inside each React context.
  */
 
+import {
+  CursorError,
+  DEFAULT_PAGE_SIZE,
+  MAX_PAGE_SIZE,
+  decodeCursor,
+  keysetOrFilter,
+  parseLimit,
+  toKeysetPage,
+  type KeysetCursor,
+  type KeysetPage,
+} from "@/lib/pagination/keyset";
 import type { PostgrestError } from "@supabase/supabase-js";
-import type { Expense, Member, SplitShare } from "@/types/expense";
+import type { Expense, Member, SplitShare, CorrectionType } from "@/types/expense";
 import type { Trip, TripPermission, TripRole, TripTemplate } from "@/types/trip";
+import type {
+  HouseholdChore,
+  HouseholdChoreCompletion,
+  HouseholdChoreDraft,
+  HouseholdChorePreference,
+  HouseholdChoreCompletionRow,
+  HouseholdChorePreferenceRow,
+  HouseholdChoreRow,
+} from "@/types/householdChore";
 import { normalizeWorkspace } from "@/types/workspace";
 import type {
   ExpenseInsert,
@@ -34,7 +54,7 @@ import {
 import type { QueryCacheDomain } from "./cacheInvalidation";
 import { normalizeTags } from "@/lib/expense/tags";
 import { normalizeCategory } from "@/lib/expense/categories";
-import { searchTerms, dateRangeBounds, encodeHistoryCursor, type ExpenseHistoryFilters, type HistoryCursor } from "@/lib/expense/historyFilters";
+import { searchTerms, dateRangeBounds, encodeHistoryCursor, HistoryFilterError, type ExpenseHistoryFilters, type HistoryCursor } from "@/lib/expense/historyFilters";
 import { applyInstallment, markInstallmentProof, type NewInstallment } from "@/lib/settlement/installments";
 import { Money } from "@/lib/money";
 import {
@@ -46,6 +66,7 @@ import {
 } from "@/lib/trip/templates";
 
 export { ExpenseConflictError, type ConflictDetails };
+export * from "./queryBudget";
 
 export function cacheDomainsForMutation(mutation: "trip_write" | "trip_members_write" | "trip_expense_link" | "expense_write"): QueryCacheDomain[] {
   return mutation === "trip_write" ? ["trips"] : ["trips", "expenses"];
@@ -63,64 +84,43 @@ export interface UserProfile {
 }
 
 // ─── Pagination ───────────────────────────────────────────────────────────────
+//
+// Every large list pages with an opaque (created_at, id) keyset cursor
+// (#449, lib/pagination/keyset.ts). Offset paging is not supported: it
+// re-counts skipped rows and duplicates or skips rows under concurrent inserts.
 
-export const DEFAULT_PAGE_SIZE = 20;
-export const MAX_PAGE_SIZE = 100;
+export { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE };
+
+/**
+ * Upper bound for "load the whole collection" callers (provider bootstrap,
+ * exports). They read in keyset pages of MAX_PAGE_SIZE and stop here instead
+ * of issuing one unbounded query.
+ */
+export const MAX_COLLECTION_ROWS = 1_000;
 
 export interface PaginationParams {
   /** Maximum number of records to return (capped by MAX_PAGE_SIZE, default 20). */
-  limit?: number;
-  /** ISO timestamp cursor for cursor-based pagination (fetches items created before cursor). */
-  cursor?: string | null;
-  /** Offset for offset-based pagination. */
-  offset?: number;
+  limit?: number | string | null;
+  /** Opaque cursor from a previous page's `nextCursor`, or an already-decoded one. */
+  cursor?: string | KeysetCursor | null;
 }
 
-export interface PaginatedResponse<T> {
-  data: T[];
-  pagination: {
-    limit: number;
-    nextCursor: string | null;
-    hasMore: boolean;
-  };
-}
+export type PaginatedResponse<T> = KeysetPage<T>;
 
 export function parsePaginationParams(params: {
   limit?: string | number | null;
-  cursor?: string | null;
+  cursor?: string | KeysetCursor | null;
   offset?: string | number | null;
-}): { limit: number; cursor: string | null; offset?: number } {
-  let limit = DEFAULT_PAGE_SIZE;
-  if (params.limit !== undefined && params.limit !== null && params.limit !== "") {
-    const parsed = typeof params.limit === "number" ? params.limit : Number(params.limit);
-    if (!Number.isInteger(parsed) || parsed < 1) {
-      throw new Error("Invalid limit: must be a positive integer.");
-    }
-    limit = Math.min(parsed, MAX_PAGE_SIZE);
-  }
-
-  let cursor: string | null = null;
-  if (params.cursor) {
-    const trimmed = params.cursor.trim();
-    if (trimmed) {
-      const parsedDate = new Date(trimmed);
-      if (isNaN(parsedDate.getTime())) {
-        throw new Error("Invalid cursor: must be a valid ISO 8601 date string.");
-      }
-      cursor = parsedDate.toISOString();
-    }
-  }
-
-  let offset: number | undefined = undefined;
+}): { limit: number; cursor: KeysetCursor | null } {
   if (params.offset !== undefined && params.offset !== null && params.offset !== "") {
-    const parsedOffset = typeof params.offset === "number" ? params.offset : Number(params.offset);
-    if (!Number.isInteger(parsedOffset) || parsedOffset < 0) {
-      throw new Error("Invalid offset: must be a non-negative integer.");
-    }
-    offset = parsedOffset;
+    throw new CursorError(
+      "Offset pagination is not supported: pass the nextCursor returned by the previous page.",
+    );
   }
-
-  return { limit, cursor, offset };
+  const limit = parseLimit(params.limit);
+  const cursor =
+    params.cursor && typeof params.cursor === "object" ? params.cursor : decodeCursor(params.cursor ?? null);
+  return { limit, cursor };
 }
 
 // ─── Error translation ────────────────────────────────────────────────────────
@@ -138,6 +138,9 @@ export const PG_SCHEMA_CACHE_MISS = "PGRST205";
 export const PG_UNIQUE_VIOLATION = "23505";
 export const PG_INSUFFICIENT_PRIVILEGE = "42501";
 export const PG_JWT_INVALID = "PGRST301";
+export const PG_STATEMENT_TIMEOUT = "57014";
+export const PG_LOCK_NOT_AVAILABLE = "55P03";
+export const PG_IDLE_IN_TRANSACTION_TIMEOUT = "25P03";
 
 export class DatabaseError extends Error {
   readonly code: string | undefined;
@@ -168,6 +171,27 @@ function isAuthProblem(error: PostgrestError): boolean {
   );
 }
 
+function isTimeoutProblem(error: PostgrestError): boolean {
+  return (
+    error.code === PG_STATEMENT_TIMEOUT ||
+    /statement timeout|query_canceled|canceling statement due to statement timeout/i.test(error.message)
+  );
+}
+
+function isLockProblem(error: PostgrestError): boolean {
+  return (
+    error.code === PG_LOCK_NOT_AVAILABLE ||
+    /lock timeout|canceling statement due to lock timeout|could not obtain lock/i.test(error.message)
+  );
+}
+
+function isIdleProblem(error: PostgrestError): boolean {
+  return (
+    error.code === PG_IDLE_IN_TRANSACTION_TIMEOUT ||
+    /idle-in-transaction session timeout|terminating connection due to idle-in-transaction timeout/i.test(error.message)
+  );
+}
+
 /** Turns a PostgREST error into something worth putting in front of a user. */
 export function toDatabaseError(error: PostgrestError, action: string): DatabaseError {
   if (isMissingTable(error)) {
@@ -184,6 +208,27 @@ export function toDatabaseError(error: PostgrestError, action: string): Database
     return new DatabaseError(
       "Your wallet session is no longer valid. Please sign in with your wallet again.",
       error.code,
+      error
+    );
+  }
+  if (isTimeoutProblem(error)) {
+    return new DatabaseError(
+      "The database query took too long to execute and was terminated. Please retry with a narrower date or search filter.",
+      error.code || PG_STATEMENT_TIMEOUT,
+      error
+    );
+  }
+  if (isLockProblem(error)) {
+    return new DatabaseError(
+      "The database record is currently locked by another concurrent operation. Please retry in a moment.",
+      error.code || PG_LOCK_NOT_AVAILABLE,
+      error
+    );
+  }
+  if (isIdleProblem(error)) {
+    return new DatabaseError(
+      "The database transaction was idle for too long and timed out. Please retry.",
+      error.code || PG_IDLE_IN_TRANSACTION_TIMEOUT,
       error
     );
   }
@@ -238,6 +283,13 @@ export function rowToExpense(row: ExpenseRow): Expense {
     settled: row.settled,
     version: row.version ?? 1,
     updatedAt: row.updated_at,
+    voided: row.voided ?? false,
+    voidedAt: row.voided_at ?? undefined,
+    voidedByWallet: row.voided_by_wallet ?? undefined,
+    voidReason: row.void_reason ?? undefined,
+    correctionOfExpenseId: row.correction_of_expense_id ?? undefined,
+    correctionType: (row.correction_type as CorrectionType) ?? undefined,
+    correctionReason: row.correction_reason ?? undefined,
   };
 }
 
@@ -262,6 +314,48 @@ export function rowToTrip(row: TripRow): Trip {
     sourceTemplateId: row.source_template_id ?? undefined,
     copiedFromTripId: row.copied_from_trip_id ?? undefined,
     workspace: normalizeWorkspace(row.workspace),
+    householdCoordinationEnabled: row.household_coordination_enabled ?? false,
+  };
+}
+
+export function rowToHouseholdChore(row: HouseholdChoreRow): HouseholdChore {
+  return {
+    id: row.id,
+    tripId: row.trip_id,
+    title: row.title,
+    details: row.details ?? undefined,
+    cadence: row.cadence,
+    rotationWallets: row.rotation_wallets ?? [],
+    rotationCursor: row.rotation_cursor ?? 0,
+    nextDueOn: row.next_due_on,
+    active: row.active,
+    createdByWallet: row.created_by_wallet,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export function rowToHouseholdChoreCompletion(
+  row: HouseholdChoreCompletionRow,
+): HouseholdChoreCompletion {
+  return {
+    id: row.id,
+    choreId: row.chore_id,
+    tripId: row.trip_id,
+    completedByWallet: row.completed_by_wallet,
+    dueOn: row.due_on,
+    supplyExpenseId: row.supply_expense_id ?? undefined,
+    completedAt: row.completed_at,
+  };
+}
+
+export function rowToHouseholdChorePreference(
+  row: HouseholdChorePreferenceRow,
+): HouseholdChorePreference {
+  return {
+    tripId: row.trip_id,
+    walletAddress: row.wallet_address,
+    optedOut: row.opted_out,
   };
 }
 
@@ -357,6 +451,13 @@ export function expenseToInsert(expense: Expense, creatorWallet: string): Expens
     version: expense.version ?? 1,
     created_by_wallet: creatorWallet,
     created_at: expense.createdAt,
+    voided: expense.voided ?? false,
+    voided_at: expense.voidedAt ?? null,
+    voided_by_wallet: expense.voidedByWallet ?? null,
+    void_reason: expense.voidReason ?? null,
+    correction_of_expense_id: expense.correctionOfExpenseId ?? null,
+    correction_type: expense.correctionType ?? null,
+    correction_reason: expense.correctionReason ?? null,
   };
 }
 
@@ -407,6 +508,7 @@ export function tripToInsert(trip: Trip, creatorWallet: string): TripInsert {
     recurring_rules: normalizeRecurringRules(trip.recurringRules) as unknown as Json,
     permissions: normalizePermissions(trip.permissions) as unknown as Json,
     workspace: (trip.workspace ? normalizeWorkspace(trip.workspace) : null) as unknown as Json,
+    household_coordination_enabled: trip.householdCoordinationEnabled ?? false,
   };
 }
 
@@ -430,6 +532,9 @@ export function tripToUpdate(updates: Partial<Trip>): TripUpdate {
   if (updates.workspace !== undefined) {
     patch.workspace = normalizeWorkspace(updates.workspace) as unknown as Json;
   }
+  if (updates.householdCoordinationEnabled !== undefined) {
+    patch.household_coordination_enabled = updates.householdCoordinationEnabled;
+  }
   return patch;
 }
 
@@ -439,9 +544,9 @@ export function tripToUpdate(updates: Partial<Trip>): TripUpdate {
 
 const USER_COLUMNS = "id, wallet_address, display_name, created_at, updated_at, last_login_at";
 const EXPENSE_COLUMNS =
-  "id, title, description, category, tags, total_amount, currency, exchange_rate, exchange_rate_timestamp, exchange_rate_source, entered_amount, settlement_asset, split_mode, paid_by_member_id, members, shares, settled, created_by_wallet, member_wallets, created_at, updated_at";
+  "id, title, description, category, tags, total_amount, currency, exchange_rate, exchange_rate_timestamp, exchange_rate_source, entered_amount, settlement_asset, split_mode, paid_by_member_id, members, shares, settled, created_by_wallet, member_wallets, created_at, updated_at, voided, voided_at, voided_by_wallet, void_reason, correction_of_expense_id, correction_type, correction_reason";
 const TRIP_COLUMNS =
-  "id, name, description, members, expense_ids, settled, created_by_wallet, member_wallets, starts_on, ends_on, recurring_rules, permissions, source_template_id, copied_from_trip_id, workspace, created_at, updated_at";
+  "id, name, description, members, expense_ids, settled, created_by_wallet, member_wallets, starts_on, ends_on, recurring_rules, permissions, source_template_id, copied_from_trip_id, workspace, household_coordination_enabled, created_at, updated_at";
 const TRIP_TEMPLATE_COLUMNS =
   "id, owner_wallet, name, description, members, recurring_rules, permissions, duration_days, source_trip_id, created_at, updated_at";
 const SETTLEMENT_INTENT_COLUMNS =
@@ -549,82 +654,93 @@ export async function updateUserDisplayName(
 
 // ─── Expenses ─────────────────────────────────────────────────────────────────
 
+// ─── Keyset reads (#449) ──────────────────────────────────────────────────────
+
 /**
- * Every expense the session's wallet participates in.
+ * One (created_at DESC, id DESC) keyset page. The tuple predicate and the
+ * matching composite index (idx_trips_created_at_id / idx_expenses_created_at_id)
+ * make every page an index range scan, however deep the reader pages.
+ */
+async function fetchKeysetPage<T extends { createdAt: string; id: string }>(
+  client: StellarStarClient,
+  table: "trips" | "expenses",
+  columns: string,
+  map: (row: any) => T,
+  action: string,
+  limit: number,
+  cursor: KeysetCursor | null,
+): Promise<KeysetPage<T>> {
+  let query = (client.from(table) as any)
+    .select(columns)
+    .order("created_at", { ascending: false })
+    .order("id", { ascending: false });
+  if (cursor) query = query.or(keysetOrFilter(cursor));
+
+  const { data, error } = await query.limit(limit + 1);
+  if (error) throw toDatabaseError(error, action);
+  return toKeysetPage(((data ?? []) as any[]).map(map), limit, (row) => row);
+}
+
+/**
+ * Reads a collection in MAX_PAGE_SIZE keyset pages, stopping at `maxRows`.
+ * Replaces the old unbounded whole-table select.
+ */
+async function fetchKeysetCollection<T extends { createdAt: string; id: string }>(
+  client: StellarStarClient,
+  table: "trips" | "expenses",
+  columns: string,
+  map: (row: any) => T,
+  action: string,
+  options?: PaginationParams,
+): Promise<T[]> {
+  const { limit, cursor } = parsePaginationParams({ limit: options?.limit, cursor: options?.cursor });
+  if (options?.limit !== undefined && options.limit !== null) {
+    return (await fetchKeysetPage(client, table, columns, map, action, limit, cursor)).data;
+  }
+
+  const rows: T[] = [];
+  let next = cursor;
+  while (rows.length < MAX_COLLECTION_ROWS) {
+    const page = await fetchKeysetPage(
+      client, table, columns, map, action,
+      Math.min(MAX_PAGE_SIZE, MAX_COLLECTION_ROWS - rows.length),
+      next,
+    );
+    rows.push(...page.data);
+    if (!page.pagination.hasMore || !page.pagination.nextCursor) break;
+    next = decodeCursor(page.pagination.nextCursor);
+  }
+  return rows;
+}
+
+/**
+ * Expenses the session's wallet participates in, newest first.
  *
  * There is no `.eq()` on the wallet here on purpose: the RLS SELECT policy
  * already restricts rows to `member_wallets @> ARRAY[current_wallet()]`, and
  * duplicating that filter in the client would be a second place to get wrong.
+ *
+ * With `limit` this reads one keyset page; without it, the collection is read
+ * in bounded keyset pages up to MAX_COLLECTION_ROWS.
  */
 export async function fetchExpenses(
   client: StellarStarClient = requireAuthenticatedClient(),
   options?: PaginationParams
 ): Promise<Expense[]> {
-  let query = client
-    .from("expenses")
-    .select(EXPENSE_COLUMNS)
-    .order("created_at", { ascending: false })
-    .order("id", { ascending: false });
-
-  if (options?.cursor) {
-    query = query.lt("created_at", options.cursor);
-  }
-
-  if (options?.offset !== undefined && options.offset > 0) {
-    const limit = options.limit ? Math.min(Math.max(1, options.limit), MAX_PAGE_SIZE) : DEFAULT_PAGE_SIZE;
-    query = query.range(options.offset, options.offset + limit - 1);
-  } else if (options?.limit) {
-    query = query.limit(Math.min(Math.max(1, options.limit), MAX_PAGE_SIZE));
-  }
-
-  const { data, error } = await query;
-  if (error) throw toDatabaseError(error, "load expenses");
-  return (data ?? []).map((row) => rowToExpense(row as ExpenseRow));
+  return fetchKeysetCollection(client, "expenses", EXPENSE_COLUMNS, (row) => rowToExpense(row as ExpenseRow), "load expenses", options);
 }
 
 /**
- * Fetches a paginated page of expenses with stable ordering and cursor tracking.
+ * One keyset page of expenses with an opaque `nextCursor`. Concurrent inserts
+ * never duplicate or skip rows across pages.
  */
 export async function fetchExpensesPaginated(
   params?: PaginationParams,
   client: StellarStarClient = requireAuthenticatedClient(),
-  filters?: { tripId?: string }
+  _filters?: { tripId?: string }
 ): Promise<PaginatedResponse<Expense>> {
-  const { limit, cursor, offset } = parsePaginationParams(params ?? {});
-
-  let query = client
-    .from("expenses")
-    .select(EXPENSE_COLUMNS)
-    .order("created_at", { ascending: false })
-    .order("id", { ascending: false });
-
-  if (cursor) {
-    query = query.lt("created_at", cursor);
-  }
-
-  if (offset !== undefined && offset > 0) {
-    query = query.range(offset, offset + limit);
-  } else {
-    // Read limit + 1 to detect if another page exists without count(*) overhead
-    query = query.limit(limit + 1);
-  }
-
-  const { data, error } = await query;
-  if (error) throw toDatabaseError(error, "load expenses");
-
-  const rows = (data ?? []).map((row) => rowToExpense(row as ExpenseRow));
-  const hasMore = rows.length > limit;
-  const items = hasMore ? rows.slice(0, limit) : rows;
-  const nextCursor = hasMore && items.length > 0 ? items[items.length - 1].createdAt : null;
-
-  return {
-    data: items,
-    pagination: {
-      limit,
-      nextCursor,
-      hasMore,
-    },
-  };
+  const { limit, cursor } = parsePaginationParams(params ?? {});
+  return fetchKeysetPage(client, "expenses", EXPENSE_COLUMNS, (row) => rowToExpense(row as ExpenseRow), "load expenses", limit, cursor);
 }
 
 /** PGRST202 — the RPC is not in the PostgREST schema cache (migration not applied). */
@@ -656,6 +772,10 @@ export async function searchExpenseHistory(
   const { filters } = query;
   const terms = searchTerms(filters.q);
   const { fromIso, toIso } = dateRangeBounds(filters.from, filters.to, query.tzOffsetMinutes ?? 0);
+
+  if (terms.length > 0) {
+    return searchExpenseHistoryRanked(client, query, terms, limit, fromIso, toIso);
+  }
 
   const { data, error } = await client.rpc("search_expenses", {
     p_trip_id: query.tripId ?? null,
@@ -694,6 +814,80 @@ export async function searchExpenseHistory(
     pagination: {
       limit,
       nextCursor: hasMore && last ? encodeHistoryCursor(last.createdAt, last.id) : null,
+      hasMore,
+    },
+  };
+}
+
+/**
+ * Ranked full-text history (#450): search_expense_ids() matches through the
+ * RLS-scoped GIN index and orders by relevance, then recency. Rows are then
+ * loaded by primary key, still under RLS. Pages use a (rank, created_at, id)
+ * cursor.
+ */
+async function searchExpenseHistoryRanked(
+  client: StellarStarClient,
+  query: ExpenseHistoryQuery,
+  terms: string[],
+  limit: number,
+  fromIso: string | null,
+  toIso: string | null,
+): Promise<PaginatedResponse<Expense>> {
+  const { filters, cursor } = query;
+  if (cursor && (cursor.rank === undefined || cursor.id === null)) {
+    // A recency cursor cannot position a relevance-ordered result.
+    throw new HistoryFilterError("Invalid cursor: this search was restarted, request the first page again.");
+  }
+
+  const { data, error } = await client.rpc("search_expense_ids", {
+    p_terms: terms,
+    p_trip_id: query.tripId ?? null,
+    p_category: filters.category,
+    p_tags: filters.tags.length > 0 ? filters.tags : null,
+    p_payer: filters.payer,
+    p_status: filters.status === "all" ? null : filters.status,
+    p_asset: filters.asset,
+    p_from: fromIso,
+    p_to: toIso,
+    p_cursor_rank: cursor?.rank ?? null,
+    p_cursor_created_at: cursor?.createdAt ?? null,
+    p_cursor_id: cursor?.id ?? null,
+    p_limit: limit + 1,
+  });
+
+  if (error) {
+    if (error.code === PG_FUNCTION_MISSING) {
+      throw new DatabaseError(
+        "Indexed expense search is not set up yet. Apply migrations/0028_indexed_expense_search.sql (npm run db:migrate).",
+        error.code,
+        error
+      );
+    }
+    throw toDatabaseError(error, "search expenses");
+  }
+
+  const hits = (data ?? []) as Array<{ id: string; created_at: string; search_rank: number }>;
+  const hasMore = hits.length > limit;
+  const pageHits = hasMore ? hits.slice(0, limit) : hits;
+  if (pageHits.length === 0) {
+    return { data: [], pagination: { limit, nextCursor: null, hasMore: false } };
+  }
+
+  const rowsResult = await client
+    .from("expenses")
+    .select(EXPENSE_COLUMNS)
+    .in("id", pageHits.map((h) => h.id));
+  if (rowsResult.error) throw toDatabaseError(rowsResult.error, "search expenses");
+
+  const byId = new Map(((rowsResult.data ?? []) as ExpenseRow[]).map((row) => [row.id, rowToExpense(row)]));
+  const items = pageHits.map((h) => byId.get(h.id)).filter((e): e is Expense => e !== undefined);
+  const last = pageHits[pageHits.length - 1];
+
+  return {
+    data: items,
+    pagination: {
+      limit,
+      nextCursor: hasMore ? encodeHistoryCursor(last.created_at, last.id, Number(last.search_rank)) : null,
       hasMore,
     },
   };
@@ -829,8 +1023,73 @@ export async function deleteExpenseRow(
   id: string,
   client: StellarStarClient = requireAuthenticatedClient()
 ): Promise<void> {
+  const expense = await fetchExpenseById(id, client);
+  if (expense) {
+    if (expense.voided) {
+      throw new DatabaseError("Voided expenses cannot be deleted; they are retained for audit history.");
+    }
+    const hasPaidShares = expense.settled || expense.shares.some((s) => s.paid || (s.installments && s.installments.length > 0));
+    if (hasPaidShares) {
+      throw new DatabaseError("A settled expense cannot be deleted. Use a linked correction or offset to preserve financial history.");
+    }
+    if (expense.correctionOfExpenseId) {
+      throw new DatabaseError("A linked correction record cannot be deleted; it is part of the financial audit history.");
+    }
+  }
+
   const { error } = await client.from("expenses").delete().eq("id", id);
   if (error) throw toDatabaseError(error, "delete this expense");
+}
+
+export async function voidExpenseRow(
+  expenseId: string,
+  reason: string,
+  client: StellarStarClient = requireAuthenticatedClient()
+): Promise<Expense> {
+  const trimmed = reason.trim();
+  if (!trimmed || trimmed.length > 1000) {
+    throw new DatabaseError("An audit reason between 1 and 1000 characters is required to void an expense.");
+  }
+
+  // 1. Try atomic RPC function
+  try {
+    const { data: rpcData, error: rpcError } = await client.rpc("void_expense", {
+      p_expense_id: expenseId,
+      p_reason: trimmed,
+    });
+    if (!rpcError && rpcData && rpcData.length > 0) {
+      return rowToExpense(rpcData[0] as ExpenseRow);
+    }
+  } catch {
+    // Fall back to direct update
+  }
+
+  // 2. Direct update fallback
+  const sessionRes = await client.auth.getSession();
+  const callerWallet = sessionRes?.data?.session?.user?.id || "";
+
+  const { data, error } = await client
+    .from("expenses")
+    .update({
+      voided: true,
+      void_reason: trimmed,
+      voided_at: new Date().toISOString(),
+      voided_by_wallet: callerWallet,
+    } as any)
+    .eq("id", expenseId)
+    .select(EXPENSE_COLUMNS)
+    .single();
+
+  if (error || !data) throw toDatabaseError(error!, "void this expense");
+  return rowToExpense(data as ExpenseRow);
+}
+
+export async function createCorrectionExpense(
+  correction: Expense,
+  creatorWallet: string,
+  client: StellarStarClient = requireAuthenticatedClient()
+): Promise<Expense> {
+  return insertExpense(correction, creatorWallet, client);
 }
 
 /**
@@ -1262,74 +1521,21 @@ export async function deleteSettlementIntentRow(
 
 // ─── Trips ────────────────────────────────────────────────────────────────────
 
+/** Trips visible to the session's wallet, newest first; see fetchExpenses. */
 export async function fetchTrips(
   client: StellarStarClient = requireAuthenticatedClient(),
   options?: PaginationParams
 ): Promise<Trip[]> {
-  let query = client
-    .from("trips")
-    .select(TRIP_COLUMNS)
-    .order("created_at", { ascending: false })
-    .order("id", { ascending: false });
-
-  if (options?.cursor) {
-    query = query.lt("created_at", options.cursor);
-  }
-
-  if (options?.offset !== undefined && options.offset > 0) {
-    const limit = options.limit ? Math.min(Math.max(1, options.limit), MAX_PAGE_SIZE) : DEFAULT_PAGE_SIZE;
-    query = query.range(options.offset, options.offset + limit - 1);
-  } else if (options?.limit) {
-    query = query.limit(Math.min(Math.max(1, options.limit), MAX_PAGE_SIZE));
-  }
-
-  const { data, error } = await query;
-  if (error) throw toDatabaseError(error, "load trips");
-  return (data ?? []).map((row) => rowToTrip(row as TripRow));
+  return fetchKeysetCollection(client, "trips", TRIP_COLUMNS, (row) => rowToTrip(row as TripRow), "load trips", options);
 }
 
-/**
- * Fetches a paginated page of trips with stable ordering and cursor tracking.
- */
+/** One keyset page of trips with an opaque `nextCursor`. */
 export async function fetchTripsPaginated(
   params?: PaginationParams,
   client: StellarStarClient = requireAuthenticatedClient()
 ): Promise<PaginatedResponse<Trip>> {
-  const { limit, cursor, offset } = parsePaginationParams(params ?? {});
-
-  let query = client
-    .from("trips")
-    .select(TRIP_COLUMNS)
-    .order("created_at", { ascending: false })
-    .order("id", { ascending: false });
-
-  if (cursor) {
-    query = query.lt("created_at", cursor);
-  }
-
-  if (offset !== undefined && offset > 0) {
-    query = query.range(offset, offset + limit);
-  } else {
-    // Read limit + 1 to detect if another page exists without count(*) overhead
-    query = query.limit(limit + 1);
-  }
-
-  const { data, error } = await query;
-  if (error) throw toDatabaseError(error, "load trips");
-
-  const rows = (data ?? []).map((row) => rowToTrip(row as TripRow));
-  const hasMore = rows.length > limit;
-  const items = hasMore ? rows.slice(0, limit) : rows;
-  const nextCursor = hasMore && items.length > 0 ? items[items.length - 1].createdAt : null;
-
-  return {
-    data: items,
-    pagination: {
-      limit,
-      nextCursor,
-      hasMore,
-    },
-  };
+  const { limit, cursor } = parsePaginationParams(params ?? {});
+  return fetchKeysetPage(client, "trips", TRIP_COLUMNS, (row) => rowToTrip(row as TripRow), "load trips", limit, cursor);
 }
 
 export async function insertTrip(
@@ -1416,6 +1622,40 @@ export async function hasTripPermission(
   });
   if (result.error) throw toDatabaseError(result.error, "check trip permissions");
   return result.data === true;
+}
+
+/** Upper bound on ids per batched permission check (matches the SQL cap). */
+export const MAX_BATCH_PERMISSION_TRIPS = 1000;
+
+/**
+ * Resolves `permission` for many trips in one query (#417).
+ *
+ * Returns the subset of `tripIds` the caller holds `permission` on. An id
+ * that does not exist, belongs to a trip the caller is not in, or lacks the
+ * permission is simply absent, so the result never reveals which ids exist.
+ * One database round trip regardless of how many ids are passed.
+ */
+export async function fetchTripIdsWithPermission(
+  tripIds: readonly string[],
+  permission: TripPermission,
+  client: StellarStarClient = requireAuthenticatedClient(),
+): Promise<Set<string>> {
+  const unique = [...new Set(tripIds)];
+  if (unique.length === 0) return new Set();
+  if (unique.length > MAX_BATCH_PERMISSION_TRIPS) {
+    throw new DatabaseError(`At most ${MAX_BATCH_PERMISSION_TRIPS} trips can be checked at once.`);
+  }
+  const result = await client.rpc("trips_with_permission", {
+    p_trip_ids: unique,
+    p_permission: permission,
+  });
+  if (result.error) throw toDatabaseError(result.error, "check trip permissions");
+  const rows = Array.isArray(result.data) ? (result.data as unknown[]) : [];
+  return new Set(
+    rows
+      .map((row) => (typeof row === "string" ? row : (row as { trips_with_permission?: string })?.trips_with_permission))
+      .filter((id): id is string => typeof id === "string"),
+  );
 }
 
 export async function hasExpensePermission(
