@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { authenticateApiRequest, recordAuditLog } from "@/lib/api/middleware";
+import { toPublicErrorResponse } from "@/lib/api/errors";
 import { deleteDurableWebhookEndpoint } from "@/lib/api/webhooks";
 
 export const runtime = "nodejs";
@@ -23,48 +24,45 @@ export async function DELETE(
   const idempotencyKey = auth.context.idempotencyKey as string;
   const { id } = await params;
 
-  const deleted = await deleteDurableWebhookEndpoint(id, tokenPayload.walletAddress);
+  try {
+    const deleted = await deleteDurableWebhookEndpoint(id, tokenPayload.walletAddress);
+    const statusCode = deleted ? 200 : 404;
 
-  recordAuditLog({
-    timestamp: new Date().toISOString(),
-    tokenId: tokenPayload.tokenId,
-    walletAddress: tokenPayload.walletAddress,
-    method: "DELETE",
-    path: `/api/v1/webhooks/${id}`,
-    statusCode: deleted ? 200 : 404,
-    latencyMs: Date.now() - startTime,
-    ip,
-    userAgent,
-    idempotencyKey: null,
-  });
+    recordAuditLog({
+      timestamp: new Date().toISOString(),
+      tokenId: tokenPayload.tokenId,
+      walletAddress: tokenPayload.walletAddress,
+      method: "DELETE",
+      path: `/api/v1/webhooks/${id}`,
+      statusCode,
+      latencyMs: Date.now() - startTime,
+      ip,
+      userAgent,
+      idempotencyKey,
+    });
 
-      recordAuditLog({
-        timestamp: new Date().toISOString(),
-        tokenId: tokenPayload.tokenId,
-        walletAddress: tokenPayload.walletAddress,
-        method: "DELETE",
-        path: `/api/v1/webhooks/${id}`,
-        statusCode: deleted ? 200 : 404,
-        latencyMs: Date.now() - startTime,
-        ip,
-        userAgent,
-        idempotencyKey,
-      });
-
-      if (!deleted) {
-        return NextResponse.json(
-          {
-            error: {
-              code: "NOT_FOUND",
-              message: "Webhook endpoint not found or not owned by caller.",
-              status: 404,
-            },
+    if (!deleted) {
+      return NextResponse.json(
+        {
+          error: {
+            code: "NOT_FOUND",
+            message: "Webhook endpoint not found or not owned by caller.",
+            status: statusCode,
           },
-          { status: 404 }
-        );
-      }
+        },
+        { status: statusCode },
+      );
+    }
 
-      return NextResponse.json({ success: true, message: "Webhook successfully deleted." });
-    },
-  });
+    return NextResponse.json({ success: true, message: "Webhook successfully deleted." });
+  } catch (err: unknown) {
+    return toPublicErrorResponse(err, {
+      format: "v1",
+      fallbackMessage: "Failed to delete webhook.",
+      route: "/api/v1/webhooks/[id]",
+      method: "DELETE",
+      status: 400,
+      code: "WEBHOOK_DELETION_FAILED",
+    });
+  }
 }

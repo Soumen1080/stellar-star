@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { authenticateApiRequest, recordAuditLog } from "@/lib/api/middleware";
+import { parseJsonBody } from "@/lib/api/bodyLimits";
+import { toPublicErrorResponse } from "@/lib/api/errors";
 import { enqueueDurableWebhookPing } from "@/lib/api/webhooks";
 
 export const runtime = "nodejs";
@@ -19,11 +21,9 @@ export async function POST(request: NextRequest) {
   const { tokenPayload, ip, userAgent } = auth.context;
   const idempotencyKey = auth.context.idempotencyKey as string;
 
-  let body: any;
   const parsedBody = await parseJsonBody(request, { route: "/api/v1/webhooks/test", format: "v1" });
   if (!parsedBody.ok) return parsedBody.response;
-  body = parsedBody.value;
-
+  const body = parsedBody.value as { webhook_id?: unknown };
   const webhookId = body.webhook_id;
   if (!webhookId || typeof webhookId !== "string") {
     return NextResponse.json(
@@ -41,30 +41,28 @@ export async function POST(request: NextRequest) {
   try {
     const delivery = await enqueueDurableWebhookPing(webhookId, tokenPayload.walletAddress);
 
-        recordAuditLog({
-          timestamp: new Date().toISOString(),
-          tokenId: tokenPayload.tokenId,
-          walletAddress: tokenPayload.walletAddress,
-          method: "POST",
-          path: "/api/v1/webhooks/test",
-          statusCode: 200,
-          latencyMs: Date.now() - startTime,
-          ip,
-          userAgent,
-          idempotencyKey,
-        });
+    recordAuditLog({
+      timestamp: new Date().toISOString(),
+      tokenId: tokenPayload.tokenId,
+      walletAddress: tokenPayload.walletAddress,
+      method: "POST",
+      path: "/api/v1/webhooks/test",
+      statusCode: 200,
+      latencyMs: Date.now() - startTime,
+      ip,
+      userAgent,
+      idempotencyKey,
+    });
 
-        return NextResponse.json({ data: delivery });
-      } catch (err: unknown) {
-        return toPublicErrorResponse(err, {
-          format: "v1",
-          fallbackMessage: "Failed to execute webhook test.",
-          route: "/api/v1/webhooks/test",
-          method: "POST",
-          status: 400,
-          code: "TEST_FAILED",
-        });
-      }
-    },
-  });
+    return NextResponse.json({ data: delivery });
+  } catch (err: unknown) {
+    return toPublicErrorResponse(err, {
+      format: "v1",
+      fallbackMessage: "Failed to execute webhook test.",
+      route: "/api/v1/webhooks/test",
+      method: "POST",
+      status: 400,
+      code: "TEST_FAILED",
+    });
+  }
 }

@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { authenticateApiRequest, recordAuditLog } from "@/lib/api/middleware";
+import { parseJsonBody } from "@/lib/api/bodyLimits";
+import { toPublicErrorResponse } from "@/lib/api/errors";
 import { createDurableWebhookEndpoint, listDurableWebhookEndpoints } from "@/lib/api/webhooks";
 
 export const runtime = "nodejs";
@@ -48,11 +50,13 @@ export async function POST(request: NextRequest) {
   const { tokenPayload, ip, userAgent } = auth.context;
   const idempotencyKey = auth.context.idempotencyKey as string;
 
-  let body: any;
   const parsedBody = await parseJsonBody(request, { route: "/api/v1/webhooks", format: "v1" });
   if (!parsedBody.ok) return parsedBody.response;
-  body = parsedBody.value;
-
+  const body = parsedBody.value as {
+    url?: unknown;
+    events?: unknown;
+    description?: unknown;
+  };
   const { url, events, description } = body;
 
   try {
@@ -63,30 +67,28 @@ export async function POST(request: NextRequest) {
       description: description ? String(description) : undefined,
     });
 
-        recordAuditLog({
-          timestamp: new Date().toISOString(),
-          tokenId: tokenPayload.tokenId,
-          walletAddress: tokenPayload.walletAddress,
-          method: "POST",
-          path: "/api/v1/webhooks",
-          statusCode: 201,
-          latencyMs: Date.now() - startTime,
-          ip,
-          userAgent,
-          idempotencyKey,
-        });
+    recordAuditLog({
+      timestamp: new Date().toISOString(),
+      tokenId: tokenPayload.tokenId,
+      walletAddress: tokenPayload.walletAddress,
+      method: "POST",
+      path: "/api/v1/webhooks",
+      statusCode: 201,
+      latencyMs: Date.now() - startTime,
+      ip,
+      userAgent,
+      idempotencyKey,
+    });
 
-        return NextResponse.json({ data: endpoint }, { status: 201, headers: { "Cache-Control": "no-store" } });
-      } catch (err: unknown) {
-        return toPublicErrorResponse(err, {
-          format: "v1",
-          fallbackMessage: "Failed to register webhook.",
-          route: "/api/v1/webhooks",
-          method: "POST",
-          status: 400,
-          code: "WEBHOOK_REGISTRATION_FAILED",
-        });
-      }
-    },
-  });
+    return NextResponse.json({ data: endpoint }, { status: 201, headers: { "Cache-Control": "no-store" } });
+  } catch (err: unknown) {
+    return toPublicErrorResponse(err, {
+      format: "v1",
+      fallbackMessage: "Failed to register webhook.",
+      route: "/api/v1/webhooks",
+      method: "POST",
+      status: 400,
+      code: "WEBHOOK_REGISTRATION_FAILED",
+    });
+  }
 }
