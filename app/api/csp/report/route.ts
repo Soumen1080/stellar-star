@@ -8,7 +8,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { sanitizeViolationReport } from "@/lib/security/csp";
+import { sanitizeViolationReport } from "@/lib/security/cspViolationReport";
 import { getClientIp, checkRateLimit } from "@/lib/auth/rateLimiter";
 import type { SanitizedCSPViolation, CSPViolationPayload } from "@/types/csp";
 

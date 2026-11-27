@@ -11,8 +11,7 @@
  *  - CSP violation reporting endpoint integration (`report-uri` / `report-to`)
  */
 
-import crypto from "node:crypto";
-import type { CSPOptions, SanitizedCSPViolation, CSPViolationPayload } from "@/types/csp";
+import type { CSPOptions } from "@/types/csp";
 
 export const CSP_HEADER_NAME = "Content-Security-Policy";
 export const CSP_REPORT_ONLY_HEADER_NAME = "Content-Security-Policy-Report-Only";
@@ -44,9 +43,15 @@ export const TRUSTED_IMG_ORIGINS = [
  * Generates a cryptographically random, base64-encoded nonce.
  */
 export function generateCSPNonce(): string {
-  return crypto.randomBytes(16).toString("base64");
-}
+  const bytes = new Uint8Array(16);
+  globalThis.crypto.getRandomValues(bytes);
 
+  let binary = "";
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary);
+}
 /**
  * Builds the hardened Content Security Policy string.
  */
@@ -125,33 +130,4 @@ export function buildContentSecurityPolicy(options: CSPOptions = {}): string {
   return Object.entries(directives)
     .map(([directive, values]) => `${directive} ${values.join(" ")};`)
     .join(" ");
-}
-
-/**
- * Sanitizes an incoming CSP violation report for persistent logging.
- */
-export function sanitizeViolationReport(
-  payload: CSPViolationPayload,
-  clientIp?: string
-): SanitizedCSPViolation {
-  const report = payload["csp-report"] || payload.body || {};
-
-  const hashIp = (ip?: string) => {
-    if (!ip) return undefined;
-    return crypto.createHash("sha256").update(ip).digest("hex").slice(0, 16);
-  };
-
-  return {
-    id: crypto.randomUUID(),
-    timestamp: new Date().toISOString(),
-    documentUri: report["document-uri"] || payload.url,
-    blockedUri: report["blocked-uri"],
-    violatedDirective: report["violated-directive"],
-    effectiveDirective: report["effective-directive"],
-    sourceFile: report["source-file"],
-    lineNumber: report["line-number"],
-    columnNumber: report["column-number"],
-    disposition: report.disposition,
-    clientIpHash: hashIp(clientIp),
-  };
 }

@@ -4,7 +4,6 @@ import { NextRequest } from "next/server";
 import {
   buildContentSecurityPolicy,
   generateCSPNonce,
-  sanitizeViolationReport,
   CSP_HEADER_NAME,
   CSP_NONCE_HEADER,
   TRUSTED_CONNECT_ORIGINS,
